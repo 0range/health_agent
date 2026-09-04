@@ -100,3 +100,51 @@ support `response.output_text`; response status must be checked for `completed`;
 use of `store=False` is also consistent with the Responses data-controls documentation.
 See [Responses API reference](https://platform.openai.com/docs/api-reference/responses)
 and [OpenAI data controls](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint).
+
+## Fix-round re-review (`71d1aee..e230365`)
+
+### Verdicts
+
+- **SPEC: FAIL**
+- **QUALITY: CHANGES REQUESTED**
+
+The first two findings are fixed. The question and evidence are separately serialized as
+bounded JSON `input_text` blocks in one user-level message, while the safety instruction
+remains a separate `instructions` argument. The instruction explicitly treats all content
+as data, marks the question untrusted and non-evidentiary, and restricts factual claims and
+citations to `verified_observations` (`openai.py:28-42, 105-166`). The local context/service
+contract now expresses inference-blocking limitations; the actual weight-trend limitation
+sets that flag, and the service returns the local insufficient-evidence text and footer
+without calling the responder (`models.py:45-54`, `context.py:353-364`,
+`service.py:91-105`). The Responses API arguments remain the approved stateless call:
+model, separate instructions/input, capped output, `store=False`, and hashed
+`safety_identifier`, with no conversation or response chaining (`openai.py:85-102`).
+
+The failure path continues to return only generic safe text/codes. Citation-validation
+failure uses the same deterministic local source/limitation footer, so it does not expose
+the generated response. I found no new privacy or error-detail regression in the fix.
+
+### Remaining finding
+
+#### MEDIUM — citation validation still accepts some forged bracket labels
+
+`_has_only_valid_citations()` extracts only labels matching
+`\[[A-Za-z][A-Za-z0-9_]*[0-9]+\]` and compares that subset with the allowed labels
+(`src/health_agent/questions/service.py:24, 165-175`). Consequently, a generated answer
+such as `Ferritin is 42. [LAB1] [FORGED]` is accepted: `[LAB1]` is valid, but `[FORGED]`
+does not match the narrow token pattern and is ignored. It is nevertheless a bracketed,
+non-application citation, contrary to the instruction that only exact supplied labels may
+be cited and the required fail-closed behavior for forged citations. The current test
+coverage only exercises forged labels ending in digits (`tests/questions/test_service.py:128-145`).
+
+Action: parse every bracketed citation-like token (with a bounded grammar appropriate to
+the output), reject any token not exactly in the evidence-label set, and add coverage for
+a valid label accompanied by `[FORGED]` (and another malformed/unknown bracket label).
+Keep the existing insufficient-evidence fallback and deterministic footer. This should be
+a small, localized change.
+
+### Re-review scope
+
+Reviewed the prior report, Task 2 report, commit range `71d1aee..e230365`, and current
+questions implementation/tests. I did not modify implementation or run tests, as
+requested.
