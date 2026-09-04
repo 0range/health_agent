@@ -121,6 +121,16 @@ class AutomationRunner:
                     results.append(AutomationResult(*job.key, "none", "failed", "state_read_failed"))
                     continue
                 mode: AutomationMode = "full" if full else "incremental"
+                if job.not_ready_code is not None:
+                    results.append(
+                        AutomationResult(
+                            *job.key,
+                            mode,
+                            "deferred",
+                            job.not_ready_code,
+                        )
+                    )
+                    continue
                 try:
                     result = self.executor.execute(job, mode)
                 except Exception:  # noqa: BLE001 - injected/connector details stay private

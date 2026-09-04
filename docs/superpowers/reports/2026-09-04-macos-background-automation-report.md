@@ -22,8 +22,8 @@ LaunchAgent installation. Live installation remains an explicit operator step.
 
 ## Verification
 
-- Automation-focused tests: 25 passed.
-- Full project tests: 464 passed.
+- Automation-focused tests: 29 passed.
+- Full project tests: 574 passed.
 - Ruff, mypy, lockfile, diff whitespace, CLI-help, plist parsing, and disposable
   Alembic upgrade/check gates passed.
 
@@ -35,3 +35,14 @@ LaunchAgent installation. Live installation remains an explicit operator step.
   restores the previous plist if replacement activation fails.
 - Log rotation runs only after the global lock is acquired, so an overlapping
   process returns `already_running` without touching log files.
+
+## Live-readiness correction
+
+- An absent Gmail root or a connector-created profile directory without a saved
+  Gmail profile is treated as no configured job, while malformed/symlinked saved
+  configuration still fails closed.
+- A configured Drive profile without its first verified OAuth token is emitted
+  as `deferred/oauth_not_ready`, does not invoke the connector, does not advance
+  the full checkpoint, and does not make the unattended run exit nonzero.
+- Existing or malformed tokens still reach normal connector validation, so
+  genuine OAuth and connector failures remain failures.

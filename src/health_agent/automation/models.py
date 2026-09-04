@@ -26,6 +26,7 @@ class AutomationJob:
     account_id: str
     supports_full: bool
     arguments: tuple[str, ...]
+    not_ready_code: str | None = None
 
     def __post_init__(self) -> None:
         _validated(self.source, "source")
@@ -33,6 +34,8 @@ class AutomationJob:
         _validated(self.account_id, "account ID")
         if not self.arguments or any("\n" in value or "\r" in value for value in self.arguments):
             raise ValueError("unsafe connector arguments")
+        if self.not_ready_code is not None:
+            _validated(self.not_ready_code, "not-ready code")
 
     @property
     def key(self) -> tuple[str, str, str]:
