@@ -20,6 +20,15 @@ from health_agent.db import build_engine, session_scope
 _DATABASE_PATTERN = re.compile(r"test_health_agent_[0-9a-f]{32}")
 _CONTAINER_PATTERN = re.compile(r"health-agent-pytest-[0-9a-f]{32}")
 _TABLES_IN_DELETE_ORDER = (
+    "whoop_profile_current",
+    "whoop_body_current",
+    "whoop_cycles",
+    "whoop_recoveries",
+    "whoop_sleeps",
+    "whoop_workouts",
+    "whoop_raw_records",
+    "whoop_sync_runs",
+    "whoop_connections",
     "review_items",
     "lab_observations",
     "document_pages",

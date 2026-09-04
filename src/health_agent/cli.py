@@ -1,6 +1,6 @@
 from datetime import date
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import typer
 from sqlalchemy import select
@@ -18,21 +18,57 @@ from health_agent.models import (
     Document,
     DocumentSourceRecord,
     LabObservation,
+    Profile,
     ReviewStatus,
     SourceRecord,
 )
 from health_agent.vault import FileVault
+from health_agent.whoop.auth_service import (
+    complete_whoop_authorization,
+    open_and_wait_for_whoop_authorization,
+    publish_whoop_authorization,
+    validate_whoop_authorization_target,
+)
+from health_agent.whoop.client import WhoopClient
+from health_agent.whoop.oauth import WhoopOAuth
+from health_agent.whoop.status import get_whoop_status
+from health_agent.whoop.sync import sync_whoop
+from health_agent.whoop.tokens import TokenStore
 
 app = typer.Typer(help="Personal Health Agent")
 review_app = typer.Typer(help="Review imported laboratory candidates.")
 dashboard_app = typer.Typer(help="Manage the local Metabase dashboards.")
+whoop_app = typer.Typer(help="Connect and synchronize WHOOP accounts.")
+profile_app = typer.Typer(help="Manage local person profiles.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
+app.add_typer(whoop_app, name="whoop")
+app.add_typer(profile_app, name="profile")
 
 
 @app.callback()
 def health_agent() -> None:
     """Personal Health Agent."""
+
+
+@profile_app.command("create")
+def create_profile(name: str) -> None:
+    """Create a separate local person profile and print its UUID."""
+    profile_id = uuid4()
+    settings = Settings()
+    with session_scope(build_engine(settings)) as session:
+        session.add(Profile(id=profile_id, name=name))
+    typer.echo(f"status=created profile_id={profile_id} name={name}")
+
+
+@profile_app.command("list")
+def list_profiles() -> None:
+    """List local person profiles without health data."""
+    settings = Settings()
+    with session_scope(build_engine(settings)) as session:
+        profiles = session.scalars(select(Profile).order_by(Profile.created_at)).all()
+    for profile in profiles:
+        typer.echo(f"profile_id={profile.id} name={profile.name}")
 
 
 @app.command("import-file")
@@ -145,6 +181,122 @@ def setup_dashboard() -> None:
     )
 
 
+@whoop_app.command("auth")
+def whoop_auth(
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+    account: str = "main",
+) -> None:
+    """Authorize one WHOOP account for one local person profile."""
+    settings = Settings()
+    oauth = _whoop_oauth(settings)
+    token_store = TokenStore(settings.whoop_token_root)
+    profile_key = str(profile_id)
+    token_store.validate_target(profile_key, account)
+    engine = build_engine(settings)
+    with session_scope(engine) as session:
+        validate_whoop_authorization_target(
+            session, token_store, profile_id, profile_key, account
+        )
+    pending, query = open_and_wait_for_whoop_authorization(oauth)
+    authorized = complete_whoop_authorization(
+        oauth,
+        pending,
+        query,
+    )
+    publish_whoop_authorization(
+        lambda: session_scope(engine),
+        token_store,
+        profile_id,
+        profile_key,
+        account,
+        authorized,
+    )
+    typer.echo(f"status=connected profile_id={profile_id} account={account}")
+
+
+@whoop_app.command("status")
+def whoop_status(
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+    account: str = "main",
+) -> None:
+    """Show freshness and safe record counts without personal details."""
+    settings = Settings()
+    with session_scope(build_engine(settings)) as session:
+        status = get_whoop_status(
+            session,
+            TokenStore(settings.whoop_token_root),
+            profile_id,
+            str(profile_id),
+            account,
+        )
+    last_success = (
+        status.last_success_at.isoformat() if status.last_success_at else "never"
+    )
+    retry_at = status.retry_at.isoformat() if status.retry_at else "none"
+    typer.echo(
+        " ".join(
+            (
+                f"configured={str(status.configured).lower()}",
+                f"auth={status.auth_status}",
+                f"token={status.token_status}",
+                f"last_success={last_success}",
+                f"retry_at={retry_at}",
+                f"error={status.last_error_code or 'none'}",
+                f"weight_available={str(status.weight_available).lower()}",
+                f"cycles={status.cycle_count}",
+                f"recoveries={status.recovery_count}",
+                f"sleeps={status.sleep_count}",
+                f"workouts={status.workout_count}",
+            )
+        )
+    )
+
+
+@whoop_app.command("sync")
+def whoop_sync(
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+    account: str = "main",
+    full: bool = typer.Option(
+        False, "--full", help="Fetch all history available from WHOOP."
+    ),
+) -> None:
+    """Backfill or incrementally synchronize one WHOOP account."""
+    settings = Settings()
+    oauth = _whoop_oauth(settings)
+    token_store = TokenStore(settings.whoop_token_root)
+    client = WhoopClient(
+        oauth,
+        token_store,
+        str(profile_id),
+        account,
+    )
+    with session_scope(build_engine(settings)) as session:
+        report = sync_whoop(
+            session,
+            profile_id,
+            account,
+            client,
+            full=full,
+        )
+    retry_at = report.retry_at.isoformat() if report.retry_at else "none"
+    typer.echo(
+        " ".join(
+            (
+                f"status={report.status}",
+                f"mode={report.mode}",
+                f"raw_created={report.raw_created}",
+                f"created={report.normalized_created}",
+                f"updated={report.normalized_updated}",
+                f"unchanged={report.unchanged}",
+                f"error={report.safe_error_code or 'none'}",
+                f"retry_at={retry_at}",
+            )
+        )
+    )
+    if report.status not in {"succeeded", "deferred"}:
+        raise typer.Exit(code=1)
+
+
 def main() -> None:
     app()
 
@@ -158,3 +310,15 @@ def _medical_date(option_name: str, value: str | None) -> date | None:
         raise typer.BadParameter(
             "must use YYYY-MM-DD", param_hint=f"--{option_name}"
         ) from error
+
+
+def _whoop_oauth(settings: Settings) -> WhoopOAuth:
+    try:
+        client_id, client_secret = settings.load_whoop_client_credentials()
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    return WhoopOAuth(
+        client_id,
+        client_secret.get_secret_value(),
+        settings.whoop_redirect_uri,
+    )

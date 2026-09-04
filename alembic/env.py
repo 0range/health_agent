@@ -5,6 +5,9 @@ from logging.config import fileConfig
 from alembic import context
 from health_agent.config import Settings
 from health_agent.models import Base
+from health_agent.whoop import models as whoop_models
+
+_ = whoop_models
 
 config = context.config
 if config.config_file_name is not None:
