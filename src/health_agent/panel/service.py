@@ -30,6 +30,17 @@ from health_agent.whoop.tokens import TokenStore
 
 SessionScopeFactory = Callable[[], AbstractContextManager[Session]]
 
+_WHOOP_ERROR_CODES = frozenset({"reauth_required", "rate_limited", "sync_failed"})
+_GMAIL_ERROR_CODES = frozenset(
+    {
+        "AttachmentPreparationError",
+        "GmailAccountMismatch",
+        "GmailPaginationLoop",
+        "OAuthRequired",
+    }
+)
+_TELEGRAM_ERROR_CODES = frozenset({"credential_invalid", "token_not_configured"})
+
 
 class ProfileRepository(Protocol):
     def list(self) -> tuple[ProfileSummary, ...]: ...
@@ -161,7 +172,7 @@ class TelegramStatusReader:
                     "not_configured",
                     "Telegram is not configured locally.",
                     None,
-                    status.last_error_code,
+                    _panel_error_code("telegram", status.last_error_code),
                 ),
             )
         if not status.credential_verified:
@@ -171,7 +182,7 @@ class TelegramStatusReader:
                     "credential_invalid",
                     "Telegram credentials need local verification.",
                     None,
-                    status.last_error_code,
+                    _panel_error_code("telegram", status.last_error_code),
                 ),
             )
         if not status.identity_bound:
@@ -180,8 +191,8 @@ class TelegramStatusReader:
                     self.connector,
                     "not_bound",
                     "No Telegram identity is bound to this profile.",
-                    status.last_poll_at,
-                    status.last_error_code,
+                    None,
+                    _panel_error_code("telegram", status.last_error_code),
                 ),
             )
         return (
@@ -193,8 +204,9 @@ class TelegramStatusReader:
                     if status.poller_running
                     else "Telegram is configured for this profile."
                 ),
-                status.last_poll_at,
-                status.last_error_code,
+                # Telegram's poll timestamp is bot-global, never profile-scoped.
+                None,
+                _panel_error_code("telegram", status.last_error_code),
             ),
         )
 
@@ -289,8 +301,12 @@ def _whoop_card(statuses: tuple[WhoopStatus, ...]) -> ConnectorCard:
         (status.last_success_at for status in statuses if status.last_success_at),
         default=None,
     )
-    error_code = next(
-        (status.last_error_code for status in statuses if status.last_error_code), None
+    error_code = _panel_error_code(
+        "whoop",
+        next(
+            (status.last_error_code for status in statuses if status.last_error_code),
+            None,
+        ),
     )
     if all(status.token_status == "ready" for status in statuses):
         result = "ready"
@@ -334,7 +350,9 @@ def _gmail_card(
         if (parsed := _parse_datetime(run.last_success_at)) is not None
     )
     last_success = max(successes, default=None)
-    error_code = next((run.last_error_code for run in runs if run.last_error_code), None)
+    error_code = _panel_error_code(
+        "gmail", next((run.last_error_code for run in runs if run.last_error_code), None)
+    )
     if any(status in {"invalid", "reauth_required"} for status in statuses):
         result = "reauth_required"
     elif all(status == "missing" for status in statuses):
@@ -356,6 +374,18 @@ def _parse_datetime(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _panel_error_code(connector: str, value: str | None) -> str | None:
+    """Map persisted connector values to a closed, display-safe error set."""
+    if value is None:
+        return None
+    allowed = {
+        "whoop": _WHOOP_ERROR_CODES,
+        "gmail": _GMAIL_ERROR_CODES,
+        "telegram": _TELEGRAM_ERROR_CODES,
+    }[connector]
+    return value if value in allowed else f"{connector}_status_error"
 
 
 def _drive_card() -> ConnectorCard:
@@ -406,7 +436,6 @@ def _local_telegram_status(
             last_poll_at=None,
             last_error_code="credential_invalid",
         )
-    next_offset, last_poll_at, last_error_code = state.runtime_status(credential.bot_id)
     return TelegramStatus(
         token_configured=True,
         credential_verified=True,
@@ -419,7 +448,9 @@ def _local_telegram_status(
         identity_bound=(
             state.identity_for_profile(credential.bot_id, profile_id) is not None
         ),
-        next_offset=next_offset,
-        last_poll_at=last_poll_at,
-        last_error_code=last_error_code,
+        # Runtime state belongs to the bot, not to this profile. Do not present
+        # it through a profile card.
+        next_offset=None,
+        last_poll_at=None,
+        last_error_code=None,
     )

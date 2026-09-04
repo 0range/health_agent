@@ -15,10 +15,17 @@ from health_agent.panel.service import (
     GmailStatusReader,
     PanelService,
     ProfileNotFoundError,
+    TelegramStatusReader,
     _local_telegram_status,
+    _whoop_card,
 )
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
-from health_agent.telegram.types import TelegramIdentity, VerifiedBotCredential
+from health_agent.telegram.types import (
+    TelegramIdentity,
+    TelegramStatus,
+    VerifiedBotCredential,
+)
+from health_agent.whoop.status import WhoopStatus
 
 
 @dataclass
@@ -157,13 +164,79 @@ def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> N
     tokens.save_verified(credential)
     state.register_bot(credential.bot_id, credential.username)
     state.bind_identity(credential.bot_id, TelegramIdentity(111, first, 111))
+    state.record_poll(credential.bot_id, "access_token=leaked MRI-result.pdf")
 
     first_status = _local_telegram_status(tokens, state, first)
     second_status = _local_telegram_status(tokens, state, second)
+    reader = TelegramStatusReader(lambda profile_id: _local_telegram_status(tokens, state, profile_id))
+    first_card = reader.cards(first)[0]
+    second_card = reader.cards(second)[0]
 
     assert first_status.identity_bound is True
     assert second_status.identity_bound is False
     assert first_status.delivery_unknown_count == second_status.delivery_unknown_count == 0
+    assert first_card.last_success_at is second_card.last_success_at is None
+    assert first_card.error_code is second_card.error_code is None
+
+
+def test_persisted_connector_error_values_are_mapped_to_closed_safe_sets(tmp_path) -> None:
+    profile_id = uuid4()
+    unsafe_error = "refresh_token=secret MRI-result.pdf hemoglobin=12"
+    whoop = _whoop_card(
+        (
+            WhoopStatus(
+                configured=True,
+                auth_status="connected",
+                token_status="ready",
+                last_success_at=None,
+                retry_at=None,
+                last_error_code=unsafe_error,
+                weight_available=False,
+                cycle_count=0,
+                recovery_count=0,
+                sleep_count=0,
+                workout_count=0,
+            ),
+        )
+    )
+    gmail_profiles = LocalGmailProfileStore(tmp_path / "gmail")
+    gmail_state = LocalGmailStateStore(tmp_path / "gmail")
+    account = GmailAccount.create("primary")
+    gmail_profiles.save(GmailProfile.empty(profile_id).upsert_account(account))
+    gmail_state.fail_sync(str(profile_id), account.account_id, unsafe_error)
+    gmail = GmailStatusReader(
+        gmail_profiles, gmail_state, lambda _profile_id, _account_id: "valid"
+    ).cards(profile_id)[0]
+    telegram = TelegramStatusReader(
+        lambda selected_profile_id: TelegramStatus(
+            token_configured=True,
+            credential_verified=True,
+            bot_id=123,
+            bot_username="safe_bot",
+            webhook_configured=None,
+            poller_running=False,
+            delivery_unknown_count=0,
+            profile_id=selected_profile_id,
+            identity_bound=True,
+            next_offset=None,
+            last_poll_at=None,
+            last_error_code=unsafe_error,
+        )
+    ).cards(profile_id)[0]
+
+    payload = json.dumps(
+        ProfilePanel(ProfileSummary(profile_id, "Person"), (whoop, gmail, telegram)).to_dict()
+    )
+
+    assert [whoop.error_code, gmail.error_code, telegram.error_code] == [
+        "whoop_status_error",
+        "gmail_status_error",
+        "telegram_status_error",
+    ]
+    assert unsafe_error not in payload
+    assert "secret" not in payload
+    assert "MRI-result.pdf" not in payload
+    assert "hemoglobin=12" not in payload
 
 
 def test_one_unreadable_connector_becomes_a_safe_card() -> None:
