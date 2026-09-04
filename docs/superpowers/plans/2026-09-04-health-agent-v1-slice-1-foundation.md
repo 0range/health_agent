@@ -472,6 +472,8 @@ git commit -m "feat: import and review medical documents"
 **Files:**
 - Create: `src/health_agent/metabase.py`
 - Modify: `src/health_agent/cli.py`
+- Modify: `src/health_agent/config.py`
+- Modify: `.env.example`
 - Test: `tests/test_metabase.py`
 
 **Interfaces:**
@@ -495,6 +497,8 @@ Expected: FAIL because the bootstrap client does not exist.
 
 The client waits for `/api/health`, completes local admin setup only when necessary, registers the health PostgreSQL database with a read-only role, creates collection `Health Agent`, dashboard `Анализы крови`, and one line card over `verified_lab_history` with date on X, normalized value on Y and canonical name as series. Existing objects are found by name and reused.
 
+`Settings` adds `METABASE_URL` (default `http://127.0.0.1:53000`) and `METABASE_ADMIN_EMAIL` (default `health-agent@localhost`). For this single-user local install, the Metabase admin and database reader initially use the existing `POSTGRES_PASSWORD`; no new secret is requested from the user. Before registering the database, `bootstrap_metabase` idempotently creates PostgreSQL role `health_dashboard`, grants only connect/schema/select/default-select privileges, and never grants write or ownership privileges.
+
 - [ ] **Step 3: Run unit and live smoke tests**
 
 Run:
@@ -510,7 +514,7 @@ Expected: unit test passes; Metabase reports healthy; repeated setup keeps one d
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/health_agent/metabase.py src/health_agent/cli.py tests/test_metabase.py
+git add .env.example src/health_agent/config.py src/health_agent/metabase.py src/health_agent/cli.py tests/test_metabase.py
 git commit -m "feat: provision first lab dashboard"
 ```
 
