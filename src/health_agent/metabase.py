@@ -20,6 +20,8 @@ LAB_HISTORY_QUERY = (
     "SELECT result_date AS date, normalized_value, normalized_unit, canonical_name "
     "FROM verified_lab_history "
     f"WHERE profile_id = '{DEFAULT_PROFILE_ID}' "
+    "AND document_processing_status = 'processed' "
+    "AND document_safe_error_code IS NULL "
     "AND result_date IS NOT NULL "
     "AND normalized_value IS NOT NULL "
     "AND normalized_unit IS NOT NULL "

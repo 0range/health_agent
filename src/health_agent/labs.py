@@ -167,6 +167,21 @@ def parse_lab_candidates(
     return tuple(candidates)
 
 
+def looks_like_lab_document(pages: tuple[ExtractedPage, ...]) -> bool:
+    """Recognize numeric lab-like rows without treating ordinary prose as a lab."""
+    for page in pages:
+        for source_line in page.text.splitlines():
+            match = _ROW_PATTERN.match(source_line)
+            if match is not None and _is_unit(match["unit"]):
+                return True
+            normalized_line = _normalise_name(source_line)
+            if any(alias in normalized_line for alias in _ALIASES) and any(
+                character.isdigit() for character in source_line
+            ):
+                return True
+    return False
+
+
 def _parse_line(page_number: int, source_line: str) -> LabCandidate | None:
     match = _ROW_PATTERN.match(source_line)
     if match is None:

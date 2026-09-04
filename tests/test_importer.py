@@ -82,6 +82,12 @@ def test_approval_moves_value_into_verified_view(
         )
         for row in rows
     ] == [("ferritin", "42", Decimal(42), Decimal(42), "ng/mL")]
+    document = session.get_one(Document, report.document_id)
+    assert document.processing_status == "processed"
+
+    duplicate = import_document(session, vault, synthetic_lab_pdf, "local:test")
+    assert duplicate.status == "duplicate"
+    assert duplicate.processing_status == "processed"
 
 
 def test_approval_preserves_decimal_comma_and_normalizes_separately(
@@ -153,6 +159,7 @@ def test_review_transitions_are_one_way(
 
     assert observation_id is not None
     reject_observation(session, observation_id)
+    assert session.get_one(Document, report.document_id).processing_status == "processed"
     with pytest.raises(InvalidReviewTransition):
         approve_observation(session, observation_id)
 
@@ -177,6 +184,7 @@ def test_correction_preserves_original_and_creates_verified_successor(
     assert corrected.normalized_value == Decimal("43.5")
     assert corrected.normalized_unit == "ng/mL"
     assert corrected.supersedes_observation_id == original.id
+    assert session.get_one(Document, report.document_id).processing_status == "processed"
 
 
 def test_invalid_correction_leaves_original_pending(
@@ -327,3 +335,72 @@ def test_scanned_pdf_returns_actionable_ocr_status(
     assert report.candidate_count == 0
     assert document.processing_status == "ocr_required"
     assert document.safe_error_code == "ocr_required"
+
+
+def test_conflicting_medical_date_immediately_hides_verified_chart_row(
+    session: Session, vault: FileVault, synthetic_lab_pdf: Path
+) -> None:
+    first = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "local:first",
+        collected_date=date(2020, 1, 2),
+    )
+    observation_id = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": first.document_id},
+    )
+    assert observation_id is not None
+    approve_observation(session, observation_id)
+    assert len(session.execute(text(LAB_HISTORY_QUERY)).all()) == 1
+
+    duplicate = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "local:conflicting-date",
+        collected_date=date(2021, 1, 2),
+    )
+
+    assert duplicate.status == "duplicate"
+    assert duplicate.processing_status == "needs_attention"
+    document = session.get_one(Document, first.document_id)
+    assert document.safe_error_code == "conflicting_medical_date"
+    assert session.execute(text(LAB_HISTORY_QUERY)).all() == []
+
+
+def test_lab_like_text_without_candidates_needs_attention(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "unsupported-lab.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Glucose 5.1 mmol/L 3.9-5.5")
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:unsupported-lab")
+    document = session.get_one(Document, report.document_id)
+
+    assert report.status == "needs_attention"
+    assert report.processing_status == "needs_attention"
+    assert document.document_type == "laboratory_report"
+    assert document.safe_error_code == "no_lab_candidates"
+
+
+def test_clear_non_lab_prose_is_not_flagged_as_a_failed_lab_parse(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "notes.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Meeting notes and a follow-up question.")
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:notes")
+    document = session.get_one(Document, report.document_id)
+
+    assert report.status == "imported"
+    assert report.processing_status == "processed"
+    assert document.document_type == "unknown_document"
+    assert document.safe_error_code is None

@@ -151,6 +151,33 @@ def upgrade() -> None:
         "WHERE source_value ~ '^[+-]?([0-9]+([.,][0-9]+)?|[.,][0-9]+)$'"
     )
     _normalize_legacy_verified_rows()
+    op.execute(
+        "UPDATE documents SET processing_status = CASE "
+        "WHEN EXISTS (SELECT 1 FROM lab_observations observations "
+        "WHERE observations.document_id = documents.id "
+        "AND observations.status = 'needs_review') "
+        "THEN 'needs_review' ELSE 'processed' END "
+        "WHERE safe_error_code IS NULL "
+        "AND EXISTS (SELECT 1 FROM lab_observations observations "
+        "WHERE observations.document_id = documents.id)"
+    )
+    op.create_unique_constraint(
+        "uq_lab_observations_id_document",
+        "lab_observations",
+        ["id", "document_id"],
+    )
+    op.drop_constraint(
+        "fk_lab_observations_supersedes_observation",
+        "lab_observations",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "fk_lab_observations_supersedes_same_document",
+        "lab_observations",
+        "lab_observations",
+        ["supersedes_observation_id", "document_id"],
+        ["id", "document_id"],
+    )
     op.create_check_constraint(
         "ck_verified_observations_normalized",
         "lab_observations",
@@ -227,26 +254,41 @@ def _create_verified_view() -> None:
     op.execute(
         "CREATE VIEW verified_lab_history AS "
         "SELECT observations.*, documents.profile_id, "
-        "COALESCE(documents.collected_date, documents.issued_date) AS result_date "
+        "COALESCE(documents.collected_date, documents.issued_date) AS result_date, "
+        "documents.processing_status AS document_processing_status, "
+        "documents.safe_error_code AS document_safe_error_code "
         "FROM lab_observations observations "
         "JOIN documents ON documents.id = observations.document_id "
-        "WHERE observations.status = 'verified'"
+        "WHERE observations.status = 'verified' "
+        "AND documents.safe_error_code IS NULL"
     )
 
 
 def downgrade() -> None:
+    _assert_downgrade_safe()
     op.execute("DROP VIEW verified_lab_history")
     op.drop_constraint(
         "ck_verified_observations_normalized", "lab_observations", type_="check"
     )
     op.execute("ALTER TABLE lab_observations DROP COLUMN IF EXISTS parsed_value")
     op.execute(
-        "DO $$ BEGIN IF EXISTS ("
-        "SELECT document_id FROM document_source_records "
-        "GROUP BY document_id HAVING count(*) > 1"
-        ") THEN RAISE EXCEPTION "
-        "'cannot downgrade: documents have multiple source occurrences'; "
-        "END IF; END $$"
+        "ALTER TABLE lab_observations DROP CONSTRAINT IF EXISTS "
+        "fk_lab_observations_supersedes_same_document"
+    )
+    op.execute(
+        "ALTER TABLE lab_observations DROP CONSTRAINT IF EXISTS "
+        "uq_lab_observations_id_document"
+    )
+    op.execute(
+        "ALTER TABLE lab_observations DROP CONSTRAINT IF EXISTS "
+        "fk_lab_observations_supersedes_observation"
+    )
+    op.create_foreign_key(
+        "fk_lab_observations_supersedes_observation",
+        "lab_observations",
+        "lab_observations",
+        ["supersedes_observation_id"],
+        ["id"],
     )
     op.add_column(
         "documents", sa.Column("source_record_id", sa.Uuid(), nullable=True)
@@ -318,4 +360,19 @@ def downgrade() -> None:
     op.execute(
         "CREATE VIEW verified_lab_history AS "
         "SELECT * FROM lab_observations WHERE status = 'verified'"
+    )
+
+
+def _assert_downgrade_safe() -> None:
+    op.execute(
+        "DO $$ BEGIN "
+        f"IF EXISTS (SELECT 1 FROM profiles WHERE id <> '{_DEFAULT_PROFILE_ID}') "
+        "THEN RAISE EXCEPTION "
+        "'cannot downgrade: non-default profiles would lose ownership'; "
+        "END IF; "
+        "IF EXISTS (SELECT document_id FROM document_source_records "
+        "GROUP BY document_id HAVING count(*) > 1) "
+        "THEN RAISE EXCEPTION "
+        "'cannot downgrade: documents have multiple source occurrences'; "
+        "END IF; END $$"
     )

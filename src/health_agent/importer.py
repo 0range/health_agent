@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from health_agent.labs import (
     LabCandidate,
+    looks_like_lab_document,
     normalize_lab_result,
     parse_decimal_token,
     parse_lab_candidates,
@@ -145,17 +146,21 @@ def import_document(
 
         extracted_pdf = extract_pdf(source_path)
         candidates = parse_lab_candidates(extracted_pdf.pages)
+        lab_like = looks_like_lab_document(extracted_pdf.pages)
         processing_status, safe_error_code = _processing_state(
             extracted_pdf.extraction_method,
             any(page.extraction_method == "ocr_required" for page in extracted_pdf.pages),
             bool(candidates),
+            lab_like,
         )
         document = Document(
             profile_id=profile_id,
             sha256=stored_file.sha256,
             vault_path=str(stored_file.path),
             media_type="application/pdf",
-            document_type="laboratory_report",
+            document_type=(
+                "laboratory_report" if candidates or lab_like else "unknown_document"
+            ),
             collected_date=collected_date,
             issued_date=issued_date,
             processing_status=processing_status,
@@ -229,6 +234,7 @@ def approve_observation(
     observation.status = ReviewStatus.VERIFIED
     review_item.decision = "approved"
     review_item.resolved_at = utc_now()
+    _refresh_document_processing_status(session, observation.document_id)
     session.flush()
 
 
@@ -245,6 +251,7 @@ def reject_observation(
     observation.status = ReviewStatus.REJECTED
     review_item.decision = "rejected"
     review_item.resolved_at = utc_now()
+    _refresh_document_processing_status(session, observation.document_id)
     session.flush()
 
 
@@ -298,6 +305,7 @@ def correct_observation(
     }
     review_item.resolved_at = utc_now()
     session.add(corrected)
+    _refresh_document_processing_status(session, original.document_id)
     session.flush()
     return corrected
 
@@ -411,7 +419,10 @@ def _merge_medical_dates(
 
 
 def _processing_state(
-    extraction_method: str, has_ocr_page: bool, has_candidates: bool
+    extraction_method: str,
+    has_ocr_page: bool,
+    has_candidates: bool,
+    lab_like: bool,
 ) -> tuple[ProcessingStatus, str | None]:
     if extraction_method == "ocr_required":
         return "ocr_required", "ocr_required"
@@ -419,4 +430,25 @@ def _processing_state(
         return "needs_attention", "partial_ocr_required"
     if has_candidates:
         return "needs_review", None
+    if lab_like:
+        return "needs_attention", "no_lab_candidates"
     return "processed", None
+
+
+def _refresh_document_processing_status(
+    session: Session, document_id: UUID
+) -> None:
+    document = session.get_one(Document, document_id)
+    if document.safe_error_code is not None:
+        return
+    pending_observation_id = session.scalar(
+        select(LabObservation.id)
+        .where(
+            LabObservation.document_id == document_id,
+            LabObservation.status == ReviewStatus.NEEDS_REVIEW,
+        )
+        .limit(1)
+    )
+    document.processing_status = (
+        "needs_review" if pending_observation_id is not None else "processed"
+    )

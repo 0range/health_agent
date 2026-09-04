@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
-from sqlalchemy import text
+from alembic.config import Config
+from sqlalchemy import Engine, text
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import insert
 
+from alembic import command
 from health_agent.config import Settings
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
@@ -191,6 +195,116 @@ def test_verified_observation_requires_normalized_value_and_unit(
     with pytest.raises(IntegrityError):
         session.flush()
     session.rollback()
+
+
+def test_correction_lineage_must_stay_in_the_same_document(
+    session: Session,
+) -> None:
+    original_document = make_document(session)
+    make_page(session, original_document)
+    other_document = make_document(session, identity="2")
+    make_page(session, other_document)
+    original = LabObservation(
+        document=original_document,
+        page_number=1,
+        canonical_name="ferritin",
+        source_name="Ferritin",
+        source_value="42",
+        parsed_value=42,
+        source_unit="ng/mL",
+        evidence_excerpt="Ferritin 42 ng/mL",
+        confidence=0.7,
+        status=ReviewStatus.NEEDS_REVIEW,
+    )
+    session.add(original)
+    session.flush()
+    session.add(
+        LabObservation(
+            document=other_document,
+            page_number=1,
+            supersedes_observation_id=original.id,
+            canonical_name="ferritin",
+            source_name="Ferritin",
+            source_value="43",
+            parsed_value=43,
+            source_unit="ng/mL",
+            evidence_excerpt="Ferritin 43 ng/mL",
+            confidence=0.7,
+            status=ReviewStatus.NEEDS_REVIEW,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
+def test_downgrade_refuses_to_erase_non_default_profile(
+    clean_database: Engine,
+) -> None:
+    second_profile_id = uuid4()
+    with clean_database.begin() as connection:
+        connection.execute(
+            text("INSERT INTO profiles (id, name) VALUES (:id, 'Second person')"),
+            {"id": second_profile_id},
+        )
+
+    connection = clean_database.connect()
+    transaction = connection.begin()
+    config = Config("alembic.ini")
+    config.attributes["connection"] = connection
+    try:
+        with pytest.raises(DBAPIError, match="non-default profiles would lose ownership"):
+            command.downgrade(config, "0003_review_corrections")
+    finally:
+        transaction.rollback()
+        connection.close()
+
+    with clean_database.begin() as cleanup_connection:
+        revision = cleanup_connection.scalar(text("SELECT version_num FROM alembic_version"))
+        cleanup_connection.execute(
+            text("DELETE FROM profiles WHERE id = :id"), {"id": second_profile_id}
+        )
+
+    assert revision == "0004_chart_integrity"
+
+
+def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
+    session: Session, clean_database: Engine
+) -> None:
+    document = make_document(session)
+    second_source = SourceRecord(
+        profile_id=DEFAULT_PROFILE_ID,
+        provider="google_drive",
+        external_id="drive-file-id",
+        revision="sha256:1",
+    )
+    session.add(second_source)
+    session.flush()
+    session.add(
+        DocumentSourceRecord(
+            document_id=document.id,
+            source_record_id=second_source.id,
+            profile_id=DEFAULT_PROFILE_ID,
+        )
+    )
+    session.commit()
+
+    connection = clean_database.connect()
+    transaction = connection.begin()
+    config = Config("alembic.ini")
+    config.attributes["connection"] = connection
+    try:
+        with pytest.raises(DBAPIError, match="multiple source occurrences"):
+            command.downgrade(config, "0003_review_corrections")
+    finally:
+        transaction.rollback()
+        connection.close()
+
+    with clean_database.connect() as check_connection:
+        revision = check_connection.scalar(text("SELECT version_num FROM alembic_version"))
+
+    assert revision == "0004_chart_integrity"
 
 
 def test_observation_page_must_exist_in_its_document(session: Session) -> None:
