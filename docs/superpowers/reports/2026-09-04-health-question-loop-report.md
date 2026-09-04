@@ -146,3 +146,20 @@ with offline dependency resolution and an already-cached PostgreSQL Docker image
 the fixture uses local Docker/TCP. Official documentation retrieval was read-only.
 Live BotFather/account/model validation and synthetic clinical/adversarial
 evaluation remain separate owner-operated steps.
+
+## Final approval gate rerun — September 5, 2026
+
+After `283618f` closed the final PDF-receipt and concurrent-spool-sweep findings,
+and independent review commit `cdec3da` recorded **SPEC PASS / QUALITY APPROVED /
+OVERALL READY**, the complete local gates were rerun from the clean branch:
+
+| Gate | Result |
+| --- | --- |
+| `uv run pytest -q` | PASS — 430 tests; 5 known PyMuPDF/SWIG deprecation warnings |
+| `uv run ruff check .` | PASS |
+| `uv run mypy .` | PASS — 104 source files, including tests |
+| `uv run pytest tests/test_schema.py -q` | PASS — 15 tests, including disposable-PostgreSQL Alembic metadata checks |
+| `git diff --check` | PASS |
+
+These final gates used only synthetic fixtures and mocked external transports.
+They do not change the live-only limitations above.
