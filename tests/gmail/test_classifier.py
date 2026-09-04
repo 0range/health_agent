@@ -44,6 +44,13 @@ def test_generic_supported_attachment_stays_internal_ambiguity() -> None:
     assert result.decision == "ambiguous"
 
 
+def test_unnamed_supported_attachment_stays_candidate() -> None:
+    part = GmailPart("1", "application/pdf", "", "a1", 5)
+    result = classify_attachment(message("Your files"), part, ())
+    assert result.decision == "ambiguous"
+    assert result.effective_mime_type == "application/pdf"
+
+
 def test_inline_image_and_unsupported_file_are_ignored() -> None:
     logo = GmailPart("1", "image/png", "logo.png", None, 5, disposition="inline")
     archive = GmailPart("2", "application/zip", "labs.zip", "a2", 5)
@@ -71,3 +78,33 @@ def test_body_only_appointment_is_classified_without_persisting_body() -> None:
         "m1", "t1", "10", 1000, "Reminder", "clinic@example.com", payload
     )
     assert classify_message(item).decision == "appointment"
+
+
+def test_body_only_medical_result_is_conservatively_classified() -> None:
+    body = "Лабораторные анализы готовы".encode()
+    payload = GmailPart(
+        "",
+        "text/plain",
+        "",
+        None,
+        len(body),
+        base64.urlsafe_b64encode(body).decode().rstrip("="),
+    )
+    item = GmailMessage(
+        "m1", "t1", "10", 1000, "Results", "clinic@example.com", payload
+    )
+    assert classify_message(item).decision == "body_medical"
+
+
+def test_arbitrary_body_is_not_claimed_as_medically_classified() -> None:
+    body = b"Quarterly planning notes and team lunch"
+    payload = GmailPart(
+        "",
+        "text/plain",
+        "",
+        None,
+        len(body),
+        base64.urlsafe_b64encode(body).decode().rstrip("="),
+    )
+    item = GmailMessage("m1", "t1", "10", 1000, "Notes", "sender@example.com", payload)
+    assert classify_message(item).decision == "ignored"

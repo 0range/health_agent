@@ -6,8 +6,9 @@ The connector is mocked-ready, read-only, multi-profile, and multi-account. A
 first scan examines the configured lookback (seven days by default), excluding
 Spam and Trash; later scans resume from Gmail `historyId` and process relevant
 label transitions. Medical PDFs enter the same PostgreSQL/import/review pipeline
-as local files. Appointment-only messages and files needing OCR or operator
-attention remain visible in private source status without prompting in Telegram.
+as local files. Recognized body-only medical mail enters a content-free common
+source inbox, while appointments and files needing OCR remain visible through
+safe internal attention status without prompting in Telegram.
 
 Live activation still requires a Google Desktop OAuth client and one browser
 authorization per account. That authorization is durable only when the actual
@@ -22,9 +23,15 @@ expire after seven days.
 - The first query is `newer_than:7d -in:spam -in:trash`, configurable from
   1–365 days. Incremental history includes added/deleted messages and label
   changes; current `SPAM`/`TRASH` labels are rejected, while restored mail is
-  reconsidered.
-- Message subject, filename, and a bounded in-memory body prefix identify likely
-  appointments. Body text is never persisted or logged.
+  reconsidered. Full scans and history-404 recovery also refetch all previously
+  known medical/attention message IDs before committing the new cursor, so a
+  missed deletion or Spam/Trash transition is reconciled.
+- Message subject, filename, and a bounded in-memory body prefix identify
+  appointments and conservative medical signals. For a recognized body-only
+  message, PostgreSQL receives only an idempotent profile-scoped `SourceRecord`
+  containing Gmail IDs/type/source link; body text and sender are never persisted
+  or logged. The item remains in `gmail attention` for later agent handling. This
+  is routing, not full medical interpretation of arbitrary email prose.
 - PDF/JPEG/PNG/TIFF/HEIC/HEIF/WebP candidates are incrementally decoded from the
   complete base64url value returned by Gmail. This is not end-to-end network
   streaming: Gmail's client library materializes the encoded API response.
@@ -35,8 +42,14 @@ expire after seven days.
   enter `import_document` with `source_provider="gmail"`, stable Gmail
   occurrence identity, source link, profile ownership, content hash, and the
   normal lab review queue. Nonmedical PDFs are discarded after classification.
-  Images are safely staged as `image_ocr_required` until the shared image OCR
-  path exists; they are never reported as medically imported.
+  Images are safely staged with outcome `ocr_required` and reason
+  `image_ocr_required` until the shared image OCR path exists; they are never
+  reported as medically imported. Both run and lifetime status expose the OCR
+  count and `gmail attention` exposes only safe IDs plus the reason.
+- Supported MIME attachments without filenames are accepted when Gmail supplies
+  attachment identity or an attachment disposition. They receive a deterministic
+  hash-derived local filename before validation/import; no Gmail identifier is
+  used as a filesystem path.
 - Sync is serialized by a cross-process profile/account lock. Item state is
   fsynced before its cursor. Delivery is intentionally **at least once** across a
   process crash; the common content-addressed importer and stable occurrence
@@ -72,7 +85,8 @@ roots are also Settings/env-overridable; no production path is hardcoded.
 Refresh tokens can also stop working after revocation, a Gmail-password change,
 long inactivity, account token limits, or admin policy. A refresh failure is
 persisted as `oauth_required`; `gmail status` then says `reauth_required` even if
-the stale token file still exists.
+the stale token file still exists. Every sync invocation records a fresh preflight
+attempt timestamp; failures preserve the last successful-sync timestamp.
 
 ## Commands
 

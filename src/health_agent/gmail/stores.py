@@ -258,7 +258,7 @@ class LocalGmailStateStore:
     def fail_sync(self, profile_id: str, account_id: str, safe_error_code: str) -> None:
         value = self._read(profile_id, account_id)
         run = value.setdefault("run", {})
-        run["last_attempt_at"] = run.get("last_attempt_at") or _now()
+        run["last_attempt_at"] = _now()
         run["last_error_code"] = safe_error_code
         self._write(profile_id, account_id, value)
 
@@ -290,6 +290,16 @@ class LocalGmailStateStore:
         value = self._read(message.profile_id, message.account_id)
         value.setdefault("messages", {})[message.message_id] = asdict(message)
         self._write(message.profile_id, message.account_id, value)
+
+    def known_message_ids(self, profile_id: str, account_id: str) -> tuple[str, ...]:
+        messages = self._read(profile_id, account_id).get("messages", {})
+        return tuple(
+            sorted(
+                str(message_id)
+                for message_id, item in messages.items()
+                if item.get("classification") not in {"ignored", "excluded"}
+            )
+        )
 
     def get_attachment(
         self,
@@ -335,7 +345,7 @@ class LocalGmailStateStore:
     def counts(self, profile_id: str, account_id: str) -> dict[str, int]:
         value = self._read(profile_id, account_id)
         messages = sum(
-            item.get("status") != "removed"
+            item.get("status") not in {"removed", "excluded"}
             for item in value.get("messages", {}).values()
         )
         attention_messages = sum(
@@ -351,11 +361,33 @@ class LocalGmailStateStore:
         for item in value.get("attachments", {}).values():
             outcome = item.get("outcome") or item.get("status")
             counts[outcome] = counts.get(outcome, 0) + 1
+            processing_status = item.get("processing_status")
+            legacy_image_ocr = outcome == "needs_attention" and str(
+                item.get("mime_type", "")
+            ).startswith("image/")
+            if outcome != "ocr_required" and (
+                processing_status in {"ocr_required", "image_ocr_required"}
+                or legacy_image_ocr
+            ):
+                counts["ocr_required"] = counts.get("ocr_required", 0) + 1
             if item.get("status") == "attention":
                 counts["attention_attachments"] += 1
             if item.get("storage_reference") is not None:
                 counts["staged"] += 1
         return counts
+
+    def attention_messages(
+        self, profile_id: str, account_id: str
+    ) -> tuple[SeenMessage, ...]:
+        value = self._read(profile_id, account_id)
+        items: list[SeenMessage] = []
+        for raw in value.get("messages", {}).values():
+            if raw.get("status") != "attention":
+                continue
+            self._require_boundary(raw, profile_id, account_id)
+            raw["label_ids"] = tuple(raw.get("label_ids", ()))
+            items.append(SeenMessage(**raw))
+        return tuple(items)
 
     def attention_items(
         self, profile_id: str, account_id: str

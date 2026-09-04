@@ -102,7 +102,7 @@ def test_image_is_profile_scoped_and_truthfully_queued_for_ocr(
 
     receipt = importer.import_attachment(provenance("suspected_medical"), prepared)
 
-    assert receipt.outcome == "needs_attention"
+    assert receipt.outcome == "ocr_required"
     assert receipt.processing_status == "image_ocr_required"
     assert receipt.storage_reference is not None
     assert str(DEFAULT_PROFILE_ID) in Path(receipt.storage_reference).parts

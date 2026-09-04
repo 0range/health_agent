@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from health_agent.gmail.api import HistoryCursorExpired
+from health_agent.gmail.api import GmailItemUnavailable, HistoryCursorExpired
 from health_agent.gmail.config import GmailAccount
 from health_agent.gmail.preparation import SafeAttachmentPreparer
 from health_agent.gmail.service import GmailPaginationLoop, GmailService
@@ -18,7 +18,9 @@ from health_agent.gmail.types import (
     HistoryPage,
     ImportReceipt,
     MailboxProfile,
+    MessageInboxReceipt,
     MessagePage,
+    MessageProvenance,
     PreparedAttachment,
     SeenAttachment,
 )
@@ -42,6 +44,7 @@ class FakeGateway:
         self.queries: list[str] = []
         self.attachment_calls = 0
         self.history_error: Exception | None = None
+        self.deleted_messages: set[str] = set()
 
     def get_profile(self) -> MailboxProfile:
         value = self.profiles[min(self.profile_calls, len(self.profiles) - 1)]
@@ -53,6 +56,8 @@ class FakeGateway:
         return self.message_pages.get(page_token, MessagePage((), None))
 
     def get_message(self, message_id: str) -> GmailMessage:
+        if message_id in self.deleted_messages:
+            raise GmailItemUnavailable("gone")
         return self.messages[message_id]
 
     def list_history(self, history_id: str, page_token: str | None) -> HistoryPage:
@@ -66,9 +71,15 @@ class FakeGateway:
 
 
 class FakeImporter:
-    def __init__(self, outcome: str = "medically_imported", fail: bool = False) -> None:
+    def __init__(
+        self,
+        outcome: str = "medically_imported",
+        fail: bool = False,
+        processing_status: str | None = None,
+    ) -> None:
         self.outcome = outcome
         self.fail = fail
+        self.processing_status = processing_status
         self.calls: list[tuple[AttachmentProvenance, PreparedAttachment]] = []
 
     def import_attachment(
@@ -83,7 +94,17 @@ class FakeImporter:
             "document-id" if self.outcome != "non_medical" else None,
             self.outcome,
             document_id="document-id" if self.outcome != "non_medical" else None,
+            processing_status=self.processing_status,
         )
+
+
+class FakeMessageInbox:
+    def __init__(self) -> None:
+        self.calls: list[MessageProvenance] = []
+
+    def queue_message(self, provenance: MessageProvenance) -> MessageInboxReceipt:
+        self.calls.append(provenance)
+        return MessageInboxReceipt("source-record-id", "queued")
 
 
 class SequenceImporter(FakeImporter):
@@ -143,6 +164,7 @@ def build_service(
     gateway: FakeGateway,
     state: LocalGmailStateStore | None = None,
     importer: FakeImporter | None = None,
+    message_inbox: FakeMessageInbox | None = None,
     *,
     max_bytes: int = 1024,
 ) -> tuple[GmailService, LocalGmailStateStore, FakeImporter]:
@@ -154,6 +176,7 @@ def build_service(
         gateway,
         state,
         importer,
+        message_inbox or FakeMessageInbox(),
         SafeAttachmentPreparer(tmp_path / "tmp", max_bytes),
     )
     return service, state, importer
@@ -195,7 +218,55 @@ def test_body_only_appointment_is_retained_as_attention(tmp_path: Path) -> None:
     report = service.sync()
 
     assert report.needs_attention == 1
-    assert state.get_message(PROFILE, "personal", "m1").classification == "appointment"  # type: ignore[union-attr]
+    seen = state.get_message(PROFILE, "personal", "m1")
+    assert seen is not None
+    assert seen.classification == "appointment"
+    assert seen.source_record_id == "source-record-id"
+    assert state.attention_messages(PROFILE, "personal") == (seen,)
+
+
+def test_body_only_medical_result_is_conservatively_queued(tmp_path: Path) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    body = GmailPart(
+        "", "text/plain", "", None, 20, encoded("Ваши анализы готовы".encode())
+    )
+    gateway.messages["m1"] = GmailMessage(
+        "m1", "t1", "90", 1000, "Results", "clinic@example.com", body, ("INBOX",)
+    )
+    inbox = FakeMessageInbox()
+    service, state, _ = build_service(tmp_path, gateway, message_inbox=inbox)
+
+    report = service.sync()
+
+    assert report.needs_attention == 1
+    assert len(inbox.calls) == 1
+    assert inbox.calls[0].classification == "body_medical"
+    assert state.attention_messages(PROFILE, "personal")[0].message_id == "m1"
+
+
+def test_arbitrary_body_is_not_persisted_or_queued(tmp_path: Path) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    body = b"Quarterly planning notes"
+    gateway.messages["m1"] = GmailMessage(
+        "m1",
+        "t1",
+        "90",
+        1000,
+        "Notes",
+        "sender@example.com",
+        GmailPart("", "text/plain", "", None, len(body), encoded(body)),
+        ("INBOX",),
+    )
+    inbox = FakeMessageInbox()
+    service, state, _ = build_service(tmp_path, gateway, message_inbox=inbox)
+
+    report = service.sync()
+
+    assert report.needs_attention == 0
+    assert inbox.calls == []
+    assert state.get_message(PROFILE, "personal", "m1") is None
 
 
 def test_incremental_spam_is_excluded_and_restored_message_is_processed(
@@ -264,6 +335,57 @@ def test_expired_history_recovers_with_lookback(tmp_path: Path) -> None:
     report = service.sync()
 
     assert report.mode == "recovery"
+    assert state.get_cursor(PROFILE, "personal") == "201"
+
+
+def test_full_scan_reconciles_known_message_moved_to_trash(tmp_path: Path) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    gateway.messages["m1"] = attachment_message()
+    gateway.attachments[("m1", "a1")] = EncodedBody(encoded(PDF), len(PDF))
+    service, state, importer = build_service(tmp_path, gateway)
+    service.sync()
+    gateway.message_pages[None] = MessagePage((), None)
+    gateway.messages["m1"] = attachment_message(labels=("TRASH",))
+
+    report = service.sync(full=True)
+
+    assert report.removed == 2
+    assert state.get_message(PROFILE, "personal", "m1").status == "excluded"  # type: ignore[union-attr]
+    assert (
+        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").status
+        == "removed"
+    )  # type: ignore[union-attr]
+    assert state.get_cursor(PROFILE, "personal") == "100"
+
+    gateway.messages["m1"] = attachment_message(labels=("INBOX",))
+    service.sync(full=True)
+    assert len(importer.calls) == 2
+    assert state.get_message(PROFILE, "personal", "m1").status == "processed"  # type: ignore[union-attr]
+
+
+def test_expired_history_recovery_reconciles_known_deleted_message(
+    tmp_path: Path,
+) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    gateway.messages["m1"] = attachment_message()
+    gateway.attachments[("m1", "a1")] = EncodedBody(encoded(PDF), len(PDF))
+    gateway.profiles = [
+        MailboxProfile("alice@example.com", "100"),
+        MailboxProfile("alice@example.com", "201"),
+    ]
+    service, state, _ = build_service(tmp_path, gateway)
+    service.sync()
+    gateway.history_error = HistoryCursorExpired("expired")
+    gateway.message_pages[None] = MessagePage((), None)
+    gateway.deleted_messages.add("m1")
+
+    report = service.sync()
+
+    assert report.mode == "recovery"
+    assert report.removed == 2
+    assert state.get_message(PROFILE, "personal", "m1").status == "removed"  # type: ignore[union-attr]
     assert state.get_cursor(PROFILE, "personal") == "201"
 
 
@@ -345,6 +467,89 @@ def test_changed_attachment_id_retains_both_immutable_revisions(tmp_path: Path) 
 
     assert state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1") is not None
     assert state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a2") is not None
+
+
+def test_unnamed_supported_attachment_gets_safe_deterministic_name(
+    tmp_path: Path,
+) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    message = attachment_message(subject="Files")
+    unnamed = GmailPart("1", "application/pdf", "", "a1", len(PDF))
+    gateway.messages["m1"] = GmailMessage(
+        message.message_id,
+        message.thread_id,
+        message.history_id,
+        message.internal_date_ms,
+        message.subject,
+        message.sender,
+        GmailPart("", "multipart/mixed", "", None, None, children=(unnamed,)),
+        message.label_ids,
+    )
+    gateway.attachments[("m1", "a1")] = EncodedBody(encoded(PDF), len(PDF))
+    service, state, importer = build_service(tmp_path, gateway)
+
+    service.sync()
+
+    filename = importer.calls[0][0].filename
+    assert filename.startswith("gmail-") and filename.endswith(".pdf")
+    assert "/" not in filename
+    assert (
+        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").filename
+        == filename
+    )  # type: ignore[union-attr]
+
+
+def test_unnamed_inline_attachment_body_is_accepted_when_marked_attachment(
+    tmp_path: Path,
+) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    part = GmailPart(
+        "1",
+        "application/pdf",
+        "",
+        None,
+        len(PDF),
+        encoded(PDF),
+        "attachment",
+    )
+    gateway.messages["m1"] = GmailMessage(
+        "m1",
+        "t1",
+        "90",
+        1000,
+        "Files",
+        "sender@example.com",
+        GmailPart("", "multipart/mixed", "", None, None, children=(part,)),
+        ("INBOX",),
+    )
+    service, state, importer = build_service(tmp_path, gateway)
+
+    service.sync()
+
+    assert importer.calls[0][0].filename.endswith(".pdf")
+    assert (
+        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:inline") is not None
+    )
+
+
+def test_ocr_processing_reason_is_persisted_and_counted(tmp_path: Path) -> None:
+    gateway = FakeGateway()
+    gateway.message_pages[None] = MessagePage(("m1",), None)
+    gateway.messages["m1"] = attachment_message()
+    gateway.attachments[("m1", "a1")] = EncodedBody(encoded(PDF), len(PDF))
+    importer = FakeImporter("ocr_required", processing_status="image_ocr_required")
+    service, state, _ = build_service(tmp_path, gateway, importer=importer)
+
+    report = service.sync()
+
+    assert report.ocr_required == 1
+    assert report.needs_attention == 1
+    item = state.attention_items(PROFILE, "personal")[0]
+    assert item.outcome == "ocr_required"
+    assert item.processing_status == "image_ocr_required"
+    assert state.counts(PROFILE, "personal")["ocr_required"] == 1
 
 
 def test_delivery_is_at_least_once_and_idempotent_importer_absorbs_retry(

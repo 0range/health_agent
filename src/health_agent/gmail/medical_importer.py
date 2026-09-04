@@ -57,7 +57,7 @@ class MedicalAttachmentImporter:
                 stored.sha256,
                 stored.size_bytes,
                 str(stored.path),
-                "needs_attention",
+                "ocr_required",
                 processing_status="image_ocr_required",
             )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from health_agent.gmail.api import GmailItemUnavailable, HistoryCursorExpired
@@ -25,6 +26,9 @@ from health_agent.gmail.types import (
     GmailRunState,
     GmailStateStore,
     GmailSyncReport,
+    MessageInbox,
+    MessageInboxReceipt,
+    MessageProvenance,
     SeenAttachment,
     SeenMessage,
     walk_parts,
@@ -91,6 +95,7 @@ class GmailService:
         gateway: GmailGateway,
         state: GmailStateStore,
         importer: AttachmentImporter,
+        message_inbox: MessageInbox,
         preparer: SafeAttachmentPreparer,
     ) -> None:
         self.profile_id = normalize_profile_id(profile_id)
@@ -98,6 +103,7 @@ class GmailService:
         self.gateway = gateway
         self.state = state
         self.importer = importer
+        self.message_inbox = message_inbox
         self.preparer = preparer
 
     def verify_account(self) -> tuple[str, str]:
@@ -162,6 +168,11 @@ class GmailService:
         page_token: str | None = None
         seen_page_tokens: set[str] = set()
         processed: set[str] = set()
+        for message_id in self.state.known_message_ids(
+            self.profile_id, self.account.account_id
+        ):
+            self._process_message(message_id, account_email, stats)
+            processed.add(message_id)
         while True:
             page = self.gateway.list_messages(query, page_token)
             for message_id in page.message_ids:
@@ -219,10 +230,21 @@ class GmailService:
             return
         stats.messages_seen += 1
         if _EXCLUDED_LABELS.intersection(message.label_ids):
+            previous = self.state.get_message(
+                self.profile_id, self.account.account_id, message.message_id
+            )
             stats.removed += self.state.mark_message_removed(
                 self.profile_id, self.account.account_id, message.message_id
             )
-            self._record_message(message, "excluded", "excluded")
+            prior_classification = (
+                None
+                if previous is None
+                or previous.classification in {"ignored", "excluded"}
+                else previous.classification
+            )
+            self._record_message(
+                message, prior_classification or "excluded", "excluded"
+            )
             return
 
         decisions: list[str] = []
@@ -238,18 +260,45 @@ class GmailService:
             )
 
         body_classification = classify_message(message)
-        if body_classification.decision == "appointment":
-            decisions.append("appointment")
+        receipt: MessageInboxReceipt | None = None
+        has_candidate_attachment = any(
+            decision in {"suspected_medical", "ambiguous"} for decision in decisions
+        )
+        if body_classification.decision == "appointment" or (
+            body_classification.decision == "body_medical"
+            and not has_candidate_attachment
+        ):
+            decisions.append(body_classification.decision)
+            receipt = self.message_inbox.queue_message(
+                _message_provenance(
+                    self.profile_id,
+                    self.account.account_id,
+                    account_email,
+                    message,
+                    body_classification,
+                )
+            )
             stats.needs_attention += 1
         overall = _overall_classification(decisions)
+        if overall == "ignored":
+            return
         self._record_message(
             message,
             overall,
-            "attention" if overall == "appointment" else "processed",
+            (
+                "attention"
+                if overall in {"appointment", "body_medical"}
+                else "processed"
+            ),
+            receipt,
         )
 
     def _record_message(
-        self, message: GmailMessage, classification: str, status: str
+        self,
+        message: GmailMessage,
+        classification: str,
+        status: str,
+        receipt: MessageInboxReceipt | None = None,
     ) -> None:
         self.state.record_message(
             SeenMessage(
@@ -261,6 +310,8 @@ class GmailService:
                 classification=classification,
                 status=status,
                 label_ids=message.label_ids,
+                outcome=None if receipt is None else receipt.outcome,
+                source_record_id=None if receipt is None else receipt.source_record_id,
             )
         )
 
@@ -340,7 +391,7 @@ class GmailService:
                 part_id=part.part_id,
                 revision=provenance.revision,
                 attachment_id=part.attachment_id,
-                filename=part.filename,
+                filename=provenance.filename,
                 mime_type=detected_mime,
                 classification=classification.decision,
                 declared_size_bytes=part.body_size,
@@ -359,6 +410,7 @@ class GmailService:
                 source_uri=provenance.source_uri,
                 outcome=receipt.outcome,
                 document_id=receipt.document_id,
+                processing_status=receipt.processing_status,
             )
         )
         if receipt.storage_reference is not None:
@@ -411,7 +463,7 @@ class GmailService:
                 part_id=provenance.part_id,
                 revision=provenance.revision,
                 attachment_id=part.attachment_id,
-                filename="" if status == "ignored" else part.filename,
+                filename="" if status == "ignored" else provenance.filename,
                 mime_type=provenance.source_mime_type,
                 classification=provenance.classification,
                 declared_size_bytes=part.body_size,
@@ -425,6 +477,7 @@ class GmailService:
                 account_email=provenance.account_email,
                 source_uri=provenance.source_uri,
                 outcome=outcome,
+                processing_status=outcome if status == "attention" else None,
             )
         )
 
@@ -447,11 +500,50 @@ def _provenance(
         internal_date_ms=message.internal_date_ms,
         part_id=part.part_id,
         attachment_id=part.attachment_id,
-        filename=part.filename,
+        filename=part.filename or _synthetic_filename(message, part, classification),
         source_mime_type=classification.effective_mime_type or part.mime_type,
         classification=classification.decision,
         source_uri=f"https://mail.google.com/mail/#all/{message.message_id}",
     )
+
+
+def _message_provenance(
+    profile_id: str,
+    account_id: str,
+    account_email: str,
+    message: GmailMessage,
+    classification: Classification,
+) -> MessageProvenance:
+    return MessageProvenance(
+        profile_id=profile_id,
+        account_id=account_id,
+        account_email=account_email,
+        message_id=message.message_id,
+        thread_id=message.thread_id,
+        message_history_id=message.history_id,
+        internal_date_ms=message.internal_date_ms,
+        classification=classification.decision,
+        source_uri=f"https://mail.google.com/mail/#all/{message.message_id}",
+    )
+
+
+def _synthetic_filename(
+    message: GmailMessage, part: GmailPart, classification: Classification
+) -> str:
+    identity = "\0".join(
+        (message.message_id, part.part_id, part.attachment_id or "inline")
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    suffix = {
+        "application/pdf": ".pdf",
+        "image/heic": ".heic",
+        "image/heif": ".heif",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/tiff": ".tiff",
+        "image/webp": ".webp",
+    }.get(classification.effective_mime_type or "", ".bin")
+    return f"gmail-{digest}{suffix}"
 
 
 def _next_page_token(value: str | None, seen: set[str]) -> str | None:
@@ -464,12 +556,19 @@ def _next_page_token(value: str | None, seen: set[str]) -> str | None:
 
 
 def _is_attachment(part: GmailPart) -> bool:
-    return bool(part.filename or part.attachment_id)
+    disposition = (part.disposition or "").casefold()
+    return bool(
+        part.filename
+        or part.attachment_id
+        or (part.body_data is not None and disposition.startswith("attachment"))
+    )
 
 
 def _overall_classification(decisions: list[str]) -> str:
     if "appointment" in decisions:
         return "appointment"
+    if "body_medical" in decisions:
+        return "body_medical"
     if "suspected_medical" in decisions:
         return "suspected_medical"
     if "ambiguous" in decisions:

@@ -164,3 +164,22 @@ def test_sync_lock_serializes_across_processes(tmp_path: Path) -> None:
     assert state.get_message(PROFILE_A, "one", "message-1") is not None
     assert state.get_message(PROFILE_A, "one", "message-2") is not None
     assert state.get_cursor(PROFILE_A, "one") == "20"
+
+
+def test_each_preflight_failure_refreshes_attempt_but_preserves_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timestamps = iter(("attempt-1", "success", "attempt-2", "failure-2"))
+    monkeypatch.setattr("health_agent.gmail.stores._now", lambda: next(timestamps))
+    state = LocalGmailStateStore(tmp_path)
+
+    state.begin_sync(PROFILE_A, "one", "full")
+    state.finish_sync(PROFILE_A, "one")
+    state.begin_sync(PROFILE_A, "one", "preflight")
+    state.fail_sync(PROFILE_A, "one", "oauth_required")
+
+    run = state.get_run_state(PROFILE_A, "one")
+    assert run.last_attempt_at == "failure-2"
+    assert run.last_success_at == "success"
+    assert run.last_mode == "preflight"
+    assert run.last_error_code == "oauth_required"

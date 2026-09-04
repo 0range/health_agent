@@ -68,3 +68,22 @@ review blockers are closed in the follow-up implementation:
 Final verification: 57 Gmail tests and 119 repository tests passed, including a
 fresh disposable PostgreSQL upgrade/downgrade/upgrade regression. Ruff and mypy
 also passed. No live mailbox, credential, or user medical file was used.
+
+## Review fix round 2 (`1e00dc2`)
+
+The remaining re-review findings are closed:
+
+- body-only appointments and conservatively recognized medical mail now create
+  idempotent, content-free provenance in the common PostgreSQL source inbox and
+  safe message entries visible through `gmail attention`;
+- full and expired-history recovery refetch all previously known relevant Gmail
+  IDs before cursor commit, reconciling deletion, Spam/Trash, and restoration;
+- attachment processing reason is durable, image input reports
+  `ocr_required`/`image_ocr_required` consistently in sync, status, and attention;
+- every OAuth/sync preflight refreshes attempt time while retaining last success;
+- supported unnamed MIME attachments receive deterministic hash-derived safe
+  filenames and follow the same size, magic, classification, and import path.
+
+Final verification: 73 Gmail tests and 135 repository tests passed, including
+the disposable PostgreSQL migration round trip. Ruff and mypy also passed. No
+live mailbox, credential, or user medical file was used.

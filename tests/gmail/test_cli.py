@@ -80,6 +80,7 @@ def test_sync_all_accounts_reports_oauth_needed_without_trace_or_secret(
     status = runner.invoke(app, ["gmail", "status", PROFILE])
     assert status.stdout.count("last_error=oauth_required") == 2
     assert status.stdout.count("oauth=reauth_required") == 2
+    assert "last_attempt=never" not in status.stdout
 
 
 def test_reauthorization_mismatch_preserves_previous_verified_token(
@@ -219,3 +220,167 @@ def test_production_sync_cli_reaches_common_database_and_review_pipeline(
         assert len(database.scalars(select(ReviewItem)).all()) == 1
         source = database.scalars(select(SourceRecord)).one()
         assert source.provider == "gmail"
+
+
+@pytest.mark.parametrize(
+    ("body_text", "reason", "provider"),
+    (
+        (
+            "Приём у терапевта завтра",
+            "appointment",
+            "gmail_body_appointment",
+        ),
+        (
+            "Ваши лабораторные анализы готовы",
+            "body_medical",
+            "gmail_body_medical",
+        ),
+    ),
+)
+def test_body_only_item_enters_common_inbox_and_safe_attention_cli(
+    clean_database: Engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body_text: str,
+    reason: str,
+    provider: str,
+) -> None:
+    root = tmp_path / "gmail"
+    profile_id = str(DEFAULT_PROFILE_ID)
+    monkeypatch.setenv("GMAIL_ROOT", str(root))
+    monkeypatch.setenv(
+        "DATABASE_URL", clean_database.url.render_as_string(hide_password=False)
+    )
+    runner = CliRunner()
+    runner.invoke(app, ["gmail", "configure", profile_id, "personal"])
+    credentials = Credentials(token="token", scopes=[GMAIL_READONLY_SCOPE])
+    LocalGmailTokenStore(root).publish_verified(
+        profile_id, "personal", "alice@example.com", credentials.to_json()
+    )
+    body = body_text.encode()
+
+    class Mailbox:
+        def get_profile(self) -> MailboxProfile:
+            return MailboxProfile("alice@example.com", "100")
+
+        def list_messages(self, query: str, page_token: str | None) -> MessagePage:
+            return MessagePage(("m-body",), None)
+
+        def get_message(self, message_id: str) -> GmailMessage:
+            return GmailMessage(
+                "m-body",
+                "t1",
+                "90",
+                1000,
+                "Reminder",
+                "clinic@example.com",
+                GmailPart(
+                    "",
+                    "text/plain",
+                    "",
+                    None,
+                    len(body),
+                    base64.urlsafe_b64encode(body).decode().rstrip("="),
+                ),
+                ("INBOX",),
+            )
+
+        def list_history(self, history_id: str, page_token: str | None) -> object:
+            raise AssertionError("initial scan must not request history")
+
+    monkeypatch.setattr(
+        "health_agent.cli.GmailOAuth.stage",
+        lambda self, profile_id, account_id, **kwargs: credentials,
+    )
+    monkeypatch.setattr(
+        "health_agent.cli.GoogleGmailGateway.from_credentials",
+        lambda credentials, **kwargs: Mailbox(),
+    )
+
+    sync = runner.invoke(app, ["gmail", "sync", profile_id, "--account-id", "personal"])
+    attention = runner.invoke(app, ["gmail", "attention", profile_id])
+
+    assert sync.exit_code == 0, (sync.stdout, sync.exception)
+    assert "attention=1" in sync.stdout
+    assert f"kind=message reason={reason}" in attention.stdout
+    assert body_text not in attention.stdout
+    assert "clinic@example.com" not in attention.stdout
+    with session_scope(clean_database) as database:
+        source = database.scalars(select(SourceRecord)).one()
+        assert source.provider == provider
+
+
+def test_image_ocr_reason_is_truthful_in_sync_status_and_attention_cli(
+    clean_database: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "gmail"
+    profile_id = str(DEFAULT_PROFILE_ID)
+    monkeypatch.setenv("GMAIL_ROOT", str(root))
+    monkeypatch.setenv(
+        "DATABASE_URL", clean_database.url.render_as_string(hide_password=False)
+    )
+    monkeypatch.setenv("VAULT_ROOT", str(tmp_path / "vault"))
+    monkeypatch.setenv("TEMPORARY_ROOT", str(tmp_path / "tmp"))
+    runner = CliRunner()
+    runner.invoke(app, ["gmail", "configure", profile_id, "personal"])
+    credentials = Credentials(token="token", scopes=[GMAIL_READONLY_SCOPE])
+    LocalGmailTokenStore(root).publish_verified(
+        profile_id, "personal", "alice@example.com", credentials.to_json()
+    )
+    content = b"\x89PNG\r\n\x1a\nsynthetic"
+
+    class Mailbox:
+        def get_profile(self) -> MailboxProfile:
+            return MailboxProfile("alice@example.com", "100")
+
+        def list_messages(self, query: str, page_token: str | None) -> MessagePage:
+            return MessagePage(("m-image",), None)
+
+        def get_message(self, message_id: str) -> GmailMessage:
+            return GmailMessage(
+                "m-image",
+                "t1",
+                "90",
+                1000,
+                "Laboratory scan",
+                "clinic@example.com",
+                GmailPart(
+                    "",
+                    "multipart/mixed",
+                    "",
+                    None,
+                    None,
+                    children=(
+                        GmailPart("1", "image/png", "scan.png", "a1", len(content)),
+                    ),
+                ),
+                ("INBOX",),
+            )
+
+        def attachment_data(self, message_id: str, attachment_id: str) -> EncodedBody:
+            return EncodedBody(
+                base64.urlsafe_b64encode(content).decode().rstrip("="), len(content)
+            )
+
+        def list_history(self, history_id: str, page_token: str | None) -> object:
+            raise AssertionError("initial scan must not request history")
+
+    monkeypatch.setattr(
+        "health_agent.cli.GmailOAuth.stage",
+        lambda self, profile_id, account_id, **kwargs: credentials,
+    )
+    monkeypatch.setattr(
+        "health_agent.cli.GoogleGmailGateway.from_credentials",
+        lambda credentials, **kwargs: Mailbox(),
+    )
+
+    sync = runner.invoke(app, ["gmail", "sync", profile_id, "--account-id", "personal"])
+    status = runner.invoke(app, ["gmail", "status", profile_id])
+    attention = runner.invoke(app, ["gmail", "attention", profile_id])
+
+    assert sync.exit_code == 0, (sync.stdout, sync.exception)
+    assert "ocr_required=1" in sync.stdout
+    assert "attention=1" in sync.stdout
+    assert "medically_imported=0" in sync.stdout
+    assert "ocr_required=1" in status.stdout
+    assert "reason=image_ocr_required" in attention.stdout

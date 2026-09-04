@@ -82,6 +82,25 @@ class AttachmentProvenance:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageProvenance:
+    profile_id: str
+    account_id: str
+    account_email: str
+    message_id: str
+    thread_id: str
+    message_history_id: str
+    internal_date_ms: int
+    classification: str
+    source_uri: str
+
+
+@dataclass(frozen=True, slots=True)
+class MessageInboxReceipt:
+    source_record_id: str
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
 class ImportReceipt:
     sha256: str
     size_bytes: int
@@ -122,6 +141,7 @@ class SeenAttachment:
     source_uri: str = ""
     outcome: str | None = None
     document_id: str | None = None
+    processing_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +154,8 @@ class SeenMessage:
     classification: str
     status: str
     label_ids: tuple[str, ...] = ()
+    outcome: str | None = None
+    source_record_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +200,10 @@ class AttachmentImporter(Protocol):
     ) -> ImportReceipt: ...
 
 
+class MessageInbox(Protocol):
+    def queue_message(self, provenance: MessageProvenance) -> MessageInboxReceipt: ...
+
+
 class GmailStateStore(Protocol):
     def sync_lock(
         self, profile_id: str, account_id: str
@@ -203,6 +229,10 @@ class GmailStateStore(Protocol):
 
     def record_message(self, message: SeenMessage) -> None: ...
 
+    def known_message_ids(
+        self, profile_id: str, account_id: str
+    ) -> tuple[str, ...]: ...
+
     def get_attachment(
         self,
         profile_id: str,
@@ -217,6 +247,10 @@ class GmailStateStore(Protocol):
     def mark_message_removed(
         self, profile_id: str, account_id: str, message_id: str
     ) -> int: ...
+
+    def attention_messages(
+        self, profile_id: str, account_id: str
+    ) -> tuple[SeenMessage, ...]: ...
 
     def counts(self, profile_id: str, account_id: str) -> dict[str, int]: ...
 

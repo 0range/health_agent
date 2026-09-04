@@ -63,12 +63,24 @@ class Classification:
 
 
 def classify_message(message: GmailMessage) -> Classification:
-    """Recognize a body-only medical appointment without retaining body text."""
+    """Recognize conservative medical signals without retaining body text."""
     subject = _normalize(message.subject)
     if _APPOINTMENT.search(subject):
         return Classification("appointment", None, "appointment_subject")
+    if any(pattern.search(subject) for pattern in _MEDICAL_PATTERNS):
+        return Classification("body_medical", None, "medical_subject")
+    body = _bounded_body_text(message.payload)
+    if _APPOINTMENT.search(body):
+        return Classification("appointment", None, "appointment_body")
+    if any(pattern.search(body) for pattern in _MEDICAL_PATTERNS):
+        return Classification("body_medical", None, "medical_body")
+    return Classification("ignored", None, "no_message_signal")
+
+
+def _bounded_body_text(payload: GmailPart) -> str:
     remaining = _MAX_BODY_CLASSIFICATION_BYTES
-    for part in _walk_text_parts(message.payload):
+    texts: list[str] = []
+    for part in _walk_text_parts(payload):
         if part.body_data is None or remaining <= 0:
             continue
         try:
@@ -84,9 +96,8 @@ def classify_message(message: GmailMessage) -> Classification:
         text = raw.decode("utf-8", errors="ignore")
         if part.mime_type == "text/html":
             text = unescape(_HTML_TAG.sub(" ", text))
-        if _APPOINTMENT.search(_normalize(text)):
-            return Classification("appointment", None, "appointment_body")
-    return Classification("ignored", None, "no_message_signal")
+        texts.append(_normalize(text))
+    return " ".join(texts)
 
 
 def classify_attachment(
@@ -98,8 +109,6 @@ def classify_attachment(
     mime_type = _effective_mime_type(part)
     if mime_type is None:
         return Classification("ignored", None, "unsupported_mime")
-    if not part.filename.strip():
-        return Classification("ignored", mime_type, "missing_filename")
     if (
         mime_type.startswith("image/")
         and part.disposition is not None

@@ -11,6 +11,7 @@ from health_agent.db import build_engine, session_scope
 from health_agent.gmail.api import GoogleGmailGateway
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.medical_importer import MedicalAttachmentImporter
+from health_agent.gmail.message_inbox import MedicalMessageInbox
 from health_agent.gmail.oauth import GmailOAuth, OAuthRequired
 from health_agent.gmail.preparation import SafeAttachmentPreparer
 from health_agent.gmail.service import GmailAccountMismatch, GmailService
@@ -266,6 +267,7 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
                     f"messages={counts.get('messages', 0)}",
                     f"staged={counts.get('staged', 0)}",
                     f"medically_imported={counts.get('medically_imported', 0)}",
+                    f"ocr_required={counts.get('ocr_required', 0)}",
                     f"attention={counts.get('attention_messages', 0) + counts.get('attention_attachments', 0)}",
                     f"last_attempt={run.last_attempt_at or 'never'}",
                     f"last_success={run.last_success_at or 'never'}",
@@ -282,11 +284,26 @@ def gmail_attention(profile_id: UUID, account_id: str | None = None) -> None:
     profiles, _, state = _gmail_stores(settings)
     profile = profiles.load(str(profile_id))
     for account in _selected_gmail_accounts(profile, account_id):
-        for item in state.attention_items(profile.profile_id, account.account_id):
+        for message_item in state.attention_messages(
+            profile.profile_id, account.account_id
+        ):
             typer.echo(
                 f"status=attention profile={profile.profile_id} account={account.account_id} "
-                f"message={item.message_id} part={item.part_id} "
-                f"reason={item.outcome or 'needs_attention'}"
+                f"message={message_item.message_id} kind=message "
+                f"reason={message_item.classification}"
+            )
+        for attachment_item in state.attention_items(
+            profile.profile_id, account.account_id
+        ):
+            reason = attachment_item.processing_status or attachment_item.outcome
+            if reason == "needs_attention" and attachment_item.mime_type.startswith(
+                "image/"
+            ):
+                reason = "image_ocr_required"
+            typer.echo(
+                f"status=attention profile={profile.profile_id} account={account.account_id} "
+                f"message={attachment_item.message_id} part={attachment_item.part_id} "
+                f"kind=attachment reason={reason or 'needs_attention'}"
             )
 
 
@@ -303,6 +320,8 @@ def sync_gmail(
     engine = build_engine(settings)
     for account in accounts:
         service_invoked = False
+        with state.sync_lock(profile.profile_id, account.account_id):
+            state.begin_sync(profile.profile_id, account.account_id, "preflight")
         try:
             if not tokens.exists(profile.profile_id, account.account_id):
                 raise OAuthRequired("Gmail authorization is missing")
@@ -331,6 +350,11 @@ def sync_gmail(
                     account.account_id,
                     engine,
                     FileVault(settings.vault_root),
+                ),
+                MedicalMessageInbox(
+                    profile.profile_id,
+                    account.account_id,
+                    engine,
                 ),
                 SafeAttachmentPreparer(
                     settings.temporary_root,
