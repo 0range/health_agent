@@ -121,3 +121,18 @@ Action: remove the bare alternative and require chest context for pressure/tight
 use a narrowly tested symptom construction), then add negative coverage for direct
 blood-pressure, atmospheric-pressure, and other non-emergency uses while retaining the
 intended chest-pressure positives.
+
+## Final safety-fix re-review (1d4d7bf)
+
+### Verdicts
+
+- **SPEC: PASS**
+- **QUALITY: PASS**
+
+The remaining finding is fixed. The urgent expression now requires chest context for
+`pressure` and `tightness`; it retains `chest pressure` and `chest tightness` detection.
+The added parameterized regression coverage verifies that direct blood-pressure,
+atmospheric-pressure, and tire-pressure statements do not receive emergency guidance.
+Together with the existing English/Russian red-flag positives and informational-question
+negatives, this resolves the prior bare-pressure false positive without weakening the
+intended chest-symptom guard. Static re-review only; tests were not rerun.
