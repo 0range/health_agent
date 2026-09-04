@@ -22,8 +22,8 @@ LaunchAgent installation. Live installation remains an explicit operator step.
 
 ## Verification
 
-- Automation-focused tests: 32 passed.
-- Full project tests: 584 passed.
+- Automation-focused tests: 33 passed.
+- Full project tests: 600 passed.
 - Ruff, mypy, lockfile, diff whitespace, CLI-help, plist parsing, and disposable
   Alembic upgrade/check gates passed.
 

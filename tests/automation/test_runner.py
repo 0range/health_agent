@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -330,3 +331,47 @@ def test_token_present_gmail_connector_error_remains_a_failure(tmp_path: Path) -
         AutomationResult("gmail", profile_id, "main", "full", "failed"),
     )
     assert executor.calls == [(job.key, "full")]
+
+
+def test_malformed_gmail_token_fails_through_real_subprocess_without_leak(
+    monkeypatch, tmp_path: Path
+) -> None:
+    profile_id = "00000000-0000-0000-0000-000000000001"
+    gmail_root = tmp_path / "gmail"
+    LocalGmailProfileStore(gmail_root).save(
+        GmailProfile.empty(profile_id).upsert_account(GmailAccount.create("main"))
+    )
+    token = gmail_root / profile_id / "accounts" / "main" / "token.json"
+    token.parent.mkdir(parents=True)
+    token.write_text("RAW_SECRET_MALFORMED_TOKEN", encoding="utf-8")
+    token.chmod(0o600)
+    env_file = tmp_path / "private.env"
+    env_file.write_text(
+        "\n".join(
+            (
+                f"GMAIL_ROOT={gmail_root}",
+                f"TEMPORARY_ROOT={tmp_path / 'temporary'}",
+                "DATABASE_URL=postgresql+psycopg://unused:unused@127.0.0.1:1/unused",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+    monkeypatch.delenv("GMAIL_ROOT", raising=False)
+    monkeypatch.delenv("TEMPORARY_ROOT", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    job = next(iter(GmailJobAdapter().discover(Settings(gmail_root=gmail_root))))
+    console_script = Path(sys.executable).parent / "health-agent"
+    assert console_script.is_file()
+    result = SubprocessJobExecutor(
+        console_script,
+        env_file,
+        Path(__file__).resolve().parents[2],
+    ).execute(job, "full")
+
+    assert result == AutomationResult(
+        "gmail", profile_id, "main", "full", "failed", "connector_failed"
+    )
+    assert "RAW_SECRET" not in result.safe_line()
