@@ -210,3 +210,152 @@ worktree. Official behavior was checked against WHOOP's OAuth, pagination,
 rate-limit, API, and current OpenAPI pages. Per instruction, this review did not
 modify implementation and did not rerun tests; gate results above are reported
 evidence, not independently reproduced by this review.
+
+---
+
+## Fix-round re-review at `9ef3bbd`
+
+### Verdict
+
+- **SPEC: CHANGES**
+- **QUALITY: CHANGES**
+- **OVERALL: CHANGES**
+
+The fix closes the original data-model, downgrade, ordering, metrics, retry, view,
+and documentation findings. It also correctly serializes refresh-token rotation
+when considered on its own. One new cross-resource deadlock remains a live blocker,
+and the token/DB fail-safe path still has smaller consistency and status gaps.
+
+### Remaining findings
+
+#### 1. High — `auth` and `sync` can deadlock because they acquire file and database locks in opposite orders
+
+Authorization first enters `TokenStore.replacement()`, which holds the account's
+exclusive `flock`, and only then opens/updates the database connection
+(`src/health_agent/whoop/auth_service.py:106-119`). Synchronization does the
+opposite: it first locks the connection row with `SELECT ... FOR UPDATE`
+(`src/health_agent/whoop/sync.py:71`) and then calls the client, whose first token
+load takes the same account's shared file lock
+(`src/health_agent/whoop/client.py:112-118`,
+`src/health_agent/whoop/tokens.py:224-226`).
+
+For example, a scheduled sync can lock the connection, a concurrent reauthorization
+can acquire the file lock, sync can then wait for that file lock, and authorization
+can wait in `register_authorized_connection().flush()` for sync's connection-row
+lock. PostgreSQL cannot detect the other half of this cycle because it is an OS
+file lock. This is especially plausible when reauthorizing a connection whose
+`auth_status`/`last_error_code` must be updated. Establish one global lock order for
+both flows (or one per-account orchestration lock acquired before either resource)
+and test concurrent `auth` versus `sync`, not only refresh versus refresh. Until
+then unattended sync and human reauthorization must not be allowed to overlap.
+
+#### 2. Medium — token publication is exception-compensated, but not crash-safe and has a post-replace exception hole
+
+The ordinary database-commit failure tested in
+`tests/whoop/test_auth_service.py:122-166` is now compensated correctly. However,
+the candidate file is published before the surrounding session context commits
+(`src/health_agent/whoop/auth_service.py:106-119`), so process termination after
+the file replace and before DB commit leaves a new token with an old or absent
+database registration. There is no durable pending marker or startup reconciliation
+for that state.
+
+There is also an ordinary exception window inside `_save_unlocked()`: `os.replace`
+installs the candidate at `src/health_agent/whoop/tokens.py:118`, followed by chmod
+and directory fsync through line 125, but `TokenReplacement.publish()` sets
+`_published=True` only after `_save_unlocked()` returns (`:247-252`). If a
+post-replace chmod/open/fsync fails, the replacement context calls `rollback()`,
+sees `_published=False`, and leaves the candidate exposed. Mark the uncertain
+publication before fallible post-replace work and make recovery idempotent; add a
+durable reconciliation strategy if the plan continues to call token+DB publication
+atomic. The plan and implementation report currently overstate this guarantee.
+
+#### 3. Medium — unreadable tokens and invalid upstream identities bypass the safe sync audit
+
+`WhoopClient._load_token()` lets an initial `TokenStoreError` escape directly
+(`src/health_agent/whoop/client.py:112-118`), while `sync_whoop()` catches
+`WhoopAuthorizationRequired`, API, normalization, repository, and SQLAlchemy errors
+but not `TokenStoreError` (`src/health_agent/whoop/sync.py:146-158`). A corrupt or
+permission-broken token therefore crashes the CLI and rolls back the attempt/run
+instead of recording `reauth_required`, even though `whoop status` can already
+classify the same file as `unreadable`.
+
+Malformed identity values have a similar hole: profile `user_id` and recovery
+`cycle_id` are accepted as string IDs and then converted with bare `int(...)`
+inside the normalizers (`src/health_agent/whoop/normalize.py:61-69,115-123`). The
+resulting plain `ValueError` is outside the sync error set. Convert token-store
+failures to authorization-required, make every upstream conversion raise
+`WhoopNormalizationError`, and prove both cases persist a safe failed run without a
+traceback or secret-bearing exception chain.
+
+#### 4. Medium — refresh tokens and `status` do not enforce the required scope set
+
+Initial authorization and publication now reject missing scopes, closing the main
+part of original finding 2. On refresh, however, `WhoopOAuth.refresh()` parses the
+returned scopes and `TokenStore.rotate()` saves the token without checking
+`WHOOP_SCOPES` (`src/health_agent/whoop/oauth.py:88-97,99-133`;
+`src/health_agent/whoop/tokens.py:161-177`). `whoop status` reports any readable,
+unexpired token as `ready` based only on expiry
+(`src/health_agent/whoop/status.py:44-50`). If WHOOP returns a reduced or malformed
+scope set, the database still says connected with the original scopes, status says
+ready, and a later resource request becomes generic `sync_failed` rather than
+`reauth_required`. WHOOP's current refresh example returns `offline` plus the other
+requested scopes, but this is still a live boundary that should fail closed and be
+tested.
+
+#### 5. Low — the amended migration revision has no upgrade path from the reviewed pre-fix `0005`
+
+The final schema is correct when upgraded freshly from the stated base
+`305b837`/`0004_chart_integrity`, and populated downgrade now fails closed. The fix
+edits the already-created `0005_whoop` revision in place, though. Any local or CI
+database that applied the pre-fix `0005` remains stamped at head, so `alembic
+upgrade head` will not add `resource_kind`, `external_id`, `source_values`, the
+stronger foreign keys, numeric RHR, or updated views. This is acceptable only under
+the explicitly verified assumption that the pre-fix revision was never retained
+outside disposable review databases. Otherwise add a successor migration (or
+clearly require rebuilding a confirmed data-free pre-release database).
+
+### Original finding disposition
+
+- **1, downgrade data loss:** resolved for a fresh final schema; every WHOOP table
+  is checked and populated downgrade refuses without deleting data.
+- **2, reauthorization:** profile/account validation, remote identity, initial
+  scopes, flush/commit exception compensation, and old-token restoration are
+  implemented. Crash/post-replace consistency remains in finding 2 above.
+- **3, refresh concurrency:** shared/exclusive cross-process file locking plus
+  compare/reload prevents duplicate rotation. Its interaction with DB locking
+  introduces finding 1 above.
+- **4, revision ordering:** resolved with deterministic
+  `(updated_at presence, updated_at, payload hash)` ranking; losing raw revisions
+  stay archived and do not replace current rows.
+- **5, fractional RHR:** resolved with `Numeric`/`Decimal` and a fractional test.
+- **6, provenance and remote identity:** resolved at both database lineage and
+  collection-payload identity boundaries. Body has no official payload `user_id`
+  and is safely fetched only after verifying the profile under the same token.
+- **7, source-only fields:** resolved by retaining the complete source object in
+  every normalized row as well as the immutable raw revision.
+- **8, reset/401:** resolved as specified: reset seconds are no longer capped, and
+  one 401 refresh/retry is independent of the transient-attempt budget. A real
+  daily-limit response can still intentionally keep a transaction/connection lock
+  open for many hours; operational acceptance should decide whether deferred exit
+  is preferable before scheduling.
+- **9, status/views:** resolved for the requested fields and profile boundaries:
+  token file state, recovery count, score/calibration states, and dated body/weight
+  snapshot are exposed. Required-scope validation remains finding 4 above.
+- **10, docs:** plan checkboxes, CLI option, second-profile command, mocked/live
+  boundary, and view list are reconciled. Only the atomic-publication wording noted
+  above remains too strong.
+
+### Live-only concerns still requiring acceptance
+
+- The exact loopback redirect remains unverified in a real WHOOP Developer app and
+  browser, as disclosed.
+- No real account has exercised full historical volume, live pagination, rotated
+  scopes/tokens, daily rate limits, or source payload variation.
+- Literal `X-RateLimit-Reset` handling can sleep for the daily window while holding
+  the per-account database row lock and an open transaction. This preserves
+  correctness but may be operationally undesirable on the scheduled Mac service.
+- No scheduler or live Metabase dashboard/card is part of this connector branch;
+  the views are profile-aware query inputs only.
+
+Per instruction, this fix-round review inspected the diff and existing reported
+gates but did not modify implementation or rerun tests.
