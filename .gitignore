@@ -17,6 +17,7 @@ data/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.playwright-cli/
 .DS_Store
 __pycache__/
 *.py[cod]
