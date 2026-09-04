@@ -1,0 +1,30 @@
+[project]
+name = "health-agent"
+version = "0.1.0"
+description = "Personal Health Agent"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic",
+    "httpx",
+    "psycopg[binary]",
+    "pydantic-settings",
+    "pymupdf",
+    "sqlalchemy",
+    "tenacity",
+    "typer",
+]
+
+[project.scripts]
+health-agent = "health_agent.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy",
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"

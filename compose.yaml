@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:55432:5432"]
+    environment:
+      POSTGRES_DB: health_agent
+      POSTGRES_USER: health_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U health_agent -d health_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - health_postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  metabase:
+    image: metabase/metabase:v0.63.13
+    restart: unless-stopped
+    ports: ["127.0.0.1:53000:3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres
+      MB_DB_PORT: 5432
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: health_agent
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
+    volumes: ["health_metabase:/metabase-data"]
+
+volumes:
+  health_postgres: {}
+  health_metabase: {}
