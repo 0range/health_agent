@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from health_agent.config import Settings
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailStateStore
 from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
@@ -18,6 +19,7 @@ from health_agent.panel.service import (
     TelegramStatusReader,
     _local_telegram_status,
     _whoop_card,
+    build_panel_service,
 )
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import (
@@ -155,6 +157,22 @@ def test_gmail_reader_uses_only_the_selected_profile_directory(tmp_path) -> None
     assert second_card.last_success_at is None
 
 
+def test_production_panel_construction_does_not_create_telegram_state(tmp_path) -> None:
+    state_path = tmp_path / "telegram" / "state.sqlite3"
+    settings = Settings(
+        database_url="postgresql+psycopg://health-agent@127.0.0.1/test",
+        gmail_root=tmp_path / "gmail",
+        whoop_token_root=tmp_path / "whoop",
+        telegram_token_file=tmp_path / "telegram" / "bot-token",
+        telegram_state_path=state_path,
+    )
+
+    build_panel_service(settings)
+
+    assert state_path.exists() is False
+    assert state_path.parent.exists() is False
+
+
 def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> None:
     first = uuid4()
     second = uuid4()
@@ -166,9 +184,11 @@ def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> N
     state.bind_identity(credential.bot_id, TelegramIdentity(111, first, 111))
     state.record_poll(credential.bot_id, "access_token=leaked MRI-result.pdf")
 
-    first_status = _local_telegram_status(tokens, state, first)
-    second_status = _local_telegram_status(tokens, state, second)
-    reader = TelegramStatusReader(lambda profile_id: _local_telegram_status(tokens, state, profile_id))
+    first_status = _local_telegram_status(tokens, lambda: state, first)
+    second_status = _local_telegram_status(tokens, lambda: state, second)
+    reader = TelegramStatusReader(
+        lambda profile_id: _local_telegram_status(tokens, lambda: state, profile_id)
+    )
     first_card = reader.cards(first)[0]
     second_card = reader.cards(second)[0]
 

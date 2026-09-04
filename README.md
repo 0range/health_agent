@@ -108,7 +108,7 @@ Telegram-коннектор принимает только личные чат�
 uv run health-agent telegram configure-token
 uv run health-agent telegram discover-id
 uv run health-agent telegram bind PROFILE_UUID TELEGRAM_USER_ID
-uv run health-agent telegram status PROFILE_UUID
+uv run health-agent telegram status --profile-id PROFILE_UUID
 ```
 
 Границы и подключение описаны в

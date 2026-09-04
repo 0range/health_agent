@@ -33,7 +33,9 @@ uv run health-agent panel serve
 действия. Открытие страницы читает только локальный статус выбранного профиля;
 она не обращается к WHOOP, Gmail или Telegram API. OAuth-клиент и токены не
 читаются при построении сервера — соответствующее локальное состояние проверяется
-только при запросе страницы.
+только при запросе страницы. SQLite-state Telegram также не создаётся при
+построении сервера: его адаптер создаётся только после выбора существующего
+профиля и проверки локальных учётных данных при запросе статуса.
 
 Google Drive в этой ветке **недоступен**. Карточка Drive намеренно сообщает
 `not_available`; нет подключения папок, OAuth, обхода файлов или синхронизации
@@ -49,7 +51,7 @@ uv run health-agent whoop sync --profile-id PROFILE_UUID --account main
 uv run health-agent gmail configure PROFILE_UUID personal
 uv run health-agent gmail auth PROFILE_UUID personal
 uv run health-agent gmail sync PROFILE_UUID --account-id personal
-uv run health-agent telegram status PROFILE_UUID
+uv run health-agent telegram status --profile-id PROFILE_UUID
 ```
 
 У каждого человека собственный `PROFILE_UUID`; подставляйте UUID профиля,

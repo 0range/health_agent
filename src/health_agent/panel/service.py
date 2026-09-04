@@ -269,7 +269,7 @@ def build_panel_service(settings: Settings) -> PanelService:
     gmail_state = LocalGmailStateStore(settings.gmail_root)
     gmail_oauth = GmailOAuth(settings.google_oauth_client_secrets, gmail_tokens)
     telegram_tokens = PrivateBotTokenStore(settings.effective_telegram_token_file)
-    telegram_state = SqliteTelegramState(settings.telegram_state_file)
+    telegram_state = lambda: SqliteTelegramState(settings.telegram_state_file)
     telegram_status = lambda profile_id: _local_telegram_status(
         telegram_tokens, telegram_state, profile_id
     )
@@ -400,7 +400,7 @@ def _drive_card() -> ConnectorCard:
 
 def _local_telegram_status(
     tokens: PrivateBotTokenStore,
-    state: SqliteTelegramState,
+    state_factory: Callable[[], SqliteTelegramState],
     profile_id: UUID,
 ) -> TelegramStatus:
     """Read only persisted Telegram state; never verify it through the network."""
@@ -436,6 +436,7 @@ def _local_telegram_status(
             last_poll_at=None,
             last_error_code="credential_invalid",
         )
+    state = state_factory()
     return TelegramStatus(
         token_configured=True,
         credential_verified=True,

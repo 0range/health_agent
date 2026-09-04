@@ -286,9 +286,9 @@ def _render_card(card: ConnectorCard, profile_id: UUID) -> str:
 
 def _cli_guidance(connector: str, profile_id: UUID) -> str:
     commands = {
-        "whoop": f"выполните в Terminal: health-agent whoop auth {profile_id}",
+        "whoop": f"выполните в Terminal: health-agent whoop auth --profile-id {profile_id}",
         "gmail": f"выполните в Terminal: health-agent gmail configure {profile_id} <account-id>",
-        "telegram": f"выполните в Terminal: health-agent telegram --help для профиля {profile_id}",
+        "telegram": f"выполните в Terminal: health-agent telegram status --profile-id {profile_id}",
         "drive": "интеграция Google Drive пока недоступна.",
     }
     return commands.get(connector, "проверьте локальную конфигурацию через CLI.")

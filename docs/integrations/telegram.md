@@ -56,7 +56,7 @@
 
    ```bash
    uv run health-agent telegram bind 00000000-0000-0000-0000-000000000001 123456789
-   uv run health-agent telegram status 00000000-0000-0000-0000-000000000001
+   uv run health-agent telegram status --profile-id 00000000-0000-0000-0000-000000000001
    ```
 
 `discover-id` читает pending updates, но не подтверждает их новым offset. Он не

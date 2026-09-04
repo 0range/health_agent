@@ -10,3 +10,8 @@ CLI guidance only. It does not run OAuth or sync, and Google Drive is unavailabl
 on this branch. Full pytest, Ruff, Alembic, and diff gates passed; full mypy is
 blocked by eight unrelated Gmail test/stub failures, while focused panel mypy
 passes.
+
+Fix round 1 defers Telegram SQLite-state construction until an existing profile
+requests its local status and corrects WHOOP/Telegram handoffs to Typer option
+syntax. Its focused panel gates pass; the detailed output is appended to the
+task report.

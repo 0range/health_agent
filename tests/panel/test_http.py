@@ -30,12 +30,13 @@ class FakeProfiles:
 
 
 class FakeReader:
-    connector = "whoop"
+    def __init__(self, connector: str = "whoop") -> None:
+        self.connector = connector
 
     def cards(self, _profile_id: UUID) -> tuple[ConnectorCard, ...]:
         return (
             ConnectorCard(
-                "whoop",
+                self.connector,
                 "ready",
                 "Local status is safe.",
                 datetime(2026, 9, 4, tzinfo=UTC),
@@ -44,9 +45,13 @@ class FakeReader:
         )
 
 
-def application(*, name: str = "Анна") -> tuple[PanelApplication, ProfileSummary]:
+def application(
+    *, name: str = "Анна", connector: str = "whoop"
+) -> tuple[PanelApplication, ProfileSummary]:
     profile = ProfileSummary(uuid4(), name)
-    service = PanelService(FakeProfiles({profile.id: profile}), (FakeReader(),))
+    service = PanelService(
+        FakeProfiles({profile.id: profile}), (FakeReader(connector),)
+    )
     return PanelApplication(service, csrf_token="test-csrf-token"), profile
 
 
@@ -65,10 +70,18 @@ def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     assert "WHOOP" in page
     assert "Готово" in page
     assert "Последняя успешная операция" in page
-    assert "health-agent whoop auth" in page
+    assert f"health-agent whoop auth --profile-id {profile.id}" in page
     assert "<button" not in page
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"]
+
+
+def test_profile_page_renders_telegram_status_with_the_profile_option() -> None:
+    app, profile = application(connector="telegram")
+
+    response = app.handle("GET", f"/profiles/{profile.id}", {}, b"")
+
+    assert f"health-agent telegram status --profile-id {profile.id}" in text(response)
 
 
 def test_html_escapes_profile_and_connector_values() -> None:
