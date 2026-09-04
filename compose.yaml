@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - health_postgres:/var/lib/postgresql/data
+      - health_postgres:/var/lib/postgresql
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
 
   metabase:
