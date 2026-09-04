@@ -49,7 +49,8 @@ class HealthQuestionResponder(Protocol):
     """Generate text only from an already-bounded health-question context."""
 
     def respond(
-        self, *, profile_id: UUID, question: str, context: HealthQuestionContext
+        self, *, profile_id: UUID, question: str, context: HealthQuestionContext,
+        request_id: str | None = None,
     ) -> str: ...
 
 
@@ -79,7 +80,9 @@ class HealthQuestionApplicationService:
         self._context_builder = context_builder
         self._responder = responder
 
-    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult:
+    def answer(
+        self, profile_id: UUID, question: str, *, request_id: str | None = None
+    ) -> QuestionAnswerResult:
         """Answer safely; emergency wording never reaches retrieval or a vendor."""
 
         if not isinstance(question, str) or not question.strip():
@@ -95,7 +98,7 @@ class HealthQuestionApplicationService:
             return _unavailable(QuestionAnswerErrorCode.CONTEXT_UNAVAILABLE)
 
         if not context.evidence or any(
-            limitation.prevents_requested_inference
+            limitation.prevents_entire_answer
             for limitation in context.limitations
         ):
             return QuestionAnswerResult(
@@ -106,9 +109,16 @@ class HealthQuestionApplicationService:
             )
 
         try:
-            generated = self._responder.respond(
-                profile_id=profile_id, question=question, context=context
-            )
+            # CLI requests may omit the delivery identity entirely.
+            if request_id is None:
+                generated = self._responder.respond(
+                    profile_id=profile_id, question=question, context=context
+                )
+            else:
+                generated = self._responder.respond(
+                    profile_id=profile_id, question=question, context=context,
+                    request_id=request_id,
+                )
         except Exception:  # noqa: BLE001 -- never disclose client/provider failure data
             return _unavailable(
                 QuestionAnswerErrorCode.RESPONDER_UNAVAILABLE,
@@ -140,7 +150,15 @@ class HealthQuestionApplicationService:
 def render_source_footer(context: HealthQuestionContext) -> str:
     """Render local source provenance in the context's deterministic order."""
 
-    lines = ["Sources:"]
+    lines = [
+        "Sources:",
+        (
+            f"Selected window (inclusive, UTC): {context.window_start.isoformat()} to "
+            f"{context.window_end.isoformat()}; up to {context.max_items_per_source} "
+            "items per source."
+        ),
+        "Labs use calendar dates; WHOOP uses observation times or explicit sync-as-of times.",
+    ]
     if context.evidence:
         lines.extend(_render_evidence(item) for item in context.evidence)
     else:
@@ -152,7 +170,7 @@ def render_source_footer(context: HealthQuestionContext) -> str:
 
 
 def _render_evidence(item: EvidenceItem) -> str:
-    when = item.observed_at.date().isoformat()
+    when = item.observed_at.isoformat()
     value = f"{item.value} {item.unit}" if item.unit else item.value
     suffix = " (synced as of)" if item.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF else ""
     return f"- {item.citation_label} {when}: {item.metric} — {value}{suffix}"

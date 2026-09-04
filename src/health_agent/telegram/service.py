@@ -395,7 +395,17 @@ class TelegramUpdateService:
             claim, status, error_code
         ):
             return ProcessResult(claim.update_id, "claim_lost", False)
+        self._cleanup_reply(claim)
         return ProcessResult(claim.update_id, status, True)
+
+    def _cleanup_reply(self, claim: UpdateClaim) -> None:
+        # Optional adapter hook; only a committed terminal audit permits deletion.
+        cleanup = getattr(self.questions, "complete_update", None)
+        if callable(cleanup):
+            try:
+                cleanup(claim.bot_id, claim.update_id)
+            except Exception:  # noqa: BLE001, S110 -- TTL sweep handles orphaned replies
+                pass
 
     def _claim_lost(
         self, claim: UpdateClaim, heartbeat: _ClaimHeartbeat
@@ -417,6 +427,7 @@ class TelegramUpdateService:
                 claim, "needs_attention", "retry_budget_exhausted"
             ):
                 return ProcessResult(claim.update_id, "claim_lost", False)
+            self._cleanup_reply(claim)
             return ProcessResult(claim.update_id, "needs_attention", True)
         scheduled = retry_at or (
             self.clock().astimezone(UTC)

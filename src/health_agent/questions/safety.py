@@ -6,14 +6,25 @@ import re
 
 _INFORMATIONAL_QUESTION = re.compile(
     r"""^\s*(?:
-        what|why|how|when|where|can|could|is|are|do|does|
-        что|почему|как|когда|где|какие
+        what\s+(?:causes|are|is)|why\s+(?:do|does)|
+        (?:is|are)\s+.+?\s+(?:a\s+)?(?:symptom|sign)|
+        что\s+(?:вызывает|такое)|какие\s+(?:причины|симптомы|признаки)
     )\b""",
     re.IGNORECASE | re.VERBOSE,
 )
 
 _DIRECT_SUBJECT = re.compile(
-    r"\b(?:i|i'm|i am|my|у меня|мне|я)\b", re.IGNORECASE
+    r"\b(?:i|i'm|i am|my|he|she|we|they|у меня|мне|я|он|она|ему|ей)\b", re.IGNORECASE
+)
+
+# Direct statements take priority even when a question comes first. Russian
+# commonly leaves out the pronoun in first-person symptom statements.
+_DIRECT_EMERGENCY = re.compile(
+    r"(?:\bcan(?:not|'t|’t) breathe\b|\b(?:kill|harm) myself\b|"
+    r"\bwant to die\b|не могу дышать|не может дышать|задыхаюсь|"
+    r"не хватает воздуха|хочу умереть|покончить с собой|убить себя|"
+    r"навредить себе|перекосило лицо)",
+    re.IGNORECASE,
 )
 
 _URGENT_PATTERNS = tuple(
@@ -42,6 +53,8 @@ URGENT_RESPONSE = (
 def has_urgent_red_flag(question: str) -> bool:
     """Detect direct, high-confidence emergency wording without broad topic alarms."""
 
+    if _DIRECT_EMERGENCY.search(question):
+        return True
     if _INFORMATIONAL_QUESTION.search(question) and not _DIRECT_SUBJECT.search(question):
         return False
     return any(pattern.search(question) is not None for pattern in _URGENT_PATTERNS)

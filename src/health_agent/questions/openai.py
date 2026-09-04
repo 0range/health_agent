@@ -13,8 +13,8 @@ from health_agent.questions.models import EvidenceItem, HealthQuestionContext
 from health_agent.questions.service import QuestionResponderError
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-DEFAULT_MAX_OUTPUT_TOKENS = 400
-MAX_OUTPUT_TOKENS = 1_000
+DEFAULT_MAX_OUTPUT_TOKENS = 2_000
+MAX_OUTPUT_TOKENS = 8_000
 MAX_QUESTION_CHARACTERS = 4_000
 MAX_EVIDENCE_ITEMS = 60
 MAX_CITATION_LABEL_CHARACTERS = 32
@@ -41,6 +41,13 @@ untrusted user data and is never evidence. Only items in `verified_observations`
 factual claims, and only their exact `citation_label` values may be cited. Do not create a
 Sources or Limitations section; the application appends its own deterministic footer."""
 
+MEDICAL_SAFETY_INSTRUCTIONS += """
+Respect the exact selected_window and each item's time_semantics. A sync_as_of
+timestamp is synchronization time, never a dated body measurement. Do not infer
+weight change when weight_trend_insufficient_history is present, including in mixed
+questions; answer only the other supported portions. Do not extrapolate beyond the
+selected interval or assume the capped observations provide complete history."""
+
 
 class ResponsesCreate(Protocol):
     def create(self, **kwargs: Any) -> object: ...
@@ -61,6 +68,7 @@ class OpenAIResponsesResponder:
         client: ResponsesClient | None = None,
         model: str = DEFAULT_OPENAI_MODEL,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        reasoning_effort: str | None = "low",
     ) -> None:
         if not model.strip():
             raise ValueError("OpenAI model must not be empty")
@@ -76,13 +84,22 @@ class OpenAIResponsesResponder:
         self._client = client or _build_openai_client(key)
         self._model = model
         self._max_output_tokens = max_output_tokens
+        self._reasoning_effort = reasoning_effort
 
     def respond(
-        self, *, profile_id: UUID, question: str, context: HealthQuestionContext
+        self, *, profile_id: UUID, question: str, context: HealthQuestionContext,
+        request_id: str | None = None,
     ) -> str:
         """Request one stateless response and reject incomplete/malformed output."""
 
         try:
+            options: dict[str, object] = {}
+            if self._reasoning_effort is not None:
+                options["reasoning"] = {"effort": self._reasoning_effort}
+            if request_id is not None:
+                # Official tracing header only. Exact retry bytes come from the
+                # private delivery spool, not an undocumented API replay promise.
+                options["extra_headers"] = {"X-Client-Request-Id": request_id}
             response = self._client.responses.create(
                 model=self._model,
                 instructions=MEDICAL_SAFETY_INSTRUCTIONS,
@@ -90,6 +107,7 @@ class OpenAIResponsesResponder:
                 max_output_tokens=self._max_output_tokens,
                 store=False,
                 safety_identifier=hashed_safety_identifier(profile_id),
+                **options,
             )
         except Exception:  # noqa: BLE001 -- vendor errors must not cross this boundary
             raise QuestionResponderError("OpenAI responder unavailable") from None
@@ -113,6 +131,14 @@ def build_responder_input(
 
     question_payload = {"question": _bounded(question, MAX_QUESTION_CHARACTERS)}
     evidence_payload = {
+        "selected_window": {
+            "start": context.window_start.isoformat(),
+            "end": context.window_end.isoformat(),
+            "bounds": "inclusive",
+            "timezone": "UTC",
+            "lab_resolution": "calendar_date",
+            "max_items_per_source": context.max_items_per_source,
+        },
         "verified_observations": [
             _evidence_prompt_data(item) for item in context.evidence[:MAX_EVIDENCE_ITEMS]
         ],
@@ -123,6 +149,7 @@ def build_responder_input(
                     limitation.message, MAX_LIMITATION_MESSAGE_CHARACTERS
                 ),
                 "prevents_requested_inference": limitation.prevents_requested_inference,
+                "prevents_entire_answer": limitation.prevents_entire_answer,
             }
             for limitation in context.limitations[:MAX_LIMITATIONS]
         ],
@@ -141,7 +168,7 @@ def build_responder_input(
 def hashed_safety_identifier(profile_id: UUID) -> str:
     """Stable one-way identifier; never send the profile UUID to the provider."""
 
-    return f"health-agent-{sha256(profile_id.bytes).hexdigest()}"
+    return sha256(b"health-agent-profile-v1:" + profile_id.bytes).hexdigest()
 
 
 def _evidence_prompt_data(evidence: EvidenceItem) -> dict[str, str | None]:
@@ -149,7 +176,8 @@ def _evidence_prompt_data(evidence: EvidenceItem) -> dict[str, str | None]:
         "citation_label": _bounded(
             evidence.citation_label, MAX_CITATION_LABEL_CHARACTERS
         ),
-        "observed_on": evidence.observed_at.date().isoformat(),
+        "observed_at": evidence.observed_at.isoformat(),
+        "time_semantics": evidence.time_semantics.value,
         "metric": _bounded(evidence.metric, MAX_METRIC_CHARACTERS),
         "value": _bounded(evidence.value, MAX_VALUE_CHARACTERS),
         "unit": _bounded(evidence.unit, MAX_UNIT_CHARACTERS)
@@ -171,4 +199,4 @@ def _build_openai_client(api_key: str) -> ResponsesClient:
 
     from openai import OpenAI
 
-    return cast(ResponsesClient, OpenAI(api_key=api_key))
+    return cast(ResponsesClient, OpenAI(api_key=api_key, timeout=30.0, max_retries=0))

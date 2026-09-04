@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
@@ -11,19 +12,49 @@ import pytest
 from health_agent.questions.models import (
     EvidenceItem,
     EvidenceSource,
+    EvidenceTimeSemantics,
     HealthQuestionContext,
     QuestionIntent,
 )
 from health_agent.questions.openai import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_OPENAI_MODEL,
     MEDICAL_SAFETY_INSTRUCTIONS,
     OpenAIResponsesResponder,
+    _build_openai_client,
     build_responder_input,
     hashed_safety_identifier,
 )
 from health_agent.questions.service import QuestionResponderError
 
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def test_default_budget_reasoning_and_sdk_latency_are_bounded(monkeypatch) -> None:
+    responses = FakeResponses(SimpleNamespace(status="completed", output_text="Safe. [LAB1]"))
+    responder = OpenAIResponsesResponder("fake-key", client=SimpleNamespace(responses=responses))
+    responder.respond(profile_id=PROFILE_ID, question="test", context=_context())
+    assert responses.calls[0]["max_output_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS == 2_000
+    assert responses.calls[0]["reasoning"] == {"effort": "low"}
+    captured = []
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: captured.append(kwargs))
+    _build_openai_client("fake-key")
+    assert captured == [{"api_key": "fake-key", "timeout": 30.0, "max_retries": 0}]
+
+
+def test_selected_window_and_sync_semantics_are_sent_for_longer_requested_period() -> None:
+    context = _context()
+    context = replace(context, evidence=(replace(
+        context.evidence[0], source=EvidenceSource.WEIGHT,
+        citation_label="[WEIGHT1]", time_semantics=EvidenceTimeSemantics.SYNC_AS_OF,
+    ),))
+    message = build_responder_input("Explain the last five years", context)[0]
+    contents = cast(list[dict[str, str]], message["content"])
+    evidence = json.loads(contents[1]["text"])
+    assert evidence["selected_window"]["start"] == context.window_start.isoformat()
+    assert evidence["selected_window"]["end"] == context.window_end.isoformat()
+    assert evidence["verified_observations"][0]["time_semantics"] == "sync_as_of"
+    assert evidence["verified_observations"][0]["observed_at"] == "2026-09-03T00:00:00+00:00"
 
 
 class FakeResponses:
@@ -57,6 +88,7 @@ def test_responses_adapter_uses_exact_stateless_safe_call_arguments() -> None:
             "instructions": MEDICAL_SAFETY_INSTRUCTIONS,
             "input": build_responder_input("What does this mean?", context),
             "max_output_tokens": 222,
+            "reasoning": {"effort": "low"},
             "store": False,
             "safety_identifier": hashed_safety_identifier(PROFILE_ID),
         }
@@ -113,10 +145,19 @@ def test_input_is_bounded_content_separated_json_data() -> None:
     evidence_data = json.loads(contents[1]["text"])
     assert question_data == {"question": "q" * 4_000}
     assert evidence_data == {
+        "selected_window": {
+            "start": "2026-09-01T00:00:00+00:00",
+            "end": "2026-09-04T00:00:00+00:00",
+            "bounds": "inclusive",
+            "timezone": "UTC",
+            "lab_resolution": "calendar_date",
+            "max_items_per_source": 10,
+        },
         "verified_observations": [
             {
                 "citation_label": "[LAB1]",
-                "observed_on": "2026-09-03",
+                "observed_at": "2026-09-03T00:00:00+00:00",
+                "time_semantics": "observed",
                 "metric": "Ferritin",
                 "value": "42",
                 "unit": "ug/L",
@@ -148,7 +189,8 @@ def test_adversarial_question_cannot_forge_evidence_or_instructions() -> None:
     assert evidence_data["verified_observations"] == [
         {
             "citation_label": "[LAB1]",
-            "observed_on": "2026-09-03",
+            "observed_at": "2026-09-03T00:00:00+00:00",
+            "time_semantics": "observed",
             "metric": "Ferritin",
             "value": "42",
             "unit": "ug/L",

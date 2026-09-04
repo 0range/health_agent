@@ -44,7 +44,10 @@ class FakeApplication:
     def __init__(self) -> None:
         self.calls: list[tuple[UUID, str]] = []
 
-    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult:
+    def answer(
+        self, profile_id: UUID, question: str, *, request_id: str | None = None
+    ) -> QuestionAnswerResult:
+        assert request_id is not None
         self.calls.append((profile_id, question))
         return QuestionAnswerResult("Safe answer [LAB1]", None)
 
@@ -132,7 +135,8 @@ def test_telegram_pdf_inbox_imports_with_profile_provenance_and_is_replay_safe(
     second = inbox.ingest(_attachment(PROFILE_ID), [b"pdf bytes"])
 
     assert first.status == "imported"
-    assert second.status == "duplicate"
+    assert second.status == "imported"
+    assert first.reply_text == second.reply_text
     assert first.sha256 == hashlib.sha256(b"pdf bytes").hexdigest()
     assert first.size_bytes == len(b"pdf bytes")
     assert all(call["profile_id"] == PROFILE_ID for call in calls)
@@ -269,6 +273,7 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
 
     runtime = build_telegram_question_runtime(
         Settings(
+            telegram_root=tmp_path / "telegram",
             telegram_token_file=tmp_path / "token",
             telegram_state_path=tmp_path / "state.sqlite3",
             telegram_staging_path=tmp_path / "staging",

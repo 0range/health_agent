@@ -119,10 +119,13 @@ class Settings(BaseSettings):
     # bounded text-only health-question workflow. Deployments may override it.
     openai_model: str = Field(default="gpt-5-mini", validation_alias="OPENAI_MODEL")
     openai_max_output_tokens: int = Field(
-        default=400,
+        default=2_000,
         ge=64,
-        le=1_000,
+        le=8_000,
         validation_alias="OPENAI_MAX_OUTPUT_TOKENS",
+    )
+    openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
+        default="low", validation_alias="OPENAI_REASONING_EFFORT"
     )
     panel_host: str = Field(default="127.0.0.1", validation_alias="PANEL_HOST")
     panel_port: int = Field(

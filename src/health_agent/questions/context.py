@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -54,15 +55,20 @@ _SLEEP_RECOVERY_TERMS = (
     "восстанов",
     "пульс в покое",
 )
-_WEIGHT_TREND_TERMS = (
-    "weight",
-    "weigh",
-    "bmi",
+_WEIGHT_DOMAIN = re.compile(r"\b(?:weight|weigh\w*|bmi|вес\w*|имт)\b")
+_WEIGHT_CHANGE_TERMS = (
     "trend",
-    "change over time",
-    "вес",
+    "chang",
+    "gain",
+    "lost",
+    "loss",
+    "over time",
     "динамик",
     "тренд",
+    "измен",
+    "похуд",
+    "набрал",
+    "сниз",
 )
 
 type EvidenceRows = tuple[EvidenceItem, ...]
@@ -110,7 +116,8 @@ class HealthContextBuilder:
             window_end=window_end,
             evidence=evidence,
             source_counts={source: len(rows_by_source[source]) for source in _SOURCE_ORDER},
-            limitations=_limitations_for(intent),
+            limitations=_limitations_for(question, intent),
+            max_items_per_source=self._max_items_per_source,
         )
 
     def _labs(
@@ -279,6 +286,8 @@ class HealthContextBuilder:
             .where(
                 WhoopBodyCurrent.profile_id == profile_id,
                 WhoopBodyCurrent.weight_kilogram.is_not(None),
+                WhoopBodyCurrent.observed_at >= window_start,
+                WhoopBodyCurrent.observed_at <= window_end,
             )
             .order_by(WhoopBodyCurrent.observed_at.desc(), WhoopBodyCurrent.id.desc())
             .limit(self._max_items_per_source)
@@ -317,8 +326,12 @@ def detect_intent(question: str) -> QuestionIntent:
     normalized = question.casefold()
     if any(term in normalized for term in _SLEEP_RECOVERY_TERMS):
         return QuestionIntent.SLEEP_RECOVERY
-    if any(term in normalized for term in _WEIGHT_TREND_TERMS):
-        return QuestionIntent.WEIGHT_TREND
+    if _WEIGHT_DOMAIN.search(normalized):
+        return (
+            QuestionIntent.WEIGHT_TREND
+            if _requests_weight_change(normalized)
+            else QuestionIntent.CURRENT_WEIGHT
+        )
     return QuestionIntent.GENERAL
 
 
@@ -326,6 +339,7 @@ def window_days(intent: QuestionIntent) -> int:
     return {
         QuestionIntent.GENERAL: DEFAULT_WINDOW_DAYS,
         QuestionIntent.SLEEP_RECOVERY: SLEEP_RECOVERY_WINDOW_DAYS,
+        QuestionIntent.CURRENT_WEIGHT: DEFAULT_WINDOW_DAYS,
         QuestionIntent.WEIGHT_TREND: WEIGHT_TREND_WINDOW_DAYS,
     }[intent]
 
@@ -350,8 +364,17 @@ def _label_evidence(
     return tuple(labelled)
 
 
-def _limitations_for(intent: QuestionIntent) -> tuple[ContextLimitation, ...]:
-    if intent is not QuestionIntent.WEIGHT_TREND:
+def _requests_weight_change(question: str) -> bool:
+    normalized = question.casefold()
+    return bool(_WEIGHT_DOMAIN.search(normalized)) and any(
+        term in normalized for term in _WEIGHT_CHANGE_TERMS
+    )
+
+
+def _limitations_for(
+    question: str, intent: QuestionIntent
+) -> tuple[ContextLimitation, ...]:
+    if not _requests_weight_change(question):
         return ()
     return (
         ContextLimitation(
@@ -360,6 +383,7 @@ def _limitations_for(intent: QuestionIntent) -> tuple[ContextLimitation, ...]:
             "dated measurement history. Fewer than two dated measurements are "
             "available, so a weight change cannot be established.",
             prevents_requested_inference=True,
+            prevents_entire_answer=intent is QuestionIntent.WEIGHT_TREND,
         ),
     )
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from health_agent.models import (
@@ -16,6 +18,7 @@ from health_agent.models import (
 )
 from health_agent.questions.context import (
     MAX_ITEMS_PER_SOURCE,
+    HealthContextBuilder,
     build_context,
     detect_intent,
     window_days,
@@ -26,6 +29,7 @@ from health_agent.questions.models import (
     EvidenceTimeSemantics,
     QuestionIntent,
 )
+from health_agent.questions.service import HealthQuestionApplicationService
 from health_agent.whoop.models import WhoopConnection
 from health_agent.whoop.normalize import normalize_whoop
 from health_agent.whoop.repository import (
@@ -34,6 +38,71 @@ from health_agent.whoop.repository import (
 )
 
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("question,intent,blocked", (
+    ("Show my ferritin trend", QuestionIntent.GENERAL, False),
+    ("Покажи динамику холестерина", QuestionIntent.GENERAL, False),
+    ("What is my current weight?", QuestionIntent.CURRENT_WEIGHT, False),
+    ("Какой сейчас вес?", QuestionIntent.CURRENT_WEIGHT, False),
+    ("Has my weight changed?", QuestionIntent.WEIGHT_TREND, True),
+    ("Покажи динамику веса", QuestionIntent.WEIGHT_TREND, True),
+    ("How have my sleep and weight changed?", QuestionIntent.SLEEP_RECOVERY, False),
+    ("Как изменились сон и вес?", QuestionIntent.SLEEP_RECOVERY, False),
+))
+def test_inference_is_separate_from_window_selection(
+    session: Session, question: str, intent: QuestionIntent, blocked: bool
+) -> None:
+    _lab(session, DEFAULT_PROFILE_ID, "Ferritin", 42, NOW.date())
+    _lab(session, DEFAULT_PROFILE_ID, "Ferritin", 40, (NOW - timedelta(days=3)).date())
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement", "read:sleep")
+    )
+    _store_whoop(session, connection, "body", {"weight_kilogram": 74.5})
+    _store_whoop(session, connection, "sleep", {
+        "id": "sleep-1", "user_id": 7, "cycle_id": 2,
+        "start": "2026-09-03T20:00:00Z",
+        "score": {"stage_summary": {"total_light_sleep_time_milli": 25_200_000}},
+    })
+    calls = []
+
+    def respond(**kwargs):
+        calls.append(kwargs)
+        if intent is QuestionIntent.SLEEP_RECOVERY:
+            return "The recorded sleep was 7 hours [SLEEP1]."
+        return "The current verified value is recorded [LAB1]."
+
+    builder = HealthContextBuilder(session, clock=lambda: NOW)
+    context = builder.build(DEFAULT_PROFILE_ID, question)
+    result = HealthQuestionApplicationService(
+        builder, SimpleNamespace(respond=respond)
+    ).answer(DEFAULT_PROFILE_ID, question)
+
+    assert context.intent is intent
+    assert bool(calls) is not blocked
+    assert context.source_counts[EvidenceSource.LAB] == 2
+    if intent in {QuestionIntent.SLEEP_RECOVERY, QuestionIntent.WEIGHT_TREND}:
+        assert context.limitations[0].prevents_requested_inference
+        assert context.limitations[0].prevents_entire_answer is blocked
+        assert "weight change cannot be established" in result.text
+    else:
+        assert context.limitations == ()
+    if intent is QuestionIntent.SLEEP_RECOVERY:
+        assert result.text.startswith("The recorded sleep was 7 hours")
+
+
+@pytest.mark.parametrize("offset,included", ((-30, True), (0, True), (-31, False), (1, False)))
+def test_current_weight_enforces_both_inclusive_sync_window_bounds(
+    session: Session, offset: int, included: bool
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement",)
+    )
+    _store_whoop(session, connection, "body", {"weight_kilogram": 74.5},
+                 fetched_at=NOW + timedelta(days=offset))
+    context = build_context(session, DEFAULT_PROFILE_ID, "current weight", clock=lambda: NOW)
+    assert bool(context.evidence) is included
+    assert not context.limitations
 
 
 def test_context_excludes_other_profiles_and_unverified_labs(session: Session) -> None:
@@ -285,11 +354,14 @@ def test_recovery_falls_back_to_the_associated_cycle_time(session: Session) -> N
     assert recovery.observed_at == datetime(2026, 9, 3, 8, tzinfo=UTC)
 
 
-def test_weight_trend_marks_a_stale_current_snapshot_as_sync_time(session: Session) -> None:
+@pytest.mark.parametrize("offset", (-180, 1))
+def test_weight_trend_excludes_stale_and_future_body_snapshots(
+    session: Session, offset: int
+) -> None:
     connection = register_authorized_connection(
         session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement",)
     )
-    stale_sync = NOW - timedelta(days=180)
+    stale_sync = NOW + timedelta(days=offset)
     _store_whoop(
         session,
         connection,
@@ -300,9 +372,7 @@ def test_weight_trend_marks_a_stale_current_snapshot_as_sync_time(session: Sessi
 
     context = build_context(session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW)
 
-    weight = next(item for item in context.evidence if item.source is EvidenceSource.WEIGHT)
-    assert weight.observed_at == stale_sync
-    assert weight.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
+    assert not any(item.source is EvidenceSource.WEIGHT for item in context.evidence)
     assert len(context.limitations) == 1
     assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
 

@@ -13,6 +13,7 @@ class QuestionIntent(StrEnum):
 
     GENERAL = "general"
     SLEEP_RECOVERY = "sleep_recovery"
+    CURRENT_WEIGHT = "current_weight"
     WEIGHT_TREND = "weight_trend"
 
 
@@ -51,6 +52,9 @@ class ContextLimitation:
     code: ContextLimitationCode
     message: str
     prevents_requested_inference: bool = False
+    # A mixed request may still have an answerable portion. The limitation's
+    # code always forbids its specific inference, independently of this flag.
+    prevents_entire_answer: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +87,7 @@ class HealthQuestionContext:
     evidence: tuple[EvidenceItem, ...]
     source_counts: dict[EvidenceSource, int]
     limitations: tuple[ContextLimitation, ...] = ()
+    max_items_per_source: int = 10
 
     @property
     def citations(self) -> tuple[EvidenceItem, ...]:

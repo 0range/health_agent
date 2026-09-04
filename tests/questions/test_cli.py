@@ -19,7 +19,9 @@ class FakeQuestionService:
         self.result = result
         self.calls: list[tuple[UUID, str]] = []
 
-    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult:
+    def answer(
+        self, profile_id: UUID, question: str, *, request_id: str | None = None
+    ) -> QuestionAnswerResult:
         self.calls.append((profile_id, question))
         return self.result
 

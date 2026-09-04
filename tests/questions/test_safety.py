@@ -21,6 +21,12 @@ from health_agent.questions.safety import (
         "I feel like killing myself.",
         "Я хочу умереть.",
         "Кажется, это признаки инсульта.",
+        "Что делать, не могу дышать?",
+        "What should I do, I can't breathe?",
+        "What should I do, I can’t breathe?",
+        "Как быть, хочу умереть?",
+        "What should we do? He cannot breathe.",
+        "Что делать? Он не может дышать.",
     ),
 )
 def test_urgent_guard_handles_english_and_russian_red_flags(question: str) -> None:
@@ -51,6 +57,7 @@ def test_urgent_guard_requires_chest_context_for_pressure(question: str) -> None
         "What causes chest pain?",
         "Is chest tightness a symptom of anxiety?",
         "What causes shortness of breath?",
+        "What causes difficulty breathing?",
         "Что вызывает боль в груди?",
         "Какие причины одышки?",
         "What are stroke symptoms?",

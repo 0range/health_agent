@@ -28,6 +28,7 @@ from health_agent.models import Profile
 from health_agent.questions.context import HealthContextBuilder
 from health_agent.questions.models import EvidenceSource, HealthQuestionContext
 from health_agent.questions.openai import OpenAIResponsesResponder
+from health_agent.questions.replies import PrivateReplyStore, delivery_request_id
 from health_agent.questions.service import (
     QUESTION_UNAVAILABLE_TEXT,
     HealthQuestionApplicationService,
@@ -76,7 +77,9 @@ class QuestionApplicationFactory(Protocol):
 class QuestionApplication(Protocol):
     """The single method the Telegram adapter needs from the application layer."""
 
-    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult: ...
+    def answer(
+        self, profile_id: UUID, question: str, *, request_id: str | None = None
+    ) -> QuestionAnswerResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,13 +114,31 @@ class DatabaseHealthContextBuilder:
 class TelegramHealthQuestionService:
     """Adapt only the authenticated Telegram context to the question boundary."""
 
-    def __init__(self, application: QuestionApplication) -> None:
+    def __init__(
+        self, application: QuestionApplication, reply_store: PrivateReplyStore | None = None
+    ) -> None:
         self._application = application
+        self._reply_store = reply_store
 
     def answer(self, question: HealthQuestion) -> str:
         # TelegramUpdateService has already fenced this context to one bound,
         # private identity.  Do not accept a profile ID from message text.
-        return self._application.answer(question.context.profile_id, question.text).text
+        if self._reply_store is not None:
+            self._reply_store.sweep()
+            prepared = self._reply_store.get(question.context)
+            if prepared is not None:
+                return prepared
+        answer = self._application.answer(
+            question.context.profile_id, question.text,
+            request_id=delivery_request_id(question.context.bot_id, question.context.update_id),
+        ).text
+        if self._reply_store is not None:
+            return self._reply_store.put(question.context, answer)
+        return answer
+
+    def complete_update(self, bot_id: int, update_id: int) -> None:
+        if self._reply_store is not None:
+            self._reply_store.complete(bot_id, update_id)
 
 
 class ReadOnlyQuestionCommands:
@@ -229,7 +250,7 @@ class TelegramMedicalInbox:
             return InboxReceipt(
                 sha256,
                 size_bytes,
-                report.status,
+                "imported" if report.status == "duplicate" else report.status,
                 _import_reply_text(report.status),
                 external_reference=str(report.document_id),
             )
@@ -272,10 +293,8 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
 
 
 def _import_reply_text(status: str) -> str:
-    if status == "imported":
+    if status in {"imported", "duplicate"}:
         return "Medical PDF imported. It may need review before use."
-    if status == "duplicate":
-        return "This medical PDF was already imported."
     return "This medical PDF needs attention before it can be used."
 
 
@@ -350,7 +369,9 @@ def build_telegram_question_runtime(
     state.register_bot(credential.bot_id, credential.username)
     gateway = gateway_factory(credential.token)
     application = question_application_factory(settings)
-    question_service = TelegramHealthQuestionService(application)
+    question_service = TelegramHealthQuestionService(
+        application, PrivateReplyStore(settings.telegram_root / "prepared-replies")
+    )
     commands = ReadOnlyQuestionCommands(
         status_reader or (lambda profile_id: question_status(settings, profile_id))
     )
@@ -380,6 +401,7 @@ def _build_responder(settings: Settings) -> OpenAIResponsesResponder:
         settings.load_openai_api_key(),
         model=settings.openai_model,
         max_output_tokens=settings.openai_max_output_tokens,
+        reasoning_effort=settings.openai_reasoning_effort,
     )
 
 

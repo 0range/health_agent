@@ -39,6 +39,22 @@ CLI commands and never starts synchronization. See the
 [Telegram connector guide](integrations/telegram.md) for binding and token
 storage details.
 
+Prepared question replies are temporarily spooled under
+`TELEGRAM_ROOT/prepared-replies` before delivery. Files contain the final reply
+(including its Sources footer) and an opaque authentication-scope hash, never a
+question, raw retrieval context, credentials, or dialogue history. The directory
+is `0700`, files are regular `0600` files, names hash the bot/update identity,
+and each reply is limited to 128 KiB. Atomic publication preserves the original
+reply across a 429 retry, process restart, and multipart delivery. Previously
+sent parts are skipped by the existing outbound hashes. After a committed
+terminal update, the reply file is deleted; startup and incoming questions sweep
+orphan files older than seven days. An expired or manually removed spool cannot
+guarantee replay; outbound hash conflicts and unknown-send fencing still fail
+closed. No reply is used to answer a different question.
+
+PDF imports and duplicate replays return the same canonical receipt and text,
+allowing a deferred import acknowledgement to complete after restart.
+
 ## Data boundaries and privacy
 
 Every retrieval predicate includes the bound `profile_id`. The question context
@@ -49,6 +65,31 @@ profiles’ records. The production responder makes one stateless Responses API
 request with `store=False`, a one-way profile safety identifier, bounded output,
 and no conversation or response chaining. Questions, evidence, answers, and
 keys are not printed by status commands or operational errors.
+
+General and current-weight questions select 30 days; sleep/recovery selects 14
+days; explicit weight-change questions select 90 days. Each source is capped at
+10 items. Both temporal bounds are inclusive: labs use their collected/issued
+calendar date, while WHOOP uses observation time (body snapshots use sync-as-of
+time). Old and future body snapshots are excluded. The exact selected UTC
+interval, source cap, and time semantics are passed to the model and shown in
+the deterministic Sources footer even when the question requests a longer
+period. A body snapshot cannot establish weight change. Mixed sleep/weight-change
+questions can answer the supported sleep portion while retaining that limitation.
+
+`OPENAI_MAX_OUTPUT_TOKENS` defaults to 2,000 and allows 64–8,000 tokens;
+`OPENAI_REASONING_EFFORT` defaults to `low` for the configured `gpt-5-mini`.
+The SDK uses a 30-second timeout and no automatic retries. The token cap includes
+reasoning tokens, so incomplete results still return unavailable; this policy
+has not been calibrated against live completion rates. Changing models requires
+checking the model's supported reasoning settings.
+
+The hashed Telegram delivery ID also passes through the application to the
+official `X-Client-Request-Id` tracing header. This is **not** a claim of provider
+idempotency: the installed SDK's `extra_headers` option supports custom headers,
+but neither its Responses signature nor the official Responses documentation
+establishes a deterministic replay contract. Exact bytes come from the local
+reply spool. See the official [request-ID documentation](https://developers.openai.com/api/reference/overview#supplying-your-own-request-id-with-x-client-request-id)
+and [reasoning-token guidance](https://developers.openai.com/api/docs/guides/reasoning#controlling-costs).
 
 Enabling this responder intentionally sends the bounded selected question and
 evidence to OpenAI. Do not enable it until that external processing is
