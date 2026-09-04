@@ -133,3 +133,20 @@ uv run health-agent telegram status --profile-id PROFILE_UUID
 
 Границы и подключение описаны в
 [инструкции Telegram-коннектора](docs/integrations/telegram.md).
+
+## Фоновое обновление на Mac
+
+Один локальный LaunchAgent может раз в четыре часа последовательно обновлять
+WHOOP, Gmail и Google Drive. Ошибка или 30-минутный таймаут одного источника не
+останавливает следующие. Полная сверка каждого отдельного аккаунта выполняется
+при первом запуске и затем раз в семь дней; остальные запуски инкрементальные.
+
+```bash
+chmod 600 /полный/путь/к/.env
+uv run health-agent automation render --env-file /полный/путь/к/.env
+uv run health-agent automation install --env-file /полный/путь/к/.env
+uv run health-agent automation status --env-file /полный/путь/к/.env
+```
+
+Установка выполняется только явной командой. Подробности, остановка и удаление:
+[фоновая автоматизация](docs/runbooks/automation.md).

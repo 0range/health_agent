@@ -1,3 +1,6 @@
+import os
+import shutil
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -6,6 +9,15 @@ from uuid import UUID, uuid4
 import typer
 from sqlalchemy import select
 
+from health_agent.automation.launchd import (
+    LaunchdError,
+    LaunchdManager,
+    LaunchdPaths,
+    rotate_safe_logs,
+)
+from health_agent.automation.registry import configured_job_adapters
+from health_agent.automation.runner import AutomationRunner, SubprocessJobExecutor
+from health_agent.automation.storage import AutomationState, GlobalRunLock
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.api import GoogleGmailGateway
@@ -80,6 +92,7 @@ telegram_app = typer.Typer(help="Configure the local Telegram connector.")
 panel_app = typer.Typer(help="Serve the local management panel.")
 staging_app = typer.Typer(help="Manage the isolated local staging environment.")
 drive_app = typer.Typer(help="Manage read-only Google Drive profiles.")
+automation_app = typer.Typer(help="Run and manage safe local connector automation.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
@@ -89,11 +102,106 @@ app.add_typer(telegram_app, name="telegram")
 app.add_typer(panel_app, name="panel")
 app.add_typer(staging_app, name="staging")
 app.add_typer(drive_app, name="drive")
+app.add_typer(automation_app, name="automation")
 
 
 @app.callback()
 def health_agent() -> None:
     """Personal Health Agent."""
+
+
+@automation_app.command("sync")
+def automation_sync(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+    force_full: Annotated[bool, typer.Option("--full")] = False,
+) -> None:
+    """Synchronize configured targets without cross-source blocking."""
+    try:
+        runner, _, _ = _automation_components(env_file)
+        results = runner.run(force_full=force_full)
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=automation_configuration_failed", err=True)
+        raise typer.Exit(code=1) from None
+    for result in results:
+        typer.echo(result.safe_line())
+    counts = {
+        status: sum(result.status == status for result in results)
+        for status in ("succeeded", "deferred", "failed", "timed_out", "skipped")
+    }
+    typer.echo(
+        " ".join(
+            (
+                f"summary jobs={len(results)}",
+                f"succeeded={counts['succeeded']}",
+                f"deferred={counts['deferred']}",
+                f"failed={counts['failed']}",
+                f"timed_out={counts['timed_out']}",
+                f"skipped={counts['skipped']}",
+            )
+        )
+    )
+    if counts["failed"] or counts["timed_out"]:
+        raise typer.Exit(code=1)
+
+
+@automation_app.command("render")
+def automation_render(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Render an inspectable LaunchAgent plist without loading it."""
+    manager = _automation_manager_or_exit(env_file)
+    try:
+        path = manager.render()
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=launchd_operation_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status=rendered label={path.stem}")
+
+
+@automation_app.command("install")
+def automation_install(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Install and load the one managed user LaunchAgent."""
+    manager = _automation_manager_or_exit(env_file)
+    try:
+        status = manager.install()
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=launchd_operation_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label=com.orange.health-agent.sync")
+
+
+@automation_app.command("status")
+def automation_status(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Report whether the managed LaunchAgent is loaded."""
+    manager = _automation_manager_or_exit(env_file)
+    try:
+        status = manager.status()
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=launchd_operation_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label=com.orange.health-agent.sync")
+
+
+@automation_app.command("stop")
+def automation_stop(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Stop scheduled synchronization while retaining managed files."""
+    manager = _automation_manager_or_exit(env_file)
+    try:
+        status = manager.stop()
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=launchd_operation_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label=com.orange.health-agent.sync files=retained")
+
+
+@automation_app.command("remove")
+def automation_remove(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Stop automation and remove only its two managed plist files."""
+    manager = _automation_manager_or_exit(env_file)
+    try:
+        status = manager.remove()
+    except (LaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=launchd_operation_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label=com.orange.health-agent.sync")
 
 
 @panel_app.command("serve")
@@ -1070,3 +1178,73 @@ def _staging_manager(env_file: Path | None) -> StagingManager:
     except StagingConfigurationError as error:
         raise typer.BadParameter(str(error), param_hint="--env-file") from error
     return StagingManager(environment)
+
+
+def _automation_components(
+    env_file: Path,
+) -> tuple[AutomationRunner, LaunchdManager, LaunchdPaths]:
+    repository_root = Path(__file__).resolve().parents[2]
+    executable = _current_console_script()
+    expanded_env_file = env_file.expanduser()
+    if not expanded_env_file.is_absolute():
+        raise ValueError("env_file_not_absolute")
+    resolved_env_file = expanded_env_file.resolve()
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=resolved_env_file
+    )
+    settings.gmail_root = _repository_relative(repository_root, settings.gmail_root)
+    settings.google_drive_root = _repository_relative(
+        repository_root, settings.google_drive_root
+    )
+    settings.automation_root = _repository_relative(
+        repository_root, settings.automation_root
+    )
+    paths = LaunchdPaths.resolve(
+        automation_root=settings.automation_root,
+        executable=executable,
+        environment_file=expanded_env_file,
+        working_directory=repository_root,
+    )
+    runner = AutomationRunner(
+        settings,
+        configured_job_adapters(settings, paths.executable),
+        SubprocessJobExecutor(
+            paths.executable, paths.environment_file, paths.working_directory
+        ),
+        AutomationState(paths.state_file),
+        GlobalRunLock(paths.lock_file),
+        before_jobs=lambda: rotate_safe_logs(paths),
+    )
+    return runner, LaunchdManager(paths), paths
+
+
+def _automation_manager_or_exit(env_file: Path) -> LaunchdManager:
+    try:
+        _, manager, _ = _automation_components(env_file)
+        return manager
+    except (RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=automation_configuration_failed", err=True)
+        raise typer.Exit(code=1) from None
+
+
+def _repository_relative(repository_root: Path, path: Path) -> Path:
+    expanded = path.expanduser()
+    return expanded if expanded.is_absolute() else repository_root / expanded
+
+
+def _current_console_script() -> Path:
+    invoked = Path(sys.argv[0]).expanduser()
+    if (
+        invoked.is_absolute()
+        and invoked.name == "health-agent"
+        and invoked.is_file()
+        and os.access(invoked, os.X_OK)
+    ):
+        return invoked.resolve()
+    sibling = Path(sys.executable).parent / "health-agent"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return sibling.resolve()
+    discovered = shutil.which("health-agent")
+    if discovered is not None:
+        return Path(discovered).resolve()
+    raise ValueError("health_agent_executable_unavailable")
