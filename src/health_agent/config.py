@@ -39,6 +39,13 @@ class Settings(BaseSettings):
         default=Path("data/secrets/google-oauth-client.json"),
         validation_alias="GOOGLE_OAUTH_CLIENT_SECRETS",
     )
+    google_drive_root: Path = Field(
+        default=Path("data/google-drive"), validation_alias="GOOGLE_DRIVE_ROOT"
+    )
+    google_drive_client_secrets: Path = Field(
+        default=Path("data/secrets/google-drive-oauth-client.json"),
+        validation_alias="GOOGLE_DRIVE_CLIENT_SECRETS",
+    )
     temporary_root: Path = Field(
         default=Path("data/tmp"), validation_alias="TEMPORARY_ROOT"
     )

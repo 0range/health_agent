@@ -20,6 +20,16 @@ from health_agent.gmail.stores import (
     LocalGmailStateStore,
     LocalGmailTokenStore,
 )
+from health_agent.google_drive.api import GoogleDriveGateway
+from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.oauth import DriveOAuth
+from health_agent.google_drive.service import DriveProfileMismatch, DriveService
+from health_agent.google_drive.stores import (
+    LocalProfileStore,
+    LocalSyncStateStore,
+    LocalTokenStore,
+)
+from health_agent.google_drive.vault_consumer import FileVaultDriveConsumer
 from health_agent.importer import (
     approve_observation,
     import_document,
@@ -68,6 +78,7 @@ gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
 telegram_app = typer.Typer(help="Configure the local Telegram connector.")
 panel_app = typer.Typer(help="Serve the local management panel.")
 staging_app = typer.Typer(help="Manage the isolated local staging environment.")
+drive_app = typer.Typer(help="Manage read-only Google Drive profiles.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
@@ -76,7 +87,7 @@ app.add_typer(gmail_app, name="gmail")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(panel_app, name="panel")
 app.add_typer(staging_app, name="staging")
-app.add_typer(panel_app, name="panel")
+app.add_typer(drive_app, name="drive")
 
 
 @app.callback()
@@ -788,6 +799,105 @@ def discover_telegram_id() -> None:
         return
     for user_id, chat_id in sorted(candidates):
         typer.echo(f"telegram_user_id={user_id} private_chat_id={chat_id}")
+
+
+def _drive_stores(
+    settings: Settings,
+) -> tuple[LocalProfileStore, LocalTokenStore, LocalSyncStateStore]:
+    return (
+        LocalProfileStore(settings.google_drive_root),
+        LocalTokenStore(settings.google_drive_root),
+        LocalSyncStateStore(settings.google_drive_root),
+    )
+
+
+@drive_app.command("configure")
+def configure_drive(profile_id: str, folders: list[str]) -> None:
+    """Configure one or more read-only source folders for a local profile."""
+    settings = Settings()
+    profiles, _, _ = _drive_stores(settings)
+    profile = DriveProfile.create(profile_id, folders)
+    if profiles.exists(profile_id):
+        current = profiles.load(profile_id)
+        if current.account_email is not None:
+            profile = profile.with_account(current.account_email)
+    profiles.save(profile)
+    typer.echo(
+        f"status=configured profile={profile.profile_id} roots={len(profile.root_folder_ids)}"
+    )
+
+
+@drive_app.command("auth")
+def authorize_drive(profile_id: str) -> None:
+    """Authorize one Google account using a local Desktop OAuth callback."""
+    settings = Settings()
+    profiles, tokens, _ = _drive_stores(settings)
+    profile = profiles.load(profile_id)
+    credentials = DriveOAuth(settings.google_drive_client_secrets, tokens).authorize(
+        profile_id
+    )
+    account_email = GoogleDriveGateway.from_credentials(credentials).account_email()
+    if profile.account_email is not None and profile.account_email != account_email:
+        raise DriveProfileMismatch(
+            f"profile {profile_id!r} is already bound to another Google account"
+        )
+    profiles.save(profile.with_account(account_email))
+    typer.echo(f"status=authorized profile={profile_id} account={account_email}")
+
+
+@drive_app.command("status")
+def drive_status(profile_id: str) -> None:
+    """Show safe local Drive configuration and synchronization freshness."""
+    settings = Settings()
+    profiles, tokens, state = _drive_stores(settings)
+    profile = profiles.load(profile_id)
+    typer.echo(
+        " ".join(
+            (
+                "status=configured",
+                f"profile={profile.profile_id}",
+                f"authorized={'yes' if tokens.exists(profile_id) else 'no'}",
+                f"account={profile.account_email or 'unknown'}",
+                f"roots={len(profile.root_folder_ids)}",
+                f"cursor={'ready' if state.get_cursor(profile_id) else 'none'}",
+                f"files={state.count_seen(profile_id)}",
+            )
+        )
+    )
+
+
+@drive_app.command("sync")
+def sync_drive(profile_id: str, full: bool = False) -> None:
+    """Download new or changed supported files into the profile's local vault."""
+    settings = Settings()
+    profiles, tokens, state = _drive_stores(settings)
+    profile = profiles.load(profile_id)
+    if not tokens.exists(profile_id):
+        raise RuntimeError(f"Google Drive profile {profile_id!r} needs OAuth authorization")
+    credentials = DriveOAuth(settings.google_drive_client_secrets, tokens).authorize(
+        profile_id
+    )
+    service = DriveService(
+        profile,
+        GoogleDriveGateway.from_credentials(credentials),
+        state,
+        FileVaultDriveConsumer(profile_id, settings.vault_root, settings.temporary_root),
+    )
+    report = service.sync(full=full)
+    typer.echo(
+        " ".join(
+            (
+                "status=synced",
+                f"profile={report.profile_id}",
+                f"mode={report.mode}",
+                f"discovered={report.discovered}",
+                f"imported={report.imported}",
+                f"unchanged={report.unchanged}",
+                f"skipped={report.skipped}",
+                f"removed={report.removed}",
+            )
+        )
+    )
 
 
 def main() -> None:

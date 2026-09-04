@@ -18,7 +18,7 @@ Gmail-коннектор реализован и проверен на mocked AP
 External/Testing она истекает через семь дней; для фоновой работы нужен реально
 опубликованный Production-проект (либо Internal Workspace).
 
-Google Drive пока не выдаётся за готовую интеграцию. Для Telegram готов и
+Google Drive-коннектор пока проходит доработку. Для Telegram готов и
 независимо проверен безопасный транспортный слой; живой бот и ответы Health Agent
 появятся после подключения прикладного сервиса и BotFather-токена.
 
@@ -101,6 +101,18 @@ uv run health-agent gmail status PROFILE_UUID
 
 Точная OAuth-настройка и правила классификации описаны в
 [инструкции Gmail-коннектора](docs/integrations/gmail.md).
+
+## Google Drive
+
+Drive остаётся приватным read-only источником; файлы не перемещаются и не
+изменяются. Подключение и ограничения описаны в
+[инструкции коннектора](docs/integrations/google-drive.md).
+
+```bash
+uv run health-agent drive configure PROFILE_ID 'GOOGLE_DRIVE_FOLDER_URL'
+uv run health-agent drive auth PROFILE_ID
+uv run health-agent drive sync PROFILE_ID
+```
 
 ## Telegram
 
