@@ -281,3 +281,130 @@ was checked against current Google Gmail and OAuth documentation. Per instructio
 this review changed no implementation and did not rerun tests; the reported 37/98
 test and lint/type/migration results are implementation-report evidence, not
 independently reproduced here.
+
+## Fix round 1 re-review
+
+Review target: `codex/v1-gmail` at `129eb44`, with the original review retained
+in `2f6163e`. This round inspected the fix diff and existing reported evidence;
+tests were not rerun, as requested.
+
+### Verdict
+
+- **SPEC: CHANGES**
+- **QUALITY: CHANGES**
+- **OVERALL: CHANGES**
+
+Most of the connector foundation is now materially stronger. The production CLI
+uses the common profile-aware PostgreSQL importer for PDFs, Gmail occurrence
+identity is stable and idempotent, token replacement is staged and verified,
+profile/account sync is protected by a cross-process lock, current labels make
+incremental Spam/Trash handling symmetric, attachment limits and magic checks
+precede importer effects, API/OAuth waits are bounded, and the `0003` downgrade
+now removes and restores the dependent view safely. The official Gmail/OAuth
+references still support the selected read-only scope, loopback installed-app
+flow, history semantics, and the documented seven-day External/Testing token
+limitation.
+
+The remaining findings below prevent the branch from truthfully claiming that
+the approved autonomous Gmail medical-ingestion behavior is complete.
+
+### Findings
+
+#### 1. High — body-only medical mail still does not enter the common pipeline, and appointment attention cannot be listed
+
+`classify_message()` recognizes only appointment vocabulary
+(`src/health_agent/gmail/classifier.py:65-89`). A body-only lab result, radiology
+result, discharge summary, or other medical message is still classified as
+ignored even though the approved design requires analyses, conclusions,
+investigations, and appointment confirmations from Gmail to enter the common
+medical pipeline. A recognized body-only appointment is only written as a
+minimal `SeenMessage` in connector JSON (`src/health_agent/gmail/service.py:240-264`);
+it produces no common-database source/event and retains no usable appointment
+details.
+
+Even that minimal appointment record is not exposed by the advertised internal
+queue. `gmail attention` calls `attention_items()`, which iterates only attachment
+records (`src/health_agent/cli.py:278-290`,
+`src/health_agent/gmail/stores.py:360-370`). Therefore the report's claim that
+body-only appointments have a “safe internal attention listing” and the guide's
+claim that they remain visible are false: only the aggregate attention count
+changes. Complete the body-only medical/appointment handoff, or explicitly narrow
+the scope and make queued messages listable/actionable without retaining arbitrary
+non-medical bodies.
+
+#### 2. Medium — full/recovery scans can advance past removals without reconciling existing state
+
+Incremental sync now correctly fetches current labels and sees label transitions.
+However, `--full` and expired-history recovery list only the positive seven-day
+query and then replace the cursor (`src/health_agent/gmail/service.py:151-175`).
+They do not reconcile previously recorded messages that are absent because they
+were deleted or moved to Spam/Trash. A manual full scan, or an automatic recovery
+after a history `404`, can consequently advance beyond the only removal/label
+event while leaving the old local message and attachment statuses active forever.
+
+This is a residual data-truth gap in the promised removal semantics. Recovery
+needs a bounded reconciliation strategy for already-known active message IDs (or
+the documentation/status model must explicitly describe removal information as
+lost when Gmail history expires). Add regression coverage for a known message
+moved to Trash/deleted immediately before full scan and before cursor-expiry
+recovery.
+
+#### 3. Medium — OCR and attention status reporting is not truthful end to end
+
+The image adapter returns `outcome="needs_attention"` and separately sets
+`processing_status="image_ocr_required"`
+(`src/health_agent/gmail/medical_importer.py:54-62`). The service persists only
+the generic outcome and drops `processing_status`; its OCR counter increments
+only for `outcome == "ocr_required"`
+(`src/health_agent/gmail/service.py:335-374`). Thus a supported image queued
+specifically for OCR prints `ocr_required=0`, is listed with
+`reason=needs_attention`, and cannot later be distinguished from other attention
+causes. In addition, `gmail status` does not print an OCR count at all
+(`src/health_agent/cli.py:256-275`), despite the guide/report claiming that status
+separates OCR from attention.
+
+Persist the processing reason (or use `ocr_required` consistently as the outcome)
+and expose consistent lifetime/run counts. Add a CLI-level image test, not only an
+adapter receipt assertion.
+
+#### 4. Low — repeated OAuth/preflight failures leave `last_attempt` stale
+
+Preflight failures bypass `begin_sync()` and call `fail_sync()`, but
+`fail_sync()` preserves any existing `last_attempt_at` instead of setting the time
+of the current failed attempt (`src/health_agent/cli.py:305-353`,
+`src/health_agent/gmail/stores.py:258-263`). After one prior run, repeated expired
+token or other preflight failures therefore make the freshness field lie. Update
+the attempt timestamp on every invocation while preserving `last_success_at`.
+
+#### 5. Low — supported unnamed MIME attachments are permanently ignored
+
+Any supported PDF/image part without a filename is classified as ignored before
+content inspection (`src/health_agent/gmail/classifier.py:98-102`), even if Gmail
+marks it as an attachment and supplies `attachmentId` or inline data. This is a
+valid MIME shape and creates a completeness hole for generic-content routing.
+Use disposition/attachment identity plus validated magic as the fallback, and
+cover an unnamed PDF attachment.
+
+### Original-finding disposition
+
+- **Resolved:** common PDF database importer/provenance/idempotency; truthful
+  `medically_imported` versus duplicate outcomes for that path; External/Testing
+  OAuth documentation; staged verified reauthorization and old-token retention;
+  cross-profile mailbox binding; cross-process state/cursor serialization;
+  incremental Spam/Trash/restored-mail behavior; pre-import size/hash/magic/MIME
+  validation; bounded transport and OAuth callback waits; retry/page-loop guards;
+  immutable attachment revisions/full provenance; token/state symlink hardening;
+  and the pre-existing `0003` downgrade dependency.
+- **Partially resolved:** autonomous body/generic classification, internal
+  attention visibility, truthful OCR/status reporting, and full/recovery removal
+  semantics, as detailed above.
+
+### Remaining live concerns
+
+- No live Google consent screen, callback, token refresh, mailbox, large MIME
+  payload, history-expiry response, rate-limit response, or real PostgreSQL/vault
+  ingestion has been accepted in this branch. The documented publishing mode is
+  deliberately a local declaration and cannot verify Google Cloud Console state.
+- The Google client library necessarily materializes the attachment API's encoded
+  response before the connector's bounded incremental decoder runs; the guide now
+  states this accurately.
