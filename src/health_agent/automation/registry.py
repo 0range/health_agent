@@ -14,7 +14,7 @@ from health_agent.automation.models import AutomationJob, AutomationSource
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.stores import LocalGmailProfileStore
-from health_agent.google_drive.stores import LocalProfileStore, LocalTokenStore
+from health_agent.google_drive.stores import LocalProfileStore
 from health_agent.whoop.models import WhoopConnection
 
 
@@ -71,6 +71,27 @@ def _has_profile_file(directory: Path) -> bool:
     return path.exists()
 
 
+def _token_present(path: Path, connector_root: Path) -> bool:
+    current = path.parent
+    while True:
+        if current.is_symlink():
+            raise RuntimeError("unsafe_configuration")
+        if current.exists() and not current.is_dir():
+            raise RuntimeError("unsafe_configuration")
+        if current == connector_root:
+            break
+        if connector_root not in current.parents:
+            raise RuntimeError("unsafe_configuration")
+        current = current.parent
+    if path.is_symlink():
+        raise RuntimeError("unsafe_configuration")
+    if not path.exists():
+        return False
+    if not path.is_file():
+        raise RuntimeError("unsafe_configuration")
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class GmailJobAdapter:
     source: AutomationSource = "gmail"
@@ -83,6 +104,13 @@ class GmailJobAdapter:
                 continue
             profile = store.load(directory.name)
             for account in profile.accounts:
+                token_path = (
+                    settings.gmail_root
+                    / profile.profile_id
+                    / "accounts"
+                    / account.account_id
+                    / "token.json"
+                )
                 jobs.append(
                     AutomationJob(
                         "gmail",
@@ -96,6 +124,11 @@ class GmailJobAdapter:
                             "--account-id",
                             account.account_id,
                         ),
+                        (
+                            None
+                            if _token_present(token_path, settings.gmail_root)
+                            else "oauth_not_ready"
+                        ),
                     )
                 )
         return tuple(jobs)
@@ -107,7 +140,6 @@ class DriveJobAdapter:
 
     def discover(self, settings: Settings) -> Iterable[AutomationJob]:
         store = LocalProfileStore(settings.google_drive_root)
-        tokens = LocalTokenStore(settings.google_drive_root)
         return tuple(
             AutomationJob(
                 "drive",
@@ -115,7 +147,11 @@ class DriveJobAdapter:
                 "main",
                 True,
                 ("drive", "sync", profile.profile_id),
-                None if tokens.exists(profile.profile_id) else "oauth_not_ready",
+                (
+                    None
+                    if _token_present(directory / "token.json", settings.google_drive_root)
+                    else "oauth_not_ready"
+                ),
             )
             for directory in _profile_directories(settings.google_drive_root)
             if _has_profile_file(directory)

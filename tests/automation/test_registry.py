@@ -13,7 +13,7 @@ from health_agent.automation.registry import (
 )
 from health_agent.config import Settings
 from health_agent.gmail.config import GmailAccount, GmailProfile
-from health_agent.gmail.stores import LocalGmailProfileStore
+from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailTokenStore
 from health_agent.google_drive.config import DriveProfile
 from health_agent.google_drive.stores import LocalProfileStore, LocalTokenStore
 from health_agent.google_drive.types import DriveAccountIdentity
@@ -69,6 +69,7 @@ def test_discovers_gmail_accounts_and_drive_profiles_in_stable_order(tmp_path: P
         "--account-id",
         "main",
     )
+    assert all(job.not_ready_code == "oauth_not_ready" for job in gmail_jobs)
     assert [job.key for job in drive_jobs] == [
         ("drive", str(PROFILE_A), "main"),
         ("drive", str(PROFILE_B), "main"),
@@ -121,3 +122,48 @@ def test_drive_without_oauth_is_discovered_as_not_ready(tmp_path: Path) -> None:
     )
     ready = next(iter(DriveJobAdapter().discover(Settings(google_drive_root=root))))
     assert ready.not_ready_code is None
+
+
+def test_gmail_token_readiness_is_profile_and_account_scoped(tmp_path: Path) -> None:
+    root = tmp_path / "gmail"
+    profile = (
+        GmailProfile.empty(PROFILE_A)
+        .upsert_account(GmailAccount.create("main"))
+        .upsert_account(GmailAccount.create("secondary"))
+    )
+    LocalGmailProfileStore(root).save(profile)
+    LocalGmailTokenStore(root).publish_verified(
+        str(PROFILE_A),
+        "secondary",
+        "owner@example.com",
+        '{"token":"synthetic"}',
+    )
+
+    jobs = {
+        job.account_id: job
+        for job in GmailJobAdapter().discover(Settings(gmail_root=root))
+    }
+    assert jobs["main"].not_ready_code == "oauth_not_ready"
+    assert jobs["secondary"].not_ready_code is None
+
+
+def test_gmail_symlinked_token_fails_closed_but_malformed_token_reaches_validation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "gmail"
+    LocalGmailProfileStore(root).save(
+        GmailProfile.empty(PROFILE_A).upsert_account(GmailAccount.create("main"))
+    )
+    token = root / str(PROFILE_A) / "accounts" / "main" / "token.json"
+    token.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-token"
+    outside.write_text("{}", encoding="utf-8")
+    token.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="unsafe_configuration"):
+        tuple(GmailJobAdapter().discover(Settings(gmail_root=root)))
+
+    token.unlink()
+    token.write_text("not-json", encoding="utf-8")
+    token.chmod(0o600)
+    job = next(iter(GmailJobAdapter().discover(Settings(gmail_root=root))))
+    assert job.not_ready_code is None

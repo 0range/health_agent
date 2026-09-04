@@ -12,6 +12,8 @@ from health_agent.automation.registry import DriveJobAdapter, GmailJobAdapter
 from health_agent.automation.runner import AutomationRunner, SubprocessJobExecutor
 from health_agent.automation.storage import AutomationState, GlobalRunLock
 from health_agent.config import Settings
+from health_agent.gmail.config import GmailAccount, GmailProfile
+from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailTokenStore
 from health_agent.google_drive.config import DriveProfile
 from health_agent.google_drive.stores import LocalProfileStore
 
@@ -264,21 +266,24 @@ def test_not_ready_oauth_is_deferred_without_execution_or_checkpoint(
     assert second_executor.calls == []
 
 
-def test_live_shape_unconfigured_gmail_and_unauthorized_drive_is_nonfatal(
+def test_live_shape_unauthorized_gmail_and_drive_does_not_block_whoop(
     tmp_path: Path,
 ) -> None:
     profile_id = "00000000-0000-0000-0000-000000000001"
     gmail_root = tmp_path / "gmail"
-    (gmail_root / profile_id / "accounts" / "main").mkdir(parents=True)
+    LocalGmailProfileStore(gmail_root).save(
+        GmailProfile.empty(profile_id).upsert_account(GmailAccount.create("main"))
+    )
     drive_root = tmp_path / "drive"
     LocalProfileStore(drive_root).save(
         DriveProfile.create(profile_id, ["folder_abcdefghij"])
     )
     settings = Settings(gmail_root=gmail_root, google_drive_root=drive_root)
     executor = FakeExecutor()
+    whoop_job = _job("whoop", profile_id, "main")
     runner = AutomationRunner(
         settings,
-        [GmailJobAdapter(), DriveJobAdapter()],
+        [GmailJobAdapter(), DriveJobAdapter(), FakeAdapter("whoop", (whoop_job,))],
         executor,
         AutomationState(tmp_path / "automation-state.json"),
         FakeLock(),
@@ -289,5 +294,39 @@ def test_live_shape_unconfigured_gmail_and_unauthorized_drive_is_nonfatal(
         AutomationResult(
             "drive", profile_id, "main", "full", "deferred", "oauth_not_ready"
         ),
+        AutomationResult(
+            "gmail", profile_id, "main", "full", "deferred", "oauth_not_ready"
+        ),
+        AutomationResult("whoop", profile_id, "main", "full", "succeeded"),
     )
-    assert executor.calls == []
+    assert executor.calls == [(whoop_job.key, "full")]
+
+
+def test_token_present_gmail_connector_error_remains_a_failure(tmp_path: Path) -> None:
+    profile_id = "00000000-0000-0000-0000-000000000001"
+    gmail_root = tmp_path / "gmail"
+    LocalGmailProfileStore(gmail_root).save(
+        GmailProfile.empty(profile_id).upsert_account(GmailAccount.create("main"))
+    )
+    LocalGmailTokenStore(gmail_root).publish_verified(
+        profile_id,
+        "main",
+        "owner@example.com",
+        '{"token":"synthetic"}',
+    )
+    settings = Settings(gmail_root=gmail_root)
+    job = next(iter(GmailJobAdapter().discover(settings)))
+    executor = FakeExecutor({job.key: "failed"})
+    result = AutomationRunner(
+        settings,
+        [GmailJobAdapter()],
+        executor,
+        AutomationState(tmp_path / "automation-state.json"),
+        FakeLock(),
+        clock=lambda: NOW,
+    ).run()
+
+    assert result == (
+        AutomationResult("gmail", profile_id, "main", "full", "failed"),
+    )
+    assert executor.calls == [(job.key, "full")]
