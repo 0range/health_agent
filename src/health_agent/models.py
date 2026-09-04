@@ -7,9 +7,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Numeric,
     String,
     Text,
@@ -72,7 +74,10 @@ class Document(Base):
 
 class DocumentPage(Base):
     __tablename__ = "document_pages"
-    __table_args__ = (UniqueConstraint("document_id", "page_number"),)
+    __table_args__ = (
+        UniqueConstraint("document_id", "page_number"),
+        CheckConstraint("page_number >= 1", name="ck_document_pages_page_number_positive"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
@@ -85,6 +90,20 @@ class DocumentPage(Base):
 
 class LabObservation(Base):
     __tablename__ = "lab_observations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "page_number"],
+            ["document_pages.document_id", "document_pages.page_number"],
+        ),
+        CheckConstraint("page_number >= 1", name="ck_lab_observations_page_number_positive"),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1", name="ck_lab_observations_confidence_range"
+        ),
+        CheckConstraint(
+            "reference_low IS NULL OR reference_high IS NULL OR reference_low <= reference_high",
+            name="ck_lab_observations_reference_range",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
@@ -101,7 +120,14 @@ class LabObservation(Base):
     evidence_excerpt: Mapped[str] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Numeric(3, 2))
     status: Mapped[ReviewStatus] = mapped_column(
-        Enum(ReviewStatus, name="review_status"), default=ReviewStatus.NEEDS_REVIEW, index=True
+        Enum(
+            ReviewStatus,
+            name="review_status",
+            values_callable=lambda statuses: [status.value for status in statuses],
+            validate_strings=True,
+        ),
+        default=ReviewStatus.NEEDS_REVIEW,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
