@@ -102,6 +102,7 @@ def bootstrap_whoop_dashboard(
         else f" [{str(profile_id)[:8]}]"
     )
     dashboard_name = f"{WHOOP_DASHBOARD_NAME}{suffix}"
+    specs = whoop_card_specs(profile_id)
     with MetabaseClient(settings.metabase_url, transport=transport) as client:
         client.wait_until_healthy()
         client.authenticate(
@@ -109,21 +110,31 @@ def bootstrap_whoop_dashboard(
         )
         collection = _ensure_collection(client)
         database = _ensure_database(client, settings)
+        legacy_reusable = profile_id == DEFAULT_PROFILE_ID or _legacy_objects_owned_by(
+            client,
+            collection["id"],
+            specs,
+            legacy_suffix,
+        )
         dashboard = _ensure_named_dashboard(
             client,
             collection["id"],
             dashboard_name,
-            legacy_name=f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}",
+            legacy_name=(
+                f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}"
+                if legacy_reusable
+                else None
+            ),
         )
         card_ids: list[int] = []
-        for position, spec in enumerate(whoop_card_specs(profile_id)):
+        for position, spec in enumerate(specs):
             card = _ensure_whoop_card(
                 client,
                 database["id"],
                 collection["id"],
                 spec,
                 suffix,
-                legacy_suffix=legacy_suffix,
+                legacy_suffix=legacy_suffix if legacy_reusable else None,
             )
             card_ids.append(card["id"])
             _ensure_dashboard_card(
@@ -223,3 +234,56 @@ def _whoop_card_matches(card: dict[str, Any], desired: dict[str, Any]) -> bool:
         and query == desired_query
         and card.get("visualization_settings") == desired["visualization_settings"]
     )
+
+
+def _legacy_objects_owned_by(
+    client: MetabaseClient,
+    collection_id: int,
+    specs: tuple[WhoopCardSpec, ...],
+    legacy_suffix: str,
+) -> bool:
+    """Reuse an ambiguous short-name legacy set only after exact SQL ownership proof."""
+    cards = _rows(client, "/api/card")
+    owned_card_ids: set[int] = set()
+    for spec in specs:
+        candidates = [
+            card
+            for card in cards
+            if card.get("name") == f"{spec.name}{legacy_suffix}"
+            and card.get("collection_id") == collection_id
+            and not card.get("archived")
+        ]
+        if len(candidates) != 1:
+            return False
+        card = candidates[0]
+        _, query = _native_query(card.get("dataset_query"))
+        card_id = card.get("id")
+        if (
+            not isinstance(card_id, int)
+            or card.get("display") != "line"
+            or query != spec.query
+            or card.get("visualization_settings")
+            != {
+                "graph.dimensions": ["date"],
+                "graph.metrics": list(spec.metrics),
+            }
+        ):
+            return False
+        owned_card_ids.add(card_id)
+
+    legacy_dashboard = _candidate(
+        _rows(client, "/api/dashboard"),
+        f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}",
+        expected_parent=("collection_id", collection_id),
+    )
+    if legacy_dashboard is None:
+        return False
+    details = client.request("GET", f"/api/dashboard/{legacy_dashboard['id']}")
+    if not isinstance(details, dict) or not isinstance(details.get("dashcards"), list):
+        return False
+    attached_ids = {
+        item.get("card_id")
+        for item in details["dashcards"]
+        if isinstance(item, dict) and isinstance(item.get("card_id"), int)
+    }
+    return attached_ids == owned_card_ids

@@ -134,6 +134,39 @@ def test_non_default_legacy_short_names_are_reused_without_duplicates() -> None:
     assert fake.dashboards[0]["name"] == f"{WHOOP_DASHBOARD_NAME} [{PROFILE}]"
 
 
+def test_same_prefix_profile_cannot_claim_foreign_legacy_objects() -> None:
+    fake = FakeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings = Settings(postgres_password="local-secret")
+    engine = cast(Engine, FakeEngine())
+    first_profile = UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    second_profile = UUID("aaaaaaaa-2222-4222-8222-222222222222")
+    legacy_suffix = " [aaaaaaaa]"
+
+    first = bootstrap_whoop_dashboard(
+        settings, first_profile, transport=transport, engine=engine
+    )
+    fake.dashboards[0]["name"] = f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}"
+    for card, spec in zip(fake.cards, whoop_card_specs(first_profile), strict=True):
+        card["name"] = f"{spec.name}{legacy_suffix}"
+
+    second = bootstrap_whoop_dashboard(
+        settings, second_profile, transport=transport, engine=engine
+    )
+
+    assert second.dashboard_id != first.dashboard_id
+    assert len(fake.dashboards) == 2
+    assert len(fake.cards) == 10
+    assert all(
+        str(first_profile) in card["dataset_query"]["native"]["query"]
+        for card in fake.cards[:5]
+    )
+    assert all(
+        str(second_profile) in card["dataset_query"]["native"]["query"]
+        for card in fake.cards[5:]
+    )
+
+
 def test_existing_dashboard_card_layout_drift_is_repaired() -> None:
     fake = FakeMetabase()
     transport = httpx.MockTransport(fake.handle)
