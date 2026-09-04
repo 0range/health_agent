@@ -108,7 +108,14 @@ class LocalGmailProfileStore:
         return _profile_directory(self.root, profile_id) / "profile.json"
 
     def exists(self, profile_id: str) -> bool:
-        return self._path(profile_id).exists()
+        path = self._path(profile_id)
+        if path.is_symlink():
+            raise RuntimeError("refusing symlinked Gmail profile configuration")
+        if not path.exists():
+            return False
+        if not path.is_file():
+            raise RuntimeError("refusing non-regular Gmail profile configuration")
+        return True
 
     def load(self, profile_id: str) -> GmailProfile:
         path = self._path(profile_id)

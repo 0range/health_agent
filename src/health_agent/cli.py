@@ -244,9 +244,11 @@ def list_profiles() -> None:
     """List local person profiles without health data."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
-        profiles = session.scalars(select(Profile).order_by(Profile.created_at)).all()
-    for profile in profiles:
-        typer.echo(f"profile_id={profile.id} name={profile.name}")
+        profiles = session.execute(
+            select(Profile.id, Profile.name).order_by(Profile.created_at)
+        ).all()
+    for profile_id, name in profiles:
+        typer.echo(f"profile_id={profile_id} name={name}")
 
 
 @app.command("import-file")
@@ -300,7 +302,11 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
         )
         rows = session.execute(
             select(
-                LabObservation,
+                LabObservation.id,
+                LabObservation.source_name,
+                LabObservation.source_value,
+                LabObservation.source_unit,
+                LabObservation.page_number,
                 filename,
                 Document.id,
                 Document.collected_date,
@@ -311,15 +317,25 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
             .where(Document.profile_id == profile_id)
             .order_by(LabObservation.created_at, LabObservation.id)
         ).all()
-    for observation, filename, document_id, collected_date, issued_date in rows:
+    for (
+        observation_id,
+        source_name,
+        source_value,
+        source_unit,
+        page_number,
+        filename,
+        document_id,
+        collected_date,
+        issued_date,
+    ) in rows:
         typer.echo(
             " ".join(
                 (
-                    f"observation_id={observation.id}",
-                    f"source_name={observation.source_name}",
-                    f"source_value={observation.source_value}",
-                    f"source_unit={observation.source_unit or ''}",
-                    f"page={observation.page_number}",
+                    f"observation_id={observation_id}",
+                    f"source_name={source_name}",
+                    f"source_value={source_value}",
+                    f"source_unit={source_unit or ''}",
+                    f"page={page_number}",
                     f"filename={filename}",
                     f"document_id={document_id}",
                     f"collected_date={collected_date or ''}",
@@ -619,15 +635,20 @@ def configure_gmail(
         current = profile.account(account_id)
     except KeyError:
         current = None
-    account = GmailAccount.create(
-        account_id,
-        initial_lookback_days=lookback_days,
-        trusted_senders=(
-            trusted_sender
-            if trusted_sender is not None
-            else (() if current is None else current.trusted_senders)
-        ),
-    )
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="account-id") from error
+    try:
+        account = GmailAccount.create(
+            account_id,
+            initial_lookback_days=lookback_days,
+            trusted_senders=(
+                trusted_sender
+                if trusted_sender is not None
+                else (() if current is None else current.trusted_senders)
+            ),
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
     if current is not None and current.email is not None:
         account = account.with_email(current.email)
     profiles.save(profile.upsert_account(account))
@@ -670,8 +691,32 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
     """Show safe local Gmail connection and cursor status."""
     settings = Settings()
     profiles, tokens, state = _gmail_stores(settings)
-    profile = profiles.load(str(profile_id))
-    accounts = _selected_gmail_accounts(profile, account_id)
+    profile_key = str(profile_id)
+    try:
+        if not profiles.exists(profile_key):
+            typer.echo(
+                f"status=not_configured profile={profile_key} "
+                "action_required=configure"
+            )
+            return
+        profile = profiles.load(profile_key)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        typer.echo(
+            f"status=invalid_configuration profile={profile_key} "
+            "action_required=repair_configuration",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    try:
+        accounts = _selected_gmail_accounts(profile, account_id)
+    except KeyError:
+        typer.echo(
+            f"status=not_configured profile={profile_key} account={account_id} "
+            "action_required=configure"
+        )
+        return
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="account-id") from error
     for account in accounts:
         counts = state.counts(profile.profile_id, account.account_id)
         run = state.get_run_state(profile.profile_id, account.account_id)

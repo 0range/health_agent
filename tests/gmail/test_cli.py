@@ -26,6 +26,81 @@ from health_agent.models import DEFAULT_PROFILE_ID, Document, ReviewItem, Source
 PROFILE = "11111111-1111-1111-1111-111111111111"
 
 
+def test_status_reports_missing_profile_configuration_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GMAIL_ROOT", str(tmp_path / "gmail"))
+
+    result = CliRunner().invoke(app, ["gmail", "status", PROFILE])
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert result.stdout == (
+        f"status=not_configured profile={PROFILE} action_required=configure\n"
+    )
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("profile_entry_kind", ("broken_symlink", "directory"))
+def test_status_fails_closed_for_nonregular_profile_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile_entry_kind: str,
+) -> None:
+    root = tmp_path / "gmail"
+    profile_directory = root / PROFILE
+    profile_directory.mkdir(parents=True)
+    profile_path = profile_directory / "profile.json"
+    if profile_entry_kind == "broken_symlink":
+        profile_path.symlink_to(tmp_path / "missing-profile.json")
+    else:
+        profile_path.mkdir()
+    monkeypatch.setenv("GMAIL_ROOT", str(root))
+
+    result = CliRunner().invoke(app, ["gmail", "status", PROFILE])
+
+    assert result.exit_code == 1
+    assert result.output == (
+        f"status=invalid_configuration profile={PROFILE} "
+        "action_required=repair_configuration\n"
+    )
+    assert "not_configured" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_status_reports_missing_account_configuration_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GMAIL_ROOT", str(tmp_path / "gmail"))
+    runner = CliRunner()
+    assert (
+        runner.invoke(app, ["gmail", "configure", PROFILE, "personal"]).exit_code == 0
+    )
+
+    result = runner.invoke(app, ["gmail", "status", PROFILE, "--account-id", "work"])
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert result.stdout == (
+        f"status=not_configured profile={PROFILE} account=work "
+        "action_required=configure\n"
+    )
+    assert "Traceback" not in result.output
+
+
+def test_configure_reports_invalid_input_as_clean_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GMAIL_ROOT", str(tmp_path / "gmail"))
+
+    result = CliRunner().invoke(
+        app,
+        ["gmail", "configure", PROFILE, "personal", "--lookback-days", "0"],
+    )
+
+    assert result.exit_code == 2
+    assert "initial lookback must be between 1 and 365 days" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_configure_multiple_accounts_and_show_safe_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
