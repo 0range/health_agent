@@ -14,7 +14,7 @@ from health_agent.automation.models import AutomationJob, AutomationSource
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.stores import LocalGmailProfileStore
-from health_agent.google_drive.stores import LocalProfileStore
+from health_agent.google_drive.stores import LocalProfileStore, LocalTokenStore
 from health_agent.whoop.models import WhoopConnection
 
 
@@ -64,6 +64,13 @@ def _profile_directories(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(directories, key=lambda value: value.name))
 
 
+def _has_profile_file(directory: Path) -> bool:
+    path = directory / "profile.json"
+    if path.is_symlink():
+        raise RuntimeError("unsafe_configuration")
+    return path.exists()
+
+
 @dataclass(frozen=True, slots=True)
 class GmailJobAdapter:
     source: AutomationSource = "gmail"
@@ -72,6 +79,8 @@ class GmailJobAdapter:
         store = LocalGmailProfileStore(settings.gmail_root)
         jobs: list[AutomationJob] = []
         for directory in _profile_directories(settings.gmail_root):
+            if not _has_profile_file(directory):
+                continue
             profile = store.load(directory.name)
             for account in profile.accounts:
                 jobs.append(
@@ -98,6 +107,7 @@ class DriveJobAdapter:
 
     def discover(self, settings: Settings) -> Iterable[AutomationJob]:
         store = LocalProfileStore(settings.google_drive_root)
+        tokens = LocalTokenStore(settings.google_drive_root)
         return tuple(
             AutomationJob(
                 "drive",
@@ -105,8 +115,10 @@ class DriveJobAdapter:
                 "main",
                 True,
                 ("drive", "sync", profile.profile_id),
+                None if tokens.exists(profile.profile_id) else "oauth_not_ready",
             )
             for directory in _profile_directories(settings.google_drive_root)
+            if _has_profile_file(directory)
             for profile in (store.load(directory.name),)
         )
 

@@ -15,7 +15,8 @@ from health_agent.config import Settings
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.stores import LocalGmailProfileStore
 from health_agent.google_drive.config import DriveProfile
-from health_agent.google_drive.stores import LocalProfileStore
+from health_agent.google_drive.stores import LocalProfileStore, LocalTokenStore
+from health_agent.google_drive.types import DriveAccountIdentity
 from health_agent.whoop.models import WhoopConnection
 
 PROFILE_A = UUID("00000000-0000-0000-0000-000000000001")
@@ -92,3 +93,31 @@ def test_symlinked_or_malformed_profile_configuration_fails_closed(tmp_path: Pat
     (bad_root / str(PROFILE_A) / "profile.json").write_text("{}", encoding="utf-8")
     with pytest.raises((KeyError, TypeError, ValueError)):
         tuple(DriveJobAdapter().discover(Settings(google_drive_root=bad_root)))
+
+
+def test_unconfigured_gmail_residue_is_an_empty_source(tmp_path: Path) -> None:
+    root = tmp_path / "gmail"
+    residue = root / str(PROFILE_A) / "accounts" / "main"
+    residue.mkdir(parents=True)
+    (residue / "sync.lock").write_text("", encoding="utf-8")
+
+    assert tuple(GmailJobAdapter().discover(Settings(gmail_root=root))) == ()
+
+
+def test_drive_without_oauth_is_discovered_as_not_ready(tmp_path: Path) -> None:
+    root = tmp_path / "drive"
+    LocalProfileStore(root).save(
+        DriveProfile.create(str(PROFILE_A), ["folder_abcdefghij"])
+    )
+
+    job = next(iter(DriveJobAdapter().discover(Settings(google_drive_root=root))))
+    assert job.key == ("drive", str(PROFILE_A), "main")
+    assert job.not_ready_code == "oauth_not_ready"
+
+    LocalTokenStore(root).publish_verified(
+        str(PROFILE_A),
+        DriveAccountIdentity("permission-1", "owner@example.com"),
+        '{"token":"synthetic"}',
+    )
+    ready = next(iter(DriveJobAdapter().discover(Settings(google_drive_root=root))))
+    assert ready.not_ready_code is None

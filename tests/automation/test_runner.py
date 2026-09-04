@@ -8,9 +8,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from health_agent.automation.models import AutomationJob, AutomationResult
+from health_agent.automation.registry import DriveJobAdapter, GmailJobAdapter
 from health_agent.automation.runner import AutomationRunner, SubprocessJobExecutor
 from health_agent.automation.storage import AutomationState, GlobalRunLock
 from health_agent.config import Settings
+from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.stores import LocalProfileStore
 
 NOW = datetime(2026, 9, 4, 10, 0, tzinfo=UTC)
 
@@ -231,3 +234,60 @@ def test_state_write_failure_is_reported_and_full_remains_due(tmp_path: Path) ->
     assert result.status == "failed"
     assert result.safe_error_code == "state_write_failed"
     assert not (tmp_path / "state.json").exists()
+
+
+def test_not_ready_oauth_is_deferred_without_execution_or_checkpoint(
+    tmp_path: Path,
+) -> None:
+    job = AutomationJob(
+        "drive",
+        "profile-1",
+        "main",
+        True,
+        ("drive", "sync", "profile-1"),
+        "oauth_not_ready",
+    )
+    executor = FakeExecutor()
+    first = _runner(tmp_path, [FakeAdapter("drive", (job,))], executor, FakeLock())
+    assert first.run() == (
+        AutomationResult(
+            "drive", "profile-1", "main", "full", "deferred", "oauth_not_ready"
+        ),
+    )
+    assert executor.calls == []
+
+    second_executor = FakeExecutor()
+    second = _runner(
+        tmp_path, [FakeAdapter("drive", (job,))], second_executor, FakeLock()
+    )
+    assert second.run()[0].mode == "full"
+    assert second_executor.calls == []
+
+
+def test_live_shape_unconfigured_gmail_and_unauthorized_drive_is_nonfatal(
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-0000-0000-000000000001"
+    gmail_root = tmp_path / "gmail"
+    (gmail_root / profile_id / "accounts" / "main").mkdir(parents=True)
+    drive_root = tmp_path / "drive"
+    LocalProfileStore(drive_root).save(
+        DriveProfile.create(profile_id, ["folder_abcdefghij"])
+    )
+    settings = Settings(gmail_root=gmail_root, google_drive_root=drive_root)
+    executor = FakeExecutor()
+    runner = AutomationRunner(
+        settings,
+        [GmailJobAdapter(), DriveJobAdapter()],
+        executor,
+        AutomationState(tmp_path / "automation-state.json"),
+        FakeLock(),
+        clock=lambda: NOW,
+    )
+
+    assert runner.run() == (
+        AutomationResult(
+            "drive", profile_id, "main", "full", "deferred", "oauth_not_ready"
+        ),
+    )
+    assert executor.calls == []
