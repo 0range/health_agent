@@ -134,6 +134,9 @@ def test_model_output_with_missing_or_forged_citations_fails_closed() -> None:
         "Ferritin is 42. [LAB1] [LAB99]",
         "Ferritin is 42. [LAB1] [FORGED]",
         "Ferritin is 42. [LAB1] [not-a-source]",
+        f"Ferritin is 42. [LAB1] [{'X' * 65}]",
+        "Ferritin is 42. [LAB1] [unfinished",
+        "Ferritin is 42. [LAB1]]",
     ):
         responder = FakeResponder(generated)
         result = HealthQuestionApplicationService(

@@ -24,7 +24,7 @@ INSUFFICIENT_EVIDENCE_TEXT = (
     "safely."
 )
 
-_BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]{1,64}\]")
+_BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]*\]")
 
 
 class QuestionAnswerErrorCode(StrEnum):
@@ -171,6 +171,9 @@ def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bo
     """
 
     labels = set(_BRACKETED_TOKEN.findall(answer))
+    remainder = _BRACKETED_TOKEN.sub("", answer)
+    if "[" in remainder or "]" in remainder:
+        return False
     allowed = {item.citation_label for item in context.evidence}
     return bool(labels & allowed) and labels <= allowed
 
