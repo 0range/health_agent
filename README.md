@@ -25,11 +25,13 @@ Google Drive, Gmail, WHOOP и Telegram входят в следующие сре
    uv run health-agent import-file /полный/путь/к/анализу.pdf
    ```
 
-3. Открыть Metabase:
+3. Открыть именно подготовленный дашборд:
 
    ```bash
-   open http://127.0.0.1:53000
+   open "$(uv run health-agent dashboard setup | sed -E 's/.* url=([^ ]+) .*/\1/')"
    ```
+
+   Команда безопасно повторяет настройку и берет точный URL дашборда из ответа.
 
 До ручного подтверждения показатель не появляется на графике. Очередь доступна
 через встроенные действия `review list`, `review approve` и `review reject`.

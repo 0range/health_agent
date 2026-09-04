@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-
 import pytest
-from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import insert
 
-from alembic import command
 from health_agent.config import Settings
-from health_agent.db import build_engine, session_scope
 from health_agent.models import (
     Document,
     DocumentPage,
@@ -41,31 +36,6 @@ def test_review_status_binds_lowercase_values() -> None:
     )
 
     assert "'verified'" in compiled
-
-
-@pytest.fixture(scope="session")
-def engine():
-    settings = Settings()
-    assert settings.database_url is not None
-    alembic_config = Config("alembic.ini")
-    alembic_config.set_main_option("sqlalchemy.url", settings.database_url)
-    command.upgrade(alembic_config, "head")
-    return build_engine(settings)
-
-
-@pytest.fixture
-def session(engine) -> Iterator[Session]:
-    with engine.begin() as connection:
-        for table in (
-            "review_items",
-            "lab_observations",
-            "document_pages",
-            "documents",
-            "source_records",
-        ):
-            connection.execute(text(f"DELETE FROM {table}"))
-    with session_scope(engine) as database_session:
-        yield database_session
 
 
 def make_document(session: Session, identity: str = "1") -> Document:

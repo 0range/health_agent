@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from conftest import DisposablePostgres
 from pydantic import ValidationError
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import DBAPIError
@@ -14,7 +15,6 @@ from typer.testing import CliRunner
 
 from health_agent import cli
 from health_agent.config import Settings
-from health_agent.db import build_engine
 from health_agent.metabase import (
     MetabaseBootstrapResult,
     bootstrap_metabase,
@@ -303,9 +303,11 @@ def test_bootstrap_repairs_drifted_same_named_objects(
     assert fake_metabase.dashboards[0]["dashcards"][0]["card_id"] == 10
 
 
-def test_dashboard_reader_repairs_existing_privileges_and_membership() -> None:
-    settings = Settings()
-    engine = build_engine(settings)
+def test_dashboard_reader_repairs_existing_privileges_and_membership(
+    disposable_postgres: DisposablePostgres,
+) -> None:
+    settings = disposable_postgres.settings
+    engine = disposable_postgres.engine
     ensure_dashboard_reader(settings, engine=engine)
     try:
         with engine.begin() as connection:
@@ -403,12 +405,13 @@ def test_dashboard_reader_repairs_existing_privileges_and_membership() -> None:
         ensure_dashboard_reader(settings, engine=engine)
         with engine.begin() as connection:
             connection.execute(text("DROP ROLE IF EXISTS health_dashboard_test_parent"))
-        engine.dispose()
 
 
-def test_dashboard_reader_fails_closed_when_role_owns_an_object() -> None:
-    settings = Settings()
-    engine = build_engine(settings)
+def test_dashboard_reader_fails_closed_when_role_owns_an_object(
+    disposable_postgres: DisposablePostgres,
+) -> None:
+    settings = disposable_postgres.settings
+    engine = disposable_postgres.engine
     ensure_dashboard_reader(settings, engine=engine)
     with engine.begin() as connection:
         connection.execute(text("DROP TABLE IF EXISTS health_dashboard_owned_test"))
@@ -426,7 +429,6 @@ def test_dashboard_reader_fails_closed_when_role_owns_an_object() -> None:
             )
             connection.execute(text("DROP TABLE health_dashboard_owned_test"))
         ensure_dashboard_reader(settings, engine=engine)
-        engine.dispose()
 
 
 def test_dashboard_setup_prints_only_safe_identifiers(
