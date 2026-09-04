@@ -250,8 +250,8 @@ class TelegramMedicalInbox:
             return InboxReceipt(
                 sha256,
                 size_bytes,
-                "imported" if report.status == "duplicate" else report.status,
-                _import_reply_text(report.status),
+                "received",
+                "Medical PDF received and stored. It may need review before use.",
                 external_reference=str(report.document_id),
             )
         finally:
@@ -290,12 +290,6 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size_bytes += len(chunk)
     return digest.hexdigest(), size_bytes
-
-
-def _import_reply_text(status: str) -> str:
-    if status in {"imported", "duplicate"}:
-        return "Medical PDF imported. It may need review before use."
-    return "This medical PDF needs attention before it can be used."
 
 
 def build_question_application(

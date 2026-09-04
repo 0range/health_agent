@@ -137,15 +137,25 @@ def test_deferred_question_reuses_exact_prepared_reply_across_restart_and_parts(
     assert "Attempt 1" not in json.dumps(state.audit_rows("updates"))
 
 
-def test_imported_pdf_deferred_reply_replays_identical_duplicate_receipt(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("first_status", "processing_status"),
+    (
+        ("imported", "processed"),
+        ("ocr_required", "ocr_required"),
+        ("needs_attention", "needs_attention"),
+    ),
+)
+def test_pdf_deferred_reply_replays_identical_duplicate_receipt(
+    tmp_path: Path, first_status: str, processing_status: str
+):
     now = datetime.now(UTC)
     payload = b"%PDF-1.4\nsynthetic only\n%%EOF"
     statuses: list[str] = []
 
     def importer(*_args, **_kwargs):
-        status = "imported" if not statuses else "duplicate"
+        status = first_status if not statuses else "duplicate"
         statuses.append(status)
-        return ImportReport(status, "processed", PROFILE_ID, 0, 0)
+        return ImportReport(status, processing_status, PROFILE_ID, 0, 0)  # type: ignore[arg-type]
 
     @contextmanager
     def sessions(_engine):
@@ -198,10 +208,10 @@ def test_imported_pdf_deferred_reply_replays_identical_duplicate_receipt(tmp_pat
     assert service().process_update(update).status == "retryable_error"
     now += timedelta(seconds=2)
     result = service().process_update(update)
-    assert result.terminal and result.status == "imported"
-    assert statuses == ["imported", "duplicate"]
+    assert result.terminal and result.status == "received"
+    assert statuses == [first_status, "duplicate"]
     assert gateway.attempted[0] == gateway.attempted[1]
-    assert state.audit_rows("attachment_audit")[0]["status"] == "imported"
+    assert state.audit_rows("attachment_audit")[0]["status"] == "received"
     assert state.audit_rows("outbound_audit")[0]["status"] == "sent"
 
 

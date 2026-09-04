@@ -134,8 +134,8 @@ def test_telegram_pdf_inbox_imports_with_profile_provenance_and_is_replay_safe(
     first = inbox.ingest(_attachment(PROFILE_ID), [b"pdf ", b"bytes"])
     second = inbox.ingest(_attachment(PROFILE_ID), [b"pdf bytes"])
 
-    assert first.status == "imported"
-    assert second.status == "imported"
+    assert first.status == "received"
+    assert second.status == "received"
     assert first.reply_text == second.reply_text
     assert first.sha256 == hashlib.sha256(b"pdf bytes").hexdigest()
     assert first.size_bytes == len(b"pdf bytes")

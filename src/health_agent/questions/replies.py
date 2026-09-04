@@ -115,9 +115,15 @@ class PrivateReplyStore:
         for path in self.root.iterdir():
             if not (_REPLY_NAME.fullmatch(path.name) or path.name.startswith(".reply-")):
                 continue
-            metadata = path.lstat()
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                continue
             if stat.S_ISREG(metadata.st_mode) and metadata.st_mtime < cutoff:
-                path.unlink()
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
 
     def _path(self, bot_id: int, update_id: int) -> Path:
         return self.root / f"{delivery_request_id(bot_id, update_id)}.reply"

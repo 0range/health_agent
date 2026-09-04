@@ -88,3 +88,25 @@ def test_orphan_sweep_removes_expired_reply_only_and_ignores_symlinks(tmp_path: 
     PrivateReplyStore(store.root, clock=lambda: REPLY_TTL_SECONDS + 2)
     assert not path.exists()
     assert other.exists() and symlink.is_symlink()
+
+
+def test_orphan_sweep_tolerates_concurrent_terminal_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    store = PrivateReplyStore(tmp_path / "replies")
+    store.put(CONTEXT, "old reply")
+    path, = store.root.iterdir()
+    os.utime(path, (1, 1))
+    original_lstat = Path.lstat
+
+    def disappearing_lstat(candidate: Path):
+        if candidate == path and candidate.exists():
+            candidate.unlink()
+            raise FileNotFoundError(candidate)
+        return original_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", disappearing_lstat)
+
+    store.sweep()
+
+    assert list(store.root.iterdir()) == []
