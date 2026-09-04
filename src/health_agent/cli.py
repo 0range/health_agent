@@ -20,10 +20,21 @@ from health_agent.gmail.stores import (
     LocalGmailStateStore,
     LocalGmailTokenStore,
 )
+from health_agent.google_drive.api import GoogleDriveGateway
+from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.medical_consumer import MedicalDriveConsumer
+from health_agent.google_drive.oauth import DriveOAuth
+from health_agent.google_drive.service import DriveProfileMismatch, DriveService
+from health_agent.google_drive.stores import (
+    LocalProfileStore,
+    LocalSyncStateStore,
+    LocalTokenStore,
+)
 from health_agent.importer import (
     approve_observation,
     import_document,
     reject_observation,
+    set_document_medical_dates,
 )
 from health_agent.metabase import bootstrap_metabase
 from health_agent.models import (
@@ -68,6 +79,7 @@ gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
 telegram_app = typer.Typer(help="Configure the local Telegram connector.")
 panel_app = typer.Typer(help="Serve the local management panel.")
 staging_app = typer.Typer(help="Manage the isolated local staging environment.")
+drive_app = typer.Typer(help="Manage read-only Google Drive profiles.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
@@ -76,7 +88,7 @@ app.add_typer(gmail_app, name="gmail")
 app.add_typer(telegram_app, name="telegram")
 app.add_typer(panel_app, name="panel")
 app.add_typer(staging_app, name="staging")
-app.add_typer(panel_app, name="panel")
+app.add_typer(drive_app, name="drive")
 
 
 @app.callback()
@@ -169,13 +181,19 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
             .scalar_subquery()
         )
         rows = session.execute(
-            select(LabObservation, filename)
+            select(
+                LabObservation,
+                filename,
+                Document.id,
+                Document.collected_date,
+                Document.issued_date,
+            )
             .join(LabObservation.document)
             .where(LabObservation.status == ReviewStatus.NEEDS_REVIEW)
             .where(Document.profile_id == profile_id)
             .order_by(LabObservation.created_at, LabObservation.id)
         ).all()
-    for observation, filename in rows:
+    for observation, filename, document_id, collected_date, issued_date in rows:
         typer.echo(
             " ".join(
                 (
@@ -185,6 +203,9 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
                     f"source_unit={observation.source_unit or ''}",
                     f"page={observation.page_number}",
                     f"filename={filename}",
+                    f"document_id={document_id}",
+                    f"collected_date={collected_date or ''}",
+                    f"issued_date={issued_date or ''}",
                 )
             )
         )
@@ -210,6 +231,33 @@ def reject_review_item(
     with session_scope(build_engine(settings)) as session:
         reject_observation(session, observation_id, profile_id=profile_id)
     typer.echo(f"status=rejected observation_id={observation_id}")
+
+
+@review_app.command("set-date")
+def set_review_document_date(
+    document_id: UUID,
+    collected_date: str | None = None,
+    issued_date: str | None = None,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> None:
+    """Set a human-reviewed medical date without using an import timestamp."""
+    settings = Settings()
+    with session_scope(build_engine(settings)) as session:
+        document = set_document_medical_dates(
+            session,
+            document_id,
+            collected_date=_medical_date("collected-date", collected_date),
+            issued_date=_medical_date("issued-date", issued_date),
+            profile_id=profile_id,
+        )
+        saved_id = document.id
+        saved_collected_date = document.collected_date
+        saved_issued_date = document.issued_date
+    typer.echo(
+        f"status=date_set document_id={saved_id} "
+        f"collected_date={saved_collected_date or ''} "
+        f"issued_date={saved_issued_date or ''}"
+    )
 
 
 @dashboard_app.command("setup")
@@ -788,6 +836,188 @@ def discover_telegram_id() -> None:
         return
     for user_id, chat_id in sorted(candidates):
         typer.echo(f"telegram_user_id={user_id} private_chat_id={chat_id}")
+
+
+def _drive_stores(
+    settings: Settings,
+) -> tuple[LocalProfileStore, LocalTokenStore, LocalSyncStateStore]:
+    return (
+        LocalProfileStore(settings.google_drive_root),
+        LocalTokenStore(settings.google_drive_root),
+        LocalSyncStateStore(settings.google_drive_root),
+    )
+
+
+@drive_app.command("configure")
+def configure_drive(profile_id: UUID, folders: list[str]) -> None:
+    """Configure one or more read-only source folders for a local profile."""
+    settings = Settings()
+    profiles, _, state = _drive_stores(settings)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profile = DriveProfile.create(profile_key, folders)
+    with state.sync_lock(profile_key):
+        if profiles.exists(profile_key):
+            current = profiles.load(profile_key)
+            roots_changed = current.root_folder_ids != profile.root_folder_ids
+        else:
+            roots_changed = True
+        if roots_changed:
+            state.clear_cursor(profile_key)
+        profiles.save(profile)
+    typer.echo(
+        f"status=configured profile={profile.profile_id} roots={len(profile.root_folder_ids)}"
+    )
+
+
+@drive_app.command("auth")
+def authorize_drive(profile_id: UUID) -> None:
+    """Authorize one Google account using a local Desktop OAuth callback."""
+    settings = Settings()
+    profiles, tokens, _ = _drive_stores(settings)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profiles.load(profile_key)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
+    credentials = oauth.stage(profile_key, force=True, interactive=True)
+    identity = GoogleDriveGateway.from_credentials(
+        credentials, timeout_seconds=settings.google_drive_http_timeout_seconds
+    ).account_identity()
+    previous = tokens.load_verified(profile_key)
+    if previous is not None and previous[0].permission_id != identity.permission_id:
+        raise DriveProfileMismatch(
+            f"profile {profile_key!r} is already bound to another Google account"
+        )
+    oauth.publish_verified(profile_key, credentials, identity)
+    typer.echo(
+        f"status=authorized profile={profile_key} account={identity.email}"
+    )
+
+
+@drive_app.command("status")
+def drive_status(profile_id: UUID) -> None:
+    """Show safe local Drive configuration and synchronization freshness."""
+    settings = Settings()
+    profiles, tokens, state = _drive_stores(settings)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profile = profiles.load(profile_key)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
+    try:
+        verified = tokens.load_verified(profile_key)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        verified = None
+    counts = state.counts(profile_key)
+    run = state.run_state(profile_key)
+    attention = sum(
+        count
+        for outcome, count in counts.items()
+        if outcome
+        in {
+            "needs_attention",
+            "too_large",
+            "processing_failed",
+            "transient_download_failed",
+            "download_failed",
+            "not_found",
+            "download_restricted",
+            "unsupported_google_native",
+            "unsupported_media_type",
+        }
+    )
+    typer.echo(
+        " ".join(
+            (
+                "status=configured",
+                f"profile={profile.profile_id}",
+                f"token={oauth.local_status(profile_key)}",
+                f"account_bound={'yes' if verified is not None else 'no'}",
+                f"account={verified[0].email if verified is not None else 'unknown'}",
+                f"roots={len(profile.root_folder_ids)}",
+                f"root_accessible={run['root_accessible'] or 'unknown'}",
+                f"sync_state={'interrupted' if run['in_progress'] == 'yes' else 'idle'}",
+                f"cursor={'ready' if state.get_cursor(profile_key) else 'none'}",
+                f"medically_imported={counts.get('medically_imported', 0)}",
+                f"ocr_required={counts.get('ocr_required', 0)}",
+                f"attention={attention}",
+                f"action_required={attention + counts.get('ocr_required', 0)}",
+                f"last_attempt={run['last_attempt_at'] or 'never'}",
+                f"last_success={run['last_success_at'] or 'never'}",
+                f"last_error={run['last_error_code'] or 'none'}",
+            )
+        )
+    )
+
+
+@drive_app.command("sync")
+def sync_drive(profile_id: UUID, full: bool = False) -> None:
+    """Import new or changed Drive files into the medical pipeline."""
+    settings = Settings()
+    profiles, tokens, state = _drive_stores(settings)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
+    credentials = oauth.stage(profile_key)
+    verified = tokens.load_verified(profile_key)
+    if verified is None:
+        raise RuntimeError(f"Google Drive profile {profile_key!r} needs OAuth authorization")
+    identity = verified[0]
+    with state.sync_lock(profile_key):
+        profile = profiles.load(profile_key).with_account(
+            identity.permission_id, identity.email
+        )
+        service = DriveService(
+            profile,
+            GoogleDriveGateway.from_credentials(
+                credentials,
+                timeout_seconds=settings.google_drive_http_timeout_seconds,
+            ),
+            state,
+            MedicalDriveConsumer(
+                profile_key,
+                build_engine(settings),
+                FileVault(settings.vault_root),
+                settings.temporary_root,
+            ),
+        )
+        report = service.sync(full=full, lock_already_held=True)
+    oauth.publish_verified(profile_key, credentials, identity)
+    typer.echo(
+        " ".join(
+            (
+                "status=synced",
+                f"profile={report.profile_id}",
+                f"mode={report.mode}",
+                f"discovered={report.discovered}",
+                f"medically_imported={report.medically_imported}",
+                f"duplicates={report.duplicates}",
+                f"ocr_required={report.ocr_required}",
+                f"attention={report.needs_attention}",
+                f"failed={report.failed}",
+                f"unchanged={report.unchanged}",
+                f"skipped={report.skipped}",
+                f"removed={report.removed}",
+            )
+        )
+    )
+
+
+def _require_database_profile(settings: Settings, profile_id: UUID) -> None:
+    with session_scope(build_engine(settings)) as session:
+        if session.scalar(select(Profile.id).where(Profile.id == profile_id)) is None:
+            raise typer.BadParameter("profile does not exist in the health database")
 
 
 def main() -> None:
