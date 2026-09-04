@@ -179,3 +179,25 @@ rather than being omitted (for example, scan all bracketed spans within the alre
 bounded generated output, then validate both shape and exact membership). Add a valid
 label plus an overlong forged-label case. No other remaining finding was identified in
 this narrow re-review.
+
+## Final citation-parser re-review (`8aba4b8`)
+
+### Verdicts
+
+- **SPEC: PASS**
+- **QUALITY: PASS**
+
+The remaining citation finding is resolved. The parser now extracts every flat bracketed
+span without an arbitrary length omission, validates every extracted token against the
+local evidence-label set, and rejects any unmatched or nested bracket remainder
+(`src/health_agent/questions/service.py:27, 165-178`). Missing, unknown, forged,
+overlong, unfinished, extra-closing, and nested bracket citation forms fail closed to the
+same insufficient-evidence response with the deterministic local footer. The focused
+tests cover the prior valid-plus-forged cases plus a 65-character token, unfinished
+opening bracket, and extra closing bracket (`tests/questions/test_service.py:128-150`).
+
+Together with the prior re-reviews, all Task 2 findings are resolved: user question and
+evidence remain bounded JSON data in a user-level input while instructions are separate;
+inference-blocking limitations avoid remote calls; citation failures preserve the local
+footer; and the approved stateless Responses API arguments and safe error/privacy
+behavior are unchanged. No findings remain. I did not modify implementation or run tests.
