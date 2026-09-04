@@ -116,4 +116,3 @@ def test_sync_returns_nonzero_for_safe_failure(monkeypatch: Any) -> None:
 
     assert result.exit_code == 1
     assert "error=reauth_required" in result.stdout
-

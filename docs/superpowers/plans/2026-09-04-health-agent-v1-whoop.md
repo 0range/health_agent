@@ -122,4 +122,3 @@
 - [ ] Run auth URL generation and status against an unconnected test profile without real credentials.
 - [ ] Record exact official documentation references and the one remaining live OAuth action.
 - [ ] Commit the final connector slice.
-

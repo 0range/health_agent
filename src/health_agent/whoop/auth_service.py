@@ -52,7 +52,9 @@ def complete_whoop_authorization(
             headers={"Authorization": f"Bearer {token.access_token}"},
         )
     except httpx.TransportError as error:
-        raise WhoopApiError("WHOOP profile verification is temporarily unavailable") from error
+        raise WhoopApiError(
+            "WHOOP profile verification is temporarily unavailable"
+        ) from error
     if response.status_code != 200:
         raise WhoopApiError(
             f"WHOOP profile verification returned status {response.status_code}"
@@ -63,7 +65,9 @@ def complete_whoop_authorization(
             raise TypeError
         external_user_id = int(payload["user_id"])
     except (KeyError, TypeError, ValueError) as error:
-        raise WhoopApiError("WHOOP profile verification returned an invalid response") from error
+        raise WhoopApiError(
+            "WHOOP profile verification returned an invalid response"
+        ) from error
     token_store.save(profile_key, account_name, token)
     return AuthorizedWhoopAccount(external_user_id, token.scopes)
 
@@ -76,7 +80,9 @@ def open_and_wait_for_whoop_authorization(
 ) -> tuple[PendingWhoopAuthorization, dict[str, str]]:
     pending = begin_whoop_authorization(oauth)
     opener(pending.url)
-    query = wait_for_loopback_callback(oauth.redirect_uri, timeout_seconds=timeout_seconds)
+    query = wait_for_loopback_callback(
+        oauth.redirect_uri, timeout_seconds=timeout_seconds
+    )
     return pending, query
 
 
@@ -104,7 +110,9 @@ def wait_for_loopback_callback(
                 return
             CallbackHandler.callback_query = {
                 key: values[0]
-                for key, values in parse_qs(request.query, keep_blank_values=True).items()
+                for key, values in parse_qs(
+                    request.query, keep_blank_values=True
+                ).items()
                 if values
             }
             body = b"WHOOP connected. You can close this tab."

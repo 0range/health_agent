@@ -93,7 +93,9 @@ class WhoopClient:
         seen_tokens: set[str] = set()
         while True:
             payload = self._request(path, params)
-            if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("records"), list
+            ):
                 raise WhoopApiError("WHOOP API returned an invalid collection")
             records = payload["records"]
             if not all(isinstance(record, dict) for record in records):
@@ -125,7 +127,9 @@ class WhoopClient:
             try:
                 refreshed = self._oauth.refresh(current.refresh_token)
             except WhoopOAuthError as error:
-                raise WhoopAuthorizationRequired("WHOOP authorization must be renewed") from error
+                raise WhoopAuthorizationRequired(
+                    "WHOOP authorization must be renewed"
+                ) from error
             self._tokens.save(self._profile_slug, self._account_name, refreshed)
             return refreshed
 
@@ -142,7 +146,9 @@ class WhoopClient:
                 )
             except httpx.TransportError as error:
                 if attempt + 1 == self._max_attempts:
-                    raise WhoopApiError("WHOOP API is temporarily unavailable") from error
+                    raise WhoopApiError(
+                        "WHOOP API is temporarily unavailable"
+                    ) from error
                 self._sleep(float(2**attempt))
                 continue
 
@@ -158,7 +164,9 @@ class WhoopClient:
                 continue
             if not 200 <= response.status_code < 300:
                 if response.status_code == 401:
-                    raise WhoopAuthorizationRequired("WHOOP authorization must be renewed")
+                    raise WhoopAuthorizationRequired(
+                        "WHOOP authorization must be renewed"
+                    )
                 raise WhoopApiError(f"WHOOP API returned status {response.status_code}")
             try:
                 return response.json()

@@ -118,8 +118,12 @@ def test_raw_revision_is_idempotent(session: Session) -> None:
     normalized = normalize_whoop("cycle", payload)
     fetched_at = datetime(2026, 9, 4, tzinfo=UTC)
 
-    first = store_normalized_record(session, connection, normalized, payload, fetched_at)
-    second = store_normalized_record(session, connection, normalized, payload, fetched_at)
+    first = store_normalized_record(
+        session, connection, normalized, payload, fetched_at
+    )
+    second = store_normalized_record(
+        session, connection, normalized, payload, fetched_at
+    )
 
     assert first.raw_created == 1
     assert second.raw_created == 0

@@ -44,4 +44,3 @@ Metabase-ready views: `whoop_daily_health`, `whoop_sleep_history`,
 - Пагинация: <https://developer.whoop.com/docs/developing/pagination/>
 - Лимиты и `X-RateLimit-*`: <https://developer.whoop.com/docs/developing/rate-limiting/>
 - Создание приложения: <https://developer.whoop.com/docs/developing/getting-started/>
-

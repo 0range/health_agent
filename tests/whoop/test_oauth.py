@@ -29,7 +29,9 @@ def test_authorization_url_uses_official_endpoint_and_all_required_scopes() -> N
 
 def test_callback_rejects_state_mismatch_without_exposing_code() -> None:
     with pytest.raises(WhoopOAuthError) as caught:
-        WhoopOAuth.validate_callback({"state": "badstate", "code": "private-code"}, "goodstat")
+        WhoopOAuth.validate_callback(
+            {"state": "badstate", "code": "private-code"}, "goodstat"
+        )
 
     assert "private-code" not in str(caught.value)
 
@@ -97,4 +99,3 @@ def test_token_error_does_not_expose_response_or_credentials() -> None:
     rendered = str(caught.value)
     assert "client-secret" not in rendered
     assert "authorization-code" not in rendered
-

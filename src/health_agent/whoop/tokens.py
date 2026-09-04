@@ -71,7 +71,9 @@ class TokenStore:
     @staticmethod
     def _validate_key(value: str, label: str) -> str:
         if _SAFE_KEY.fullmatch(value) is None:
-            raise TokenStoreError(f"Invalid {label}; use lowercase letters, digits, _ or -")
+            raise TokenStoreError(
+                f"Invalid {label}; use lowercase letters, digits, _ or -"
+            )
         return value
 
     def _path(self, profile_slug: str, account_name: str) -> Path:
@@ -96,7 +98,9 @@ class TokenStore:
         encoded = json.dumps(token.as_json(), sort_keys=True).encode("utf-8")
         temporary_name: str | None = None
         try:
-            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temporary:
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent, delete=False
+            ) as temporary:
                 temporary_name = temporary.name
                 os.chmod(temporary.fileno(), 0o600)
                 temporary.write(encoded)
@@ -130,4 +134,3 @@ class TokenStore:
         if not isinstance(payload, dict):
             raise TokenStoreError("WHOOP token file is invalid")
         return WhoopToken.from_json(payload)
-

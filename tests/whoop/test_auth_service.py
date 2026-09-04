@@ -38,7 +38,9 @@ def oauth_with_token_transport() -> WhoopOAuth:
     )
 
 
-def test_complete_verifies_identity_before_saving_per_profile_token(tmp_path: Path) -> None:
+def test_complete_verifies_identity_before_saving_per_profile_token(
+    tmp_path: Path,
+) -> None:
     store = TokenStore(tmp_path / "tokens")
     oauth = oauth_with_token_transport()
     pending = begin_whoop_authorization(oauth)
@@ -78,7 +80,9 @@ def test_failed_profile_verification_does_not_save_token(tmp_path: Path) -> None
             {"state": pending.state, "code": "private-code"},
             http_client=httpx.Client(
                 transport=httpx.MockTransport(
-                    lambda request: httpx.Response(401, json={"access": "access-secret"})
+                    lambda request: httpx.Response(
+                        401, json={"access": "access-secret"}
+                    )
                 )
             ),
         )
@@ -119,4 +123,6 @@ def test_loopback_callback_captures_only_expected_path() -> None:
 
 def test_callback_rejects_non_loopback_redirect() -> None:
     with pytest.raises(ValueError, match="loopback"):
-        wait_for_loopback_callback("http://example.com:8765/callback", timeout_seconds=0)
+        wait_for_loopback_callback(
+            "http://example.com:8765/callback", timeout_seconds=0
+        )

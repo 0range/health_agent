@@ -194,7 +194,9 @@ def whoop_status(
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
         status = get_whoop_status(session, profile_id, account)
-    last_success = status.last_success_at.isoformat() if status.last_success_at else "never"
+    last_success = (
+        status.last_success_at.isoformat() if status.last_success_at else "never"
+    )
     typer.echo(
         " ".join(
             (
@@ -216,7 +218,9 @@ def whoop_status(
 def whoop_sync(
     profile_id: UUID = DEFAULT_PROFILE_ID,
     account: str = "main",
-    full: bool = typer.Option(False, "--full", help="Fetch all history available from WHOOP."),
+    full: bool = typer.Option(
+        False, "--full", help="Fetch all history available from WHOOP."
+    ),
 ) -> None:
     """Backfill or incrementally synchronize one WHOOP account."""
     settings = Settings()
@@ -228,9 +232,7 @@ def whoop_sync(
         account,
     )
     with session_scope(build_engine(settings)) as session:
-        report = sync_whoop(
-            session, profile_id, account, client, full=full
-        )
+        report = sync_whoop(session, profile_id, account, client, full=full)
     typer.echo(
         " ".join(
             (

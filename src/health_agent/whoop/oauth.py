@@ -64,9 +64,7 @@ class WhoopOAuth:
         return f"{AUTHORIZATION_URL}?{query}"
 
     @staticmethod
-    def validate_callback(
-        query: dict[str, str], expected_state: str
-    ) -> str:
+    def validate_callback(query: dict[str, str], expected_state: str) -> str:
         if query.get("state") != expected_state:
             raise WhoopOAuthError("WHOOP OAuth callback state did not match")
         if "error" in query:
@@ -102,7 +100,9 @@ class WhoopOAuth:
         try:
             response = self._http.post(TOKEN_URL, data=data)
         except httpx.HTTPError as error:
-            raise WhoopOAuthError("WHOOP token endpoint is temporarily unavailable") from error
+            raise WhoopOAuthError(
+                "WHOOP token endpoint is temporarily unavailable"
+            ) from error
         if response.status_code != 200:
             raise WhoopOAuthError(
                 f"WHOOP token endpoint returned status {response.status_code}"
@@ -119,7 +119,9 @@ class WhoopOAuth:
                 scopes = tuple(str(item) for item in raw_scopes)
             token_type = str(payload.get("token_type", "bearer"))
         except (KeyError, TypeError, ValueError) as error:
-            raise WhoopOAuthError("WHOOP token endpoint returned an invalid response") from error
+            raise WhoopOAuthError(
+                "WHOOP token endpoint returned an invalid response"
+            ) from error
         if not access_token or not refresh_token or expires_in <= 0:
             raise WhoopOAuthError("WHOOP token endpoint returned an invalid response")
         return WhoopToken(
@@ -129,4 +131,3 @@ class WhoopOAuth:
             scopes=scopes,
             token_type=token_type,
         )
-

@@ -142,9 +142,18 @@ def sync_whoop(
                             ),
                         )
     except WhoopAuthorizationRequired:
-        return _fail_sync(run, connection, mode, requested_from, "reauth_required", sync_time)
-    except (WhoopApiError, WhoopNormalizationError, WhoopRepositoryError, SQLAlchemyError):
-        return _fail_sync(run, connection, mode, requested_from, "sync_failed", sync_time)
+        return _fail_sync(
+            run, connection, mode, requested_from, "reauth_required", sync_time
+        )
+    except (
+        WhoopApiError,
+        WhoopNormalizationError,
+        WhoopRepositoryError,
+        SQLAlchemyError,
+    ):
+        return _fail_sync(
+            run, connection, mode, requested_from, "sync_failed", sync_time
+        )
 
     connection.last_success_at = sync_time
     connection.last_error_code = None
@@ -203,4 +212,3 @@ def _set_counts(run: WhoopSyncRun, counts: StoredRecord) -> None:
     run.normalized_created = counts.normalized_created
     run.normalized_updated = counts.normalized_updated
     run.unchanged = counts.unchanged
-

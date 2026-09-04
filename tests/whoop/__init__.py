@@ -1,2 +1,1 @@
 """WHOOP connector tests."""
-

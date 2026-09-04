@@ -84,9 +84,7 @@ def upgrade() -> None:
             "external_user_id",
             name="uq_whoop_connection_profile_user",
         ),
-        sa.UniqueConstraint(
-            "id", "profile_id", name="uq_whoop_connection_id_profile"
-        ),
+        sa.UniqueConstraint("id", "profile_id", name="uq_whoop_connection_id_profile"),
     )
     op.create_index(
         "ix_whoop_connections_profile_id", "whoop_connections", ["profile_id"]
@@ -109,9 +107,7 @@ def upgrade() -> None:
         _connection_fk("whoop_sync_runs"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_whoop_sync_runs_profile_id", "whoop_sync_runs", ["profile_id"]
-    )
+    op.create_index("ix_whoop_sync_runs_profile_id", "whoop_sync_runs", ["profile_id"])
     op.create_index(
         "ix_whoop_sync_runs_connection_id", "whoop_sync_runs", ["connection_id"]
     )
@@ -123,9 +119,7 @@ def upgrade() -> None:
         sa.Column("resource_kind", sa.String(length=32), nullable=False),
         sa.Column("external_id", sa.String(length=255), nullable=False),
         sa.Column("payload_sha256", sa.String(length=64), nullable=False),
-        sa.Column(
-            "payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False
-        ),
+        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("source_updated_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("fetched_at", sa.DateTime(timezone=True), nullable=False),
         _connection_fk("whoop_raw_records"),

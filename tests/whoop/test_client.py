@@ -71,7 +71,9 @@ def test_collection_follows_next_token_and_keeps_date_bounds(tmp_path: Path) -> 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if len(requests) == 1:
-            return httpx.Response(200, json={"records": [{"id": 1}], "next_token": "page-2"})
+            return httpx.Response(
+                200, json={"records": [{"id": 1}], "next_token": "page-2"}
+            )
         return httpx.Response(200, json={"records": [{"id": 2}], "next_token": None})
 
     client, _ = make_client(tmp_path, httpx.MockTransport(handler))
@@ -161,4 +163,3 @@ def test_ordinary_client_error_is_not_retried_or_leaked(tmp_path: Path) -> None:
 
     assert calls == 1
     assert "old-access" not in str(caught.value)
-

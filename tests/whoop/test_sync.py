@@ -22,7 +22,9 @@ from health_agent.whoop.sync import WhoopSyncReport, sync_whoop
 
 
 class FakeWhoopClient:
-    def __init__(self, *, recovery_score: int = 44, fail_path: str | None = None) -> None:
+    def __init__(
+        self, *, recovery_score: int = 44, fail_path: str | None = None
+    ) -> None:
         self.recovery_score = recovery_score
         self.fail_path = fail_path
         self.starts: list[datetime | None] = []
@@ -126,8 +128,22 @@ def test_repeated_full_sync_has_no_duplicates_and_changed_revision_updates(
     connect(session)
     first_time = datetime(2026, 9, 4, 9, tzinfo=UTC)
 
-    first = sync_whoop(session, DEFAULT_PROFILE_ID, "main", FakeWhoopClient(), full=True, now=first_time)
-    second = sync_whoop(session, DEFAULT_PROFILE_ID, "main", FakeWhoopClient(), full=True, now=first_time)
+    first = sync_whoop(
+        session,
+        DEFAULT_PROFILE_ID,
+        "main",
+        FakeWhoopClient(),
+        full=True,
+        now=first_time,
+    )
+    second = sync_whoop(
+        session,
+        DEFAULT_PROFILE_ID,
+        "main",
+        FakeWhoopClient(),
+        full=True,
+        now=first_time,
+    )
     changed = sync_whoop(
         session,
         DEFAULT_PROFILE_ID,
@@ -162,7 +178,9 @@ def test_incremental_sync_overlaps_last_seven_days(session: Session) -> None:
     assert client.starts == [datetime(2026, 8, 28, 9, tzinfo=UTC)] * 4
 
 
-def test_partial_failure_rolls_back_data_but_keeps_safe_status(session: Session) -> None:
+def test_partial_failure_rolls_back_data_but_keeps_safe_status(
+    session: Session,
+) -> None:
     connect(session)
 
     report = sync_whoop(
@@ -194,7 +212,9 @@ def test_two_profile_syncs_never_mix_rows(session: Session) -> None:
     sync_whoop(session, second_profile.id, "main", FakeWhoopClient(), full=True)
 
     grouped = session.execute(
-        select(WhoopRecovery.profile_id, func.count()).group_by(WhoopRecovery.profile_id)
+        select(WhoopRecovery.profile_id, func.count()).group_by(
+            WhoopRecovery.profile_id
+        )
     ).all()
     assert dict(grouped) == {DEFAULT_PROFILE_ID: 1, second_profile.id: 1}
 
@@ -208,7 +228,12 @@ def test_status_is_safe_and_scoped_to_selected_profile(session: Session) -> None
 
     assert status.configured is True
     assert status.weight_available is True
-    assert (status.cycle_count, status.recovery_count, status.sleep_count, status.workout_count) == (
+    assert (
+        status.cycle_count,
+        status.recovery_count,
+        status.sleep_count,
+        status.workout_count,
+    ) == (
         1,
         1,
         1,

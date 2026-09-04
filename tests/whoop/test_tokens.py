@@ -18,7 +18,9 @@ def make_token(access: str = "access-secret") -> WhoopToken:
     )
 
 
-def test_token_is_stored_per_profile_and_account_with_private_modes(tmp_path: Path) -> None:
+def test_token_is_stored_per_profile_and_account_with_private_modes(
+    tmp_path: Path,
+) -> None:
     store = TokenStore(tmp_path / "tokens")
     first_token = make_token("first")
     second_token = make_token("second")

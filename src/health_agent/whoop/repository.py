@@ -187,9 +187,10 @@ def _model_and_identity(
         try:
             model = _HISTORY_MODELS[normalized.resource_kind]
         except KeyError as error:
-            raise WhoopRepositoryError("Unsupported normalized WHOOP resource") from error
+            raise WhoopRepositoryError(
+                "Unsupported normalized WHOOP resource"
+            ) from error
     identity = [condition(model) for condition in common]
     if normalized.resource_kind in _HISTORY_MODELS:
         identity.append(model.external_id == normalized.external_id)
     return model, tuple(identity)
-
