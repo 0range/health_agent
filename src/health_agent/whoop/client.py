@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from health_agent.whoop.oauth import WhoopOAuth
+from health_agent.whoop.oauth import WhoopOAuth, WhoopOAuthError
 from health_agent.whoop.tokens import TokenStore, WhoopToken
 
 API_BASE_URL = "https://api.prod.whoop.com/developer"
@@ -23,6 +23,10 @@ COLLECTION_PATHS = (CYCLE_PATH, RECOVERY_PATH, SLEEP_PATH, WORKOUT_PATH)
 
 class WhoopApiError(RuntimeError):
     """Safe WHOOP API failure without response content or credentials."""
+
+
+class WhoopAuthorizationRequired(WhoopApiError):
+    """The account must repeat the human OAuth step."""
 
 
 def _iso8601(value: datetime) -> str:
@@ -108,7 +112,7 @@ class WhoopClient:
     def _load_token(self) -> WhoopToken:
         token = self._tokens.load(self._profile_slug, self._account_name)
         if token is None:
-            raise WhoopApiError("WHOOP account is not authorized")
+            raise WhoopAuthorizationRequired("WHOOP account is not authorized")
         if token.expired:
             return self._refresh_token()
         return token
@@ -117,8 +121,11 @@ class WhoopClient:
         with self._refresh_lock:
             current = self._tokens.load(self._profile_slug, self._account_name)
             if current is None:
-                raise WhoopApiError("WHOOP account is not authorized")
-            refreshed = self._oauth.refresh(current.refresh_token)
+                raise WhoopAuthorizationRequired("WHOOP account is not authorized")
+            try:
+                refreshed = self._oauth.refresh(current.refresh_token)
+            except WhoopOAuthError as error:
+                raise WhoopAuthorizationRequired("WHOOP authorization must be renewed") from error
             self._tokens.save(self._profile_slug, self._account_name, refreshed)
             return refreshed
 
@@ -150,6 +157,8 @@ class WhoopClient:
                 self._sleep(self._retry_delay(response, attempt))
                 continue
             if not 200 <= response.status_code < 300:
+                if response.status_code == 401:
+                    raise WhoopAuthorizationRequired("WHOOP authorization must be renewed")
                 raise WhoopApiError(f"WHOOP API returned status {response.status_code}")
             try:
                 return response.json()
@@ -167,4 +176,3 @@ class WhoopClient:
                 except ValueError:
                     pass
         return float(2**attempt)
-
