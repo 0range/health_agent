@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     whoop_token_root: Path = Field(
         default=Path(".tokens/whoop"), validation_alias="WHOOP_TOKEN_ROOT"
     )
+    panel_host: str = Field(default="127.0.0.1", validation_alias="PANEL_HOST")
+    panel_port: int = Field(
+        default=8766, ge=1, le=65535, validation_alias="PANEL_PORT"
+    )
+
+    @field_validator("panel_host")
+    @classmethod
+    def validate_panel_host(cls, value: str) -> str:
+        if value != "127.0.0.1":
+            raise ValueError("PANEL_HOST must be 127.0.0.1")
+        return value
 
     @field_validator("metabase_url")
     @classmethod

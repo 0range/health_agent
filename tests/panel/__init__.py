@@ -1,0 +1,1 @@
+"""Management-panel test package."""

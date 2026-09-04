@@ -35,6 +35,8 @@ from health_agent.models import (
     ReviewStatus,
     SourceRecord,
 )
+from health_agent.panel.http import serve_panel
+from health_agent.panel.service import build_panel_service
 from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
 from health_agent.telegram.api import TelegramBotAPI
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
@@ -58,17 +60,34 @@ whoop_app = typer.Typer(help="Connect and synchronize WHOOP accounts.")
 profile_app = typer.Typer(help="Manage local person profiles.")
 gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
 telegram_app = typer.Typer(help="Configure the local Telegram connector.")
+panel_app = typer.Typer(help="Serve the local management panel.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
 app.add_typer(profile_app, name="profile")
 app.add_typer(gmail_app, name="gmail")
 app.add_typer(telegram_app, name="telegram")
+app.add_typer(panel_app, name="panel")
 
 
 @app.callback()
 def health_agent() -> None:
     """Personal Health Agent."""
+
+
+@panel_app.command("serve")
+def serve_management_panel() -> None:
+    """Serve the local, loopback-only management panel."""
+    settings = Settings()
+    service = build_panel_service(settings)
+    server = serve_panel(service, host=settings.panel_host, port=settings.panel_port)
+    typer.echo(f"http://{settings.panel_host}:{settings.panel_port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 @profile_app.command("create")
