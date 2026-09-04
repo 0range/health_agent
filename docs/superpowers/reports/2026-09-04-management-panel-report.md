@@ -24,3 +24,14 @@ At final head, full pytest reports 324 passed; Ruff, panel-focused mypy,
 Alembic, and diff gates pass. Full mypy retains the same eight Gmail-only
 baseline errors. The exact execution record is in
 [`final-fix-report.md`](../../../.superpowers/sdd/2026-09-04-management-panel/final-fix-report.md).
+
+Regression fix: `SqlAlchemyProfileRepository` now builds `ProfileSummary`
+objects while its `session_scope` is still open, so commit-time ORM expiry
+cannot detach profiles before the panel reads their safe display fields. The
+regression test uses the disposable PostgreSQL fixture and the real
+`session_scope`; it reproduced `DetachedInstanceError` before the fix. Focused
+validation after the fix: `uv run pytest tests/panel -q` (45 passed), `uv run
+ruff check src/health_agent/panel/service.py tests/panel/test_service.py` (all
+checks passed), and `uv run mypy src/health_agent/panel/service.py
+tests/panel/test_service.py` (success: no issues found in 2 source files).
+No live HTTP smoke request was run for this correction.

@@ -7,15 +7,19 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import Engine
 
 from health_agent.config import Settings
+from health_agent.db import session_scope
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailStateStore
+from health_agent.models import Profile
 from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
 from health_agent.panel.service import (
     GmailStatusReader,
     PanelService,
     ProfileNotFoundError,
+    SqlAlchemyProfileRepository,
     TelegramStatusReader,
     _local_telegram_status,
     _whoop_card,
@@ -83,6 +87,23 @@ def test_lists_profiles_by_repository_order_and_creates_a_profile() -> None:
 
     assert created.name == "New profile"
     assert service.list_profiles() == (alpha, beta, created)
+
+
+def test_sqlalchemy_profiles_are_serialized_before_session_scope_closes(
+    clean_database: Engine,
+) -> None:
+    profile_id = uuid4()
+    profile = Profile(id=profile_id, name="Second profile")
+    with session_scope(clean_database) as database_session:
+        database_session.add(profile)
+    profiles = SqlAlchemyProfileRepository(lambda: session_scope(clean_database))
+
+    summaries = profiles.list()
+
+    assert [(summary.id, summary.name) for summary in summaries] == [
+        (UUID("00000000-0000-0000-0000-000000000001"), "Default"),
+        (profile_id, "Second profile"),
+    ]
 
 
 def test_rejects_a_missing_profile() -> None:

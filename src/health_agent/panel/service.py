@@ -68,15 +68,17 @@ class SqlAlchemyProfileRepository:
 
     def list(self) -> tuple[ProfileSummary, ...]:
         with self._sessions() as session:
-            profiles = session.scalars(
-                select(Profile).order_by(Profile.created_at, Profile.id)
-            ).all()
-        return tuple(_summary(profile) for profile in profiles)
+            return tuple(
+                _summary(profile)
+                for profile in session.scalars(
+                    select(Profile).order_by(Profile.created_at, Profile.id)
+                )
+            )
 
     def get(self, profile_id: UUID) -> ProfileSummary | None:
         with self._sessions() as session:
             profile = session.get(Profile, profile_id)
-        return None if profile is None else _summary(profile)
+            return None if profile is None else _summary(profile)
 
     def create(self, name: str) -> ProfileSummary:
         normalized_name = _profile_name(name)
