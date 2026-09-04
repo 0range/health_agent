@@ -356,3 +356,44 @@ proven by this re-review.
   smoke had no such environment override and used the local Docker Desktop. If
   remote Docker contexts are ever used on this Mac, local-only validation should
   reject them before destructive staging commands.
+
+## Final fix re-review — 2026-09-04 (`a457eb1`)
+
+- **SPEC: SHIP**
+- **QUALITY: SHIP**
+- **OVERALL: SHIP**
+
+All remaining findings from the `926c720` review are closed.
+
+- Production now has the explicit fixed Compose project `health-agent`, while
+  staging remains `health-agent-staging`. Independent renders returned those two
+  exact names. Effective production `COMPOSE_PROJECT_NAME` from `.env` or the
+  process is also modeled and a staging-name collision fails before any Compose
+  command (`compose.yaml:1`; `src/health_agent/staging.py:12,86-94,164-184,226-232`).
+- Fixed production Compose targets are always retained: ports `55432`/`53000`,
+  databases `health_agent`/`metabase`, and role `health_agent`. Effective
+  production application overrides augment rather than replace them
+  (`src/health_agent/staging.py:14-16,123-184`). Tests cover production overrides
+  away from each fixed target followed by attempted staging reuse.
+- Filesystem collision now uses canonical identities and rejects equality plus
+  ancestor/descendant containment in both directions
+  (`src/health_agent/staging.py:291-307,602-608`). Tests cover production
+  `.staging`, exact `.staging/vault`, and `.staging/vault/production`.
+
+Independent gates passed: **45** focused staging tests, **325** full-suite tests
+(only the existing five PyMuPDF SWIG deprecation warnings), Ruff, mypy over 41
+source files, `uv lock --check`, Compose validation/renders, and
+`git diff --check 926c720..HEAD`.
+
+The simultaneous retained-volume smoke also passed. While production project
+`health-agent` remained healthy on loopback ports `55432`/`53000`, staging started
+as project `health-agent-staging` on `56432`/`54000`, reached Alembic
+`0005_whoop (head)`, returned disconnected WHOOP status with no credentials,
+bootstrapped its dashboard, and returned Metabase health `ok`. Docker showed four
+distinct containers and four project-specific volumes. All staging directories
+were mode `0700`. `staging stop` stopped only staging; production remained running
+and staging volumes were preserved.
+
+No live WHOOP OAuth, credential, or payload was used. That owner-authorized
+connector acceptance remains live-only and is not a blocker for the staging
+isolation contour. No fresh-volume `clean` was repeated in this round.
