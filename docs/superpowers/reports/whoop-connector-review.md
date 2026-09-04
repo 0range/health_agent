@@ -359,3 +359,137 @@ clearly require rebuilding a confirmed data-free pre-release database).
 
 Per instruction, this fix-round review inspected the diff and existing reported
 gates but did not modify implementation or rerun tests.
+
+---
+
+## Hardening round 2 re-review at `3ca3270`
+
+Review delta: `68c9400..3ca3270`.
+
+### Verdict
+
+- **SPEC: CHANGES**
+- **QUALITY: CHANGES**
+- **OVERALL: CHANGES**
+
+Round 2 resolves the cross-resource deadlock, unsafe audit/status, reduced-scope,
+long-rate-limit, credentials-file, and documented pre-release-lineage findings.
+The durable journal also handles process termination on either side of the
+database commit and the previously identified post-replace fsync failure. One
+ordinary post-commit exception window still breaks the token/database atomicity
+claim, so the connector should not yet perform the live authorization handoff.
+
+### Remaining finding
+
+#### 1. Medium — an exception after DB commit but before journal commit restores the wrong token and destroys recovery evidence
+
+`publish_whoop_authorization()` publishes the candidate inside the database
+session context and calls `replacement.commit()` only after that context exits
+(`src/health_agent/whoop/auth_service.py:121-135`). The database session context
+commits as part of its exit. If the commit succeeds but a later part of context
+exit raises (for example `Session.close()`), or a `KeyboardInterrupt`/other
+`BaseException` arrives after context exit and before line 135, control unwinds
+the replacement with its `_committed` flag still false.
+
+`TokenStore.replacement()` then unconditionally calls `rollback()`
+(`src/health_agent/whoop/tokens.py:322-326`), and `rollback()` restores the prior
+token and clears the journal without consulting the now-committed database
+generation (`:454-466`). The database therefore retains the candidate generation
+while the filesystem contains the old token and no journal. Later
+`recover(..., committed_generation)` has no evidence from which to repair the
+split state. This can strand an account or restore a token that WHOOP has already
+made unusable.
+
+Keep an unresolved coordinated journal on exceptional replacement exit, then
+reconcile it against `WhoopConnection.token_generation` after the token lock is
+released but while the outer operation lock is still held. Equivalently, make the
+replacement exit path consult a committed-generation callback before choosing
+candidate versus previous. Add a regression session context that commits the new
+generation and then raises during post-commit cleanup; recovery must retain the
+candidate. Preserve the existing commit-failure test, which must still restore the
+previous token.
+
+### Prior round-1 finding disposition
+
+- **High — auth/sync lock inversion: ADDRESSED.** Auth publication, sync, and
+  status now acquire the same exclusive per-profile/account operation flock
+  before any token-file or PostgreSQL lock. Network sync work and reauthorization
+  for one account serialize outside both inner resources. The PostgreSQL-backed
+  threaded regression deliberately overlaps a sync holding the operation lock
+  with publication and proves both complete, with the new token winning. Direct
+  refresh rotation retains its per-token cross-process serialization.
+- **Medium — crash journal and post-replace failure: PARTIALLY ADDRESSED.** A
+  mode-0600 journal durably records previous/candidate bundles and a UUID
+  generation before replacement. `whoop_connections.token_generation` commits in
+  the registration transaction; startup recovery selects old versus candidate by
+  that committed value. Candidate publication is marked before fallible work,
+  uses a pre-replace mode setting, and injected directory-fsync failure restores
+  the old token. Tests cover interrupted uncommitted/committed journals and
+  standalone refresh journals. The post-DB-commit exception path above remains.
+- **Medium — unreadable tokens and malformed identities bypass audit: ADDRESSED.**
+  Operation/recovery/load token-store failures become
+  `WhoopAuthorizationRequired`; sync persists `reauth_required`, while status
+  safely reports `unreadable`. Required numeric identities now use helpers that
+  consistently raise `WhoopNormalizationError`, and the added PostgreSQL-backed
+  tests verify safe failed runs without secret-bearing output.
+- **Medium — required refresh/status scopes: ADDRESSED.** OAuth refresh and the
+  client both require every `WHOOP_SCOPES` entry before saving/using a rotated
+  token. Existing token use and status readiness apply the same complete-set
+  check; reduced grants remain unsaved and are classified as reauthorization.
+- **Low — amended `0005` migration lineage: ACCEPTED UNDER THE DOCUMENTED
+  PRE-RELEASE ASSUMPTION.** The revision remains a direct
+  `0004_chart_integrity -> 0005_whoop` migration and now includes
+  `token_generation` and deferred retry fields in both Alembic and ORM metadata.
+  The report/runbook explicitly state that the former reviewed `0005` was never
+  deployed with real data and that any retained review database must be confirmed
+  data-free and rebuilt. The reported green suite includes empty upgrade,
+  downgrade/upgrade, populated-downgrade refusal, schema fingerprint, and Alembic
+  metadata checks.
+
+### Other round-2 checks
+
+- Long `429` reset windows now raise a typed deferred result without sleeping.
+  The nested data transaction rolls back, while the outer audit records
+  `status=deferred`, safe `rate_limited`, and the exact `retry_at`; the CLI treats
+  deferred as a successful scheduled outcome. Only bounded inline waits can occur
+  while the connection row is locked.
+- Credential loading defaults to the Git-ignored
+  `.tokens/whoop-client.json`, rejects symlinks/non-regular files and modes other
+  than `0600`, wraps the secret in `SecretStr`, and emits value-free errors. A
+  complete environment ID/secret pair overrides the file, while a partial pair
+  fails closed. Token root, credential path, redirect URI, and database URL remain
+  configurable for isolated staging; `.env.example` contains no credential.
+- Normal CLI status/sync output is allowlisted to state, timestamps, counts, mode,
+  and safe error codes. Token values, upstream bodies, profile identity fields,
+  and exception contents are not printed. The journal/token files remain under
+  validated per-profile/account paths with private modes and atomic writes.
+- No regression was found in profile/connection isolation, raw lineage,
+  deterministic newest-revision selection, numeric resting HR, protected
+  downgrade, profile-aware views, pagination, or the independent 401 retry.
+
+### Live-only concerns after the implementation finding is fixed
+
+- The configured WHOOP Developer application, exact loopback redirect, browser
+  callback, authorization-code exchange, and first full sync still require the
+  disclosed human live acceptance run. No real token or account payload has been
+  used in the reported gates.
+- Real historical volume, response variation/eventual consistency, pagination,
+  refresh-token rotation, reduced live scopes, and minute/daily rate-limit headers
+  remain unexercised. The bounded-inline/deferred policy is locally covered but
+  still needs observation against real WHOOP responses.
+- The pre-release migration conclusion depends on the documented operational fact
+  that no real database retained the earlier `0005_whoop`. Any such database must
+  be inspected for WHOOP data and handled according to the rebuild warning rather
+  than upgraded in place.
+- The tests provide strong injected-failure and local-filesystem evidence, but
+  actual power-loss durability ultimately depends on the target macOS filesystem's
+  `fsync`/atomic-rename behavior. No scheduler or live Metabase card is included in
+  this branch.
+
+### Review method
+
+Read the round-1 review/report, round-2 plan, full `68c9400..3ca3270` delta, current
+token/auth/client/sync/status/configuration/migration code, and the added tests.
+The reported final gates are 143 passing tests, clean Ruff/mypy/diff checks, and
+the migration checks listed above. Per instruction, none were rerun during this
+review. Only this review report was changed.
