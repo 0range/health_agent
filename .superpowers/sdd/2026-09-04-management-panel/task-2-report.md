@@ -55,3 +55,37 @@ exit 0
 No open concerns. The HTTP page relies on Task 1's closed, secret-free panel
 view models; it deliberately does not invoke OAuth, sync, connector APIs, or
 read credentials.
+
+## Fix round 1: exact mutation origin and adapter method parity
+
+- `PanelApplication` now derives its sole permitted mutation origin from its
+  loopback port. A POST requires an `Origin` header byte-for-byte equal to
+  `http://127.0.0.1:<actual-bound-port>` as well as its CSRF token. Missing
+  origins and another loopback port are rejected.
+- `serve_panel()` creates the application after binding so an ephemeral port
+  also receives its actual origin. Its request handler dispatches every
+  otherwise unsupported verb through `PanelApplication`, preserving the
+  deterministic `405` and `Allow` response instead of stdlib `501`.
+- Added focused regressions for a valid CSRF token with no origin, a different
+  loopback port, and a real adapter-level `PUT /` request.
+
+Fix-round verification:
+
+```text
+uv run pytest -q tests/panel/test_http.py tests/panel/test_service.py
+19 passed in 0.19s
+
+uv run ruff check src/health_agent/panel tests/panel
+All checks passed!
+
+uv run mypy src/health_agent/panel tests/panel
+Success: no issues found in 6 source files
+
+git diff --check
+exit 0
+```
+
+Self-review: the expected origin is constructed only from the fixed loopback
+host and validated port, including a kernel-assigned port. The adapter test
+confirms the live handler exposes the same 405/Allow behavior as the pure
+dispatcher. No open concerns.

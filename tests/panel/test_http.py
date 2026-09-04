@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.client import HTTPConnection
+from threading import Thread
 from uuid import UUID, uuid4
 
 import pytest
@@ -139,6 +141,16 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
     valid_body = b"name=Viktor&csrf_token=test-csrf-token"
 
     assert app.handle("POST", "/profiles", {}, b"name=Viktor").status == 403
+    assert app.handle("POST", "/profiles", {}, valid_body).status == 403
+    assert (
+        app.handle(
+            "POST",
+            "/profiles",
+            {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://127.0.0.1:8767"},
+            valid_body,
+        ).status
+        == 403
+    )
     assert (
         app.handle(
             "POST",
@@ -164,3 +176,20 @@ def test_server_refuses_non_loopback_hosts() -> None:
 
     with pytest.raises(ValueError, match="127.0.0.1"):
         serve_panel(app._service, host="0.0.0.0", port=0)
+
+
+def test_server_adapter_routes_unsupported_methods_to_application() -> None:
+    app, _ = application()
+    server = serve_panel(app._service, host="127.0.0.1", port=0)
+    worker = Thread(target=server.handle_request)
+    worker.start()
+    connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+
+    connection.request("PUT", "/")
+    response = connection.getresponse()
+
+    worker.join(timeout=2)
+    connection.close()
+    server.server_close()
+    assert response.status == 405
+    assert response.getheader("Allow") == "GET"

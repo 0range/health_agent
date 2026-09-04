@@ -15,6 +15,7 @@ from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummar
 from health_agent.panel.service import PanelService, ProfileNotFoundError
 
 MAX_FORM_BYTES = 4 * 1024
+DEFAULT_PANEL_PORT = 8766
 
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -54,9 +55,18 @@ class PanelResponse:
 class PanelApplication:
     """Pure request dispatcher; it does not open sockets or call connectors."""
 
-    def __init__(self, service: PanelService, *, csrf_token: str | None = None) -> None:
+    def __init__(
+        self,
+        service: PanelService,
+        *,
+        csrf_token: str | None = None,
+        port: int = DEFAULT_PANEL_PORT,
+    ) -> None:
+        if not 1 <= port <= 65535:
+            raise ValueError("The panel port must be between 1 and 65535")
         self._service = service
         self._csrf_token = csrf_token or token_urlsafe(32)
+        self._origin = f"http://127.0.0.1:{port}"
 
     def handle(
         self,
@@ -99,7 +109,7 @@ class PanelApplication:
     def _create_profile(self, headers: Mapping[str, str], body: bytes) -> PanelResponse:
         if len(body) > MAX_FORM_BYTES:
             return self._html(413, _message_page("Слишком большой запрос."))
-        if not _is_loopback_origin(_header(headers, "origin")):
+        if not _same_origin(_header(headers, "origin"), self._origin):
             return self._html(403, _message_page("Запрос отклонён проверкой источника."))
         try:
             fields = dict(
@@ -144,9 +154,9 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
     """Create a panel server that can bind only the IPv4 loopback address."""
     if host != "127.0.0.1":
         raise ValueError("The management panel may bind only to 127.0.0.1")
-    application = PanelApplication(service)
-
     class PanelRequestHandler(BaseHTTPRequestHandler):
+        application: PanelApplication
+
         def do_GET(self) -> None:
             self._dispatch(b"")
 
@@ -154,14 +164,14 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
-                self._send(application._html(400, _message_page("Некорректный запрос.")))
+                self._send(self.application._html(400, _message_page("Некорректный запрос.")))
                 return
             if length < 0:
-                self._send(application._html(400, _message_page("Некорректный запрос.")))
+                self._send(self.application._html(400, _message_page("Некорректный запрос.")))
                 return
             if length > MAX_FORM_BYTES:
                 self._send(
-                    application.handle(
+                    self.application.handle(
                         "POST",
                         self.path,
                         dict(self.headers.items()),
@@ -173,8 +183,33 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
 
         def _dispatch(self, body: bytes) -> None:
             self._send(
-                application.handle(self.command, self.path, dict(self.headers.items()), body)
+                self.application.handle(self.command, self.path, dict(self.headers.items()), body)
             )
+
+        def handle_one_request(self) -> None:
+            """Use application 405 handling for every unsupported HTTP verb."""
+            try:
+                self.raw_requestline = self.rfile.readline(65537)
+                if len(self.raw_requestline) > 65536:
+                    self.requestline = ""
+                    self.request_version = ""
+                    self.command = ""
+                    self.send_error(414)
+                    return
+                if not self.raw_requestline:
+                    self.close_connection = True
+                    return
+                if not self.parse_request():
+                    return
+                handler = getattr(self, f"do_{self.command}", None)
+                if handler is None:
+                    self._dispatch(b"")
+                else:
+                    handler()
+                self.wfile.flush()
+            except TimeoutError as error:
+                self.log_error("Request timed out: %r", error)
+                self.close_connection = True
 
         def _send(self, response: PanelResponse) -> None:
             self.send_response(response.status)
@@ -187,26 +222,17 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
         def log_message(self, _format: str, *_args: object) -> None:
             """Do not write request metadata to the user's terminal."""
 
-    return ThreadingHTTPServer(("127.0.0.1", port), PanelRequestHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), PanelRequestHandler)
+    PanelRequestHandler.application = PanelApplication(service, port=server.server_address[1])
+    return server
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     return next((value for key, value in headers.items() if key.lower() == name), None)
 
 
-def _is_loopback_origin(origin: str | None) -> bool:
-    if origin is None:
-        return True
-    parsed = urlsplit(origin)
-    return (
-        parsed.scheme == "http"
-        and parsed.hostname == "127.0.0.1"
-        and not parsed.username
-        and not parsed.password
-        and not parsed.path
-        and not parsed.query
-        and not parsed.fragment
-    )
+def _same_origin(origin: str | None, expected_origin: str) -> bool:
+    return origin is not None and compare_digest(origin, expected_origin)
 
 
 def _profile_id_from_path(path: str) -> UUID | None:
