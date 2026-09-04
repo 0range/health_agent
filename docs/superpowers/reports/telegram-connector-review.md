@@ -265,3 +265,117 @@ connector plan, implementation report, integration guide, branch diff, current
 source, and tests. Checked protocol details against Telegram's current official Bot
 API and Bot FAQ. Per instruction, this review changed no implementation and did not
 rerun tests; reported gate results are implementation-report evidence only.
+
+---
+
+## Hardening final re-review at `5ca83cd`
+
+Review delta: `07f552d..5ca83cd`.
+
+### Verdict
+
+- **SPEC: PASS**
+- **QUALITY: APPROVED**
+- **OVERALL: APPROVED FOR REBASE AND LIVE ACCEPTANCE**
+
+No implementation finding remains from the original review. The hardening delta
+addresses all eleven findings without expanding the honestly documented connector-
+foundation boundary.
+
+### Finding disposition
+
+1. **High — ambiguous outbound retries: ADDRESSED.** `sendMessage` gets one
+   network attempt. Transport loss, 5xx, and malformed successful acknowledgement
+   become `TelegramDeliveryUnknown`; a persisted `reserved`/`unknown` delivery is
+   never automatically reclaimed. Only a proved 429 rejection is deferred.
+2. **High — retry hot loop: ADDRESSED.** Retryable updates persist
+   `next_retry_at`, use 5/10/20-second backoff, block polling until due, and become
+   terminal `needs_attention` on the fourth failed attempt. The daemon sleeps for
+   the persisted interval rather than immediately polling again.
+3. **High — unfenced expiring claims: ADDRESSED.** Claims carry bot, owner,
+   generation, attempt and lease. A heartbeat renews active work; renewal,
+   attachment audit, deferral and completion all compare owner/generation and
+   require an unexpired lease. Expired and superseded workers cannot complete,
+   while a renewed slow worker cannot be reclaimed.
+4. **High — global outbound keys: ADDRESSED.** Outbound identity is
+   `(bot_id, profile_id, delivery_key, part_index)`. Reuse across profiles or bots
+   is independent, while changed chat or reply digest within one identity is an
+   explicit conflict.
+5. **High — replacement-bot state reuse: ADDRESSED.** Configuration verifies
+   `getMe` before atomically publishing token plus positive bot ID. Runtime,
+   identities, updates, offsets, attachment audits and deliveries are bot-scoped;
+   a replacement bot starts with an empty offset while the old namespace remains
+   intact.
+6. **Medium — capped `retry_after`: ADDRESSED.** HTTP handling converts the full
+   value to an absolute UTC `TelegramDeferred` without truncation or synchronous
+   sleep. Update and outbound state retain the exact due time, and no final-attempt
+   429 sleep remains.
+7. **Medium — non-transactional binds: ADDRESSED.** User/profile conflict checks,
+   inactive-row cleanup, mutation and committed-row read run under one SQLite
+   `BEGIN IMMEDIATE`; uniqueness races become `TelegramIdentityConflict`, and the
+   returned identity is the row actually committed.
+8. **Medium — private-path symlinks: ADDRESSED.** Existing directory components,
+   final token targets and the SQLite target are inspected with `lstat` before
+   opening or replacing; symlinks and non-directory/non-regular targets are
+   rejected. Private directory/file modes remain `0700`/`0600`.
+9. **Medium — attachment validation boundary: ADDRESSED.** Downloads are staged
+   privately, bounded, hashed, fsynced, size-checked and signature/MIME-checked
+   before `MedicalInbox.ingest`. Telegram MIME remains explicitly untrusted, the
+   inbox contract requires atomic profile/source idempotency, and a bad receipt is
+   recorded with the independently established staged hash/size rather than
+   silently accepted.
+10. **Medium — untruthful status: ADDRESSED.** Status distinguishes local file
+    presence, remotely verified bot identity, webhook state, heartbeat freshness,
+    profile binding and unresolved delivery count. Poll identity/webhook failures
+    are persisted as safe codes, and permanent API/schema failures back off rather
+    than terminate the daemon.
+11. **Low — malformed objects: ADDRESSED.** Numeric/object parsing rejects booleans,
+    wrong types and out-of-range values without raw response content. Bad updates
+    are quarantined while later valid updates advance the offset, and malformed
+    service/API results enter the durable safe-error lifecycle.
+
+### Additional final checks
+
+- Successful file downloads stay binary-streaming: the response is not parsed or
+  buffered as JSON before the first chunk, retries cease after any emitted byte,
+  and both gateway and staging layers enforce the 20 MiB limit.
+- Attachment audit insertion is claim-fenced and idempotent. A legitimately
+  reclaimed generation can accept the same inbox receipt without adding a second
+  audit row, but cannot overwrite it with conflicting staged truth. The required
+  inbox `(profile_id, source_external_id)` idempotency remains explicit in the
+  protocol and integration guide.
+- CLI/audit additions expose only bot/profile/message IDs, timestamps, counts and
+  safe codes. Bot tokens, API descriptions, message/reply content, captions,
+  filenames and attachment bytes are not added to state or output. New test tokens
+  are synthetic.
+- The bot-0 SQLite migration copies legacy identity, runtime, update, attachment
+  and outbound state, then drops the legacy tables in one transaction. Reopening
+  the migrated store is idempotent; verified positive-bot namespaces cannot reuse
+  bot-0 offsets.
+- Documentation accurately distinguishes the foundation from a composed live
+  service and does not claim live acceptance. It also explicitly records that
+  this branch ends at `0004_chart_integrity` while the inspected primary database
+  was already at `0005_whoop`: integration must rebase onto the current Alembic
+  graph and rerun the live migration gate before touching that database.
+- The implementation report claims 116 full-suite passes, 55 focused Telegram
+  passes, clean Ruff/mypy/diff and credential scans, one `0004_chart_integrity`
+  Alembic head, and a passing legacy SQLite migration/reopen test. Per instruction,
+  this review inspected the implementation, tests, plans and reports but did not
+  rerun any gate.
+
+### Live and composition concerns
+
+- A separate BotFather test token/chat must exercise real `getMe`, webhook status,
+  long polling, private binding, one question, one attachment, one outbound reply,
+  restart/offset recovery, and a reminder. Real 429 and ambiguous delivery behavior
+  should be observed if it can be induced safely.
+- No concrete `HealthQuestionService`, `HealthCommandService`, transactional
+  `MedicalInbox`, composition root, poller command, launchd job or management page
+  is included. Those components must preserve opaque delivery keys, profile/source
+  inbox idempotency and the claim/lease lifecycle.
+- Telegram's real payload variation, update retention, file behavior and network
+  failure timing remain outside mocked coverage. A machine crash during
+  `sendMessage` deliberately produces an operator-visible unknown outcome rather
+  than exactly-once proof.
+- Rebase onto the current migration lineage is mandatory before the live database
+  gate; the older branch must not be applied to the already-newer local database.
