@@ -395,6 +395,8 @@ git commit -m "feat: extract conservative lab candidates from pdf"
 **Files:**
 - Create: `src/health_agent/importer.py`
 - Modify: `src/health_agent/cli.py`
+- Modify: `src/health_agent/models.py`
+- Create: `alembic/versions/0003_review_corrections.py`
 - Test: `tests/test_importer.py`
 - Test: `tests/test_review_cli.py`
 
@@ -447,6 +449,8 @@ def approve_observation(session: Session, observation_id: UUID) -> None:
 ```
 
 Reject follows the same one-way rule. A correction creates a new verified observation and links the original as superseded; it never mutates the source evidence.
+
+`LabObservation.supersedes_observation_id` is a nullable self-referencing foreign key stored on the corrected observation. Migration `0003_review_corrections.py` adds the column and index without rewriting existing evidence rows.
 
 - [ ] **Step 4: Add human-readable CLI output**
 
