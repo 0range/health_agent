@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from alembic import command
 from health_agent.models import DEFAULT_PROFILE_ID, Profile
 from health_agent.whoop.models import WhoopCycle, WhoopRawRecord
 from health_agent.whoop.normalize import normalize_whoop
@@ -123,3 +125,10 @@ def test_raw_revision_is_idempotent(session: Session) -> None:
     assert second.raw_created == 0
     assert session.scalar(select(func.count()).select_from(WhoopRawRecord)) == 1
 
+
+def test_whoop_migration_matches_sqlalchemy_metadata(session: Session) -> None:
+    config = Config("alembic.ini")
+    connection = session.connection()
+    config.attributes["connection"] = connection
+
+    command.check(config)
