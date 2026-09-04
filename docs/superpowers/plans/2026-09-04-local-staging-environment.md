@@ -8,6 +8,10 @@ databases, ports and named volumes. A small Python staging runner loads only an
 explicit staging env file, validates every target against production defaults,
 and launches Compose or application commands with a sanitized environment.
 
+The hardening review extended that boundary to effective production overrides,
+loopback-only database targets, symlink-safe path creation, and dedicated private
+WHOOP credentials; see `2026-09-04-local-staging-hardening.md`.
+
 - [x] Add standalone staging Compose and synthetic `.env.staging.example`.
 - [x] Add separate staging vault/temp/token/connector-state paths and ignore local
   staging configuration/state.

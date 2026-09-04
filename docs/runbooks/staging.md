@@ -37,14 +37,19 @@ file. Их можно удалить вручную только после пр
 | Temp | `.staging/tmp` | `data/tmp` |
 | WHOOP tokens | `.staging/tokens/whoop` | `.tokens/whoop` |
 | Connector state | `.staging/connector-state` | `data/connectors` |
-| WHOOP app credentials | `.staging/tokens/whoop-client.json` | `.tokens/whoop-client.json` |
+| WHOOP app credentials | `.staging/credentials/whoop-client.json` | `.tokens/whoop-client.json` |
 
 Команды staging удаляют унаследованные `DATABASE_URL`, WHOOP client ID/secret и
 другие управляемые production-переменные из окружения, затем загружают только
-`.env.staging` или безопасный пример `.env.staging.example`. Валидатор прекращает
-работу, если порт, база, роль, каталог или credentials file пересекаются с
-production. Callback `127.0.0.1:8765` — краткоживущий OAuth-listener, а не Compose-
-сервис; staging и production OAuth нельзя запускать одновременно.
+`.env.staging` или безопасный пример `.env.staging.example`. Перед запуском
+валидатор отдельно читает только target-поля эффективного production `.env` и
+окружения (без значений секретов) и прекращает работу при пересечении порта, базы,
+роли или пути. PostgreSQL и Metabase обязаны оставаться loopback-only.
+
+`.staging` и все существующие компоненты управляемых путей не могут быть symlink;
+каталоги создаются без перехода по symlink и получают режим `0700`. Callback
+`127.0.0.1:8765` — краткоживущий OAuth-listener, а не Compose-сервис; staging и
+production OAuth нельзя запускать одновременно.
 
 Если нужны переопределения, скопируйте только пример конфигурации:
 
@@ -52,10 +57,17 @@ production. Callback `127.0.0.1:8765` — краткоживущий OAuth-liste
 cp .env.staging.example .env.staging
 ```
 
-Не копируйте production `.env`. Для live WHOOP acceptance создайте отдельный
-обычный файл `.staging/tokens/whoop-client.json` с полями `client_id` и
-`client_secret`, выставьте `chmod 600`; staging намеренно откажется читать
-production `.tokens/whoop-client.json` или symlink на него.
+Не копируйте production `.env`. Inline `WHOOP_CLIENT_ID` и
+`WHOOP_CLIENT_SECRET` в staging запрещены. Если `.env.staging` содержит
+несинтетический пароль PostgreSQL или `DATABASE_URL`, сам файл должен иметь режим
+`0600`. Для live WHOOP acceptance создайте отдельный обычный файл
+`.staging/credentials/whoop-client.json` с полями `client_id` и `client_secret`,
+выставьте `chmod 600`; WHOOP `auth` и `sync` без него не запустятся, а `status`
+работает без credentials. Staging намеренно откажется читать production
+`.tokens/whoop-client.json` или любой symlink на него.
+
+Имя внутренней базы Metabase зафиксировано как `metabase_staging`: переменная
+`STAGING_METABASE_DB` не поддерживается, чтобы Compose и init SQL не расходились.
 
 ## Promotion flow
 

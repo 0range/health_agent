@@ -827,9 +827,8 @@ def _telegram_admin(settings: Settings) -> TelegramAdminService:
 
 def _staging_manager(env_file: Path | None) -> StagingManager:
     root = Path(__file__).resolve().parents[2]
-    selected = None if env_file is None else env_file.resolve()
     try:
-        environment = StagingEnvironment.load(root, selected)
+        environment = StagingEnvironment.load(root, env_file)
     except StagingConfigurationError as error:
         raise typer.BadParameter(str(error), param_hint="--env-file") from error
     return StagingManager(environment)
