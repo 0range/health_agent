@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Literal
@@ -15,7 +16,9 @@ class Settings(BaseSettings):
     """Runtime configuration for the local health-agent services."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", extra="ignore", populate_by_name=True
+        env_file=os.environ.get("HEALTH_AGENT_ENV_FILE", ".env"),
+        extra="ignore",
+        populate_by_name=True,
     )
 
     postgres_host: str = Field(default="127.0.0.1", validation_alias="POSTGRES_HOST")
@@ -62,6 +65,9 @@ class Settings(BaseSettings):
     )
     telegram_staging_path: Path | None = Field(
         default=None, validation_alias="TELEGRAM_STAGING_ROOT"
+    )
+    connector_state_root: Path = Field(
+        default=Path("data/connectors"), validation_alias="CONNECTOR_STATE_ROOT"
     )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
