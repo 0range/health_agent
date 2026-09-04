@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,14 +39,14 @@ class FileVault:
         source = Path(source)
         digest = sha256_file(source)
         target_directory = self.root / digest[:2]
-        target = target_directory / f"{digest}{source.suffix.lower()}"
+        target = target_directory / digest
 
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
         target_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         target_directory.chmod(0o700)
 
-        if target.exists():
+        if self._target_exists(target):
             self._verify(target, digest)
             target.chmod(0o600)
             return self._stored_file(target, digest)
@@ -77,11 +78,34 @@ class FileVault:
 
     @staticmethod
     def _verify(path: Path, expected_sha256: str) -> None:
-        actual_sha256 = sha256_file(path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as error:
+            raise VaultIntegrityError(f"Vault object {path} is not a regular file") from error
+
+        digest = hashlib.sha256()
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise VaultIntegrityError(f"Vault object {path} is not a regular file")
+            while chunk := os.read(descriptor, _COPY_BUFFER_BYTES):
+                digest.update(chunk)
+        finally:
+            os.close(descriptor)
+
+        actual_sha256 = digest.hexdigest()
         if actual_sha256 != expected_sha256:
             raise VaultIntegrityError(
                 f"Vault object {path} has SHA-256 {actual_sha256}, expected {expected_sha256}"
             )
+
+    @staticmethod
+    def _target_exists(path: Path) -> bool:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        return True
 
     @staticmethod
     def _stored_file(path: Path, digest: str) -> StoredFile:
