@@ -68,7 +68,9 @@ def sync_whoop(
     sync_time = now or datetime.now(UTC)
     if sync_time.tzinfo is None:
         raise ValueError("WHOOP sync time must be timezone-aware")
-    connection = get_connection(session, profile_id, account_name)
+    connection = get_connection(session, profile_id, account_name, for_update=True)
+    if connection.auth_status != "connected":
+        raise WhoopRepositoryError("WHOOP account is not ready to synchronize")
     requested_from = (
         None
         if full or connection.last_success_at is None

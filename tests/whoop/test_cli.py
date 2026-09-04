@@ -26,15 +26,24 @@ def test_whoop_help_exposes_auth_status_and_sync() -> None:
     assert "sync" in result.stdout
 
 
+def test_profile_help_exposes_multi_person_management() -> None:
+    result = CliRunner().invoke(cli.app, ["profile", "--help"])
+
+    assert result.exit_code == 0
+    assert "create" in result.stdout
+    assert "list" in result.stdout
+
+
 def test_status_prints_only_safe_freshness_and_counts(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli, "build_engine", lambda settings: object())
     monkeypatch.setattr(cli, "session_scope", fake_session_scope)
     monkeypatch.setattr(
         cli,
         "get_whoop_status",
-        lambda session, profile_id, account: WhoopStatus(
+        lambda session, token_store, profile_id, profile_key, account: WhoopStatus(
             True,
             "connected",
+            "ready",
             datetime(2026, 9, 4, tzinfo=UTC),
             None,
             True,
@@ -49,6 +58,7 @@ def test_status_prints_only_safe_freshness_and_counts(monkeypatch: Any) -> None:
 
     assert result.exit_code == 0
     assert "auth=connected" in result.stdout
+    assert "token=ready" in result.stdout
     assert "last_success=2026-09-04T00:00:00+00:00" in result.stdout
     assert "weight_available=true" in result.stdout
     assert "sleeps=88" in result.stdout

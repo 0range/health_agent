@@ -266,7 +266,7 @@ def test_downgrade_refuses_to_erase_non_default_profile(
             text("DELETE FROM profiles WHERE id = :id"), {"id": second_profile_id}
         )
 
-    assert revision == "0004_chart_integrity"
+    assert revision == "0005_whoop"
 
 
 def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
@@ -304,7 +304,7 @@ def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
     with clean_database.connect() as check_connection:
         revision = check_connection.scalar(text("SELECT version_num FROM alembic_version"))
 
-    assert revision == "0004_chart_integrity"
+    assert revision == "0005_whoop"
 
 
 def test_observation_page_must_exist_in_its_document(session: Session) -> None:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -14,6 +15,7 @@ from health_agent.models import DEFAULT_PROFILE_ID, Profile
 from health_agent.whoop.models import WhoopCycle, WhoopRawRecord
 from health_agent.whoop.normalize import normalize_whoop
 from health_agent.whoop.repository import (
+    WhoopRepositoryError,
     register_authorized_connection,
     store_normalized_record,
 )
@@ -80,9 +82,44 @@ def test_cross_profile_raw_provenance_is_rejected(session: Session) -> None:
         WhoopCycle(
             profile_id=second_profile.id,
             connection_id=second.id,
+            resource_kind="cycle",
             external_id="crossed",
             start_at=datetime(2026, 9, 4, tzinfo=UTC),
             raw_record_id=first_raw.id,
+            source_values={},
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
+def test_raw_provenance_must_match_resource_kind_and_external_id(
+    session: Session,
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "main", 10129, ("read:cycles",)
+    )
+    payload = cycle_payload()
+    store_normalized_record(
+        session,
+        connection,
+        normalize_whoop("cycle", payload),
+        payload,
+        datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    raw = session.scalar(select(WhoopRawRecord))
+    assert raw is not None
+    session.add(
+        WhoopCycle(
+            profile_id=DEFAULT_PROFILE_ID,
+            connection_id=connection.id,
+            resource_kind="cycle",
+            external_id="not-the-raw-id",
+            start_at=datetime(2026, 9, 4, tzinfo=UTC),
+            raw_record_id=raw.id,
+            source_values={},
         )
     )
 
@@ -97,7 +134,8 @@ def test_dashboard_views_keep_profile_dimension(session: Session) -> None:
             "SELECT table_name, column_name FROM information_schema.columns "
             "WHERE table_name LIKE 'whoop_%' AND table_name IN "
             "('whoop_daily_health', 'whoop_sleep_history', "
-            "'whoop_workout_history', 'whoop_source_status') "
+            "'whoop_workout_history', 'whoop_body_snapshot', "
+            "'whoop_source_status') "
             "AND column_name = 'profile_id'"
         )
     ).all()
@@ -106,8 +144,34 @@ def test_dashboard_views_keep_profile_dimension(session: Session) -> None:
         "whoop_daily_health",
         "whoop_sleep_history",
         "whoop_workout_history",
+        "whoop_body_snapshot",
         "whoop_source_status",
     }
+    daily_columns = {
+        row.column_name
+        for row in session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'whoop_daily_health'"
+            )
+        )
+    }
+    source_columns = {
+        row.column_name
+        for row in session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'whoop_source_status'"
+            )
+        )
+    }
+    assert {
+        "cycle_score_state",
+        "recovery_score_state",
+        "sleep_score_state",
+        "user_calibrating",
+    }.issubset(daily_columns)
+    assert "recovery_count" in source_columns
 
 
 def test_raw_revision_is_idempotent(session: Session) -> None:
@@ -130,6 +194,103 @@ def test_raw_revision_is_idempotent(session: Session) -> None:
     assert session.scalar(select(func.count()).select_from(WhoopRawRecord)) == 1
 
 
+def test_older_revision_is_archived_without_overwriting_current(
+    session: Session,
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "main", 10129, ("read:cycles",)
+    )
+    newer = cycle_payload(9.5)
+    older = {**cycle_payload(1.2), "updated_at": "2026-09-03T08:00:00Z"}
+
+    first = store_normalized_record(
+        session,
+        connection,
+        normalize_whoop("cycle", newer),
+        newer,
+        datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    second = store_normalized_record(
+        session,
+        connection,
+        normalize_whoop("cycle", older),
+        older,
+        datetime(2026, 9, 5, tzinfo=UTC),
+    )
+
+    current = session.scalar(select(WhoopCycle))
+    assert first.normalized_created == 1
+    assert second.raw_created == 1
+    assert second.unchanged == 1
+    assert current is not None
+    assert current.strain == Decimal("9.5")
+    assert session.scalar(select(func.count()).select_from(WhoopRawRecord)) == 2
+
+
+@pytest.mark.parametrize("updated_at", ("2026-09-04T08:00:00Z", None))
+def test_equal_or_missing_revision_times_use_deterministic_payload_rank(
+    session: Session, updated_at: str | None
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "main", 10129, ("read:cycles",)
+    )
+    payloads = []
+    for strain in (1.1, 8.8):
+        payload = cycle_payload(strain)
+        if updated_at is None:
+            payload.pop("updated_at")
+        else:
+            payload["updated_at"] = updated_at
+        payloads.append(payload)
+    normalized = [normalize_whoop("cycle", payload) for payload in payloads]
+    winner = max(normalized, key=lambda record: record.payload_hash)
+    loser = min(normalized, key=lambda record: record.payload_hash)
+
+    store_normalized_record(
+        session,
+        connection,
+        winner,
+        winner.values["source_values"],
+        datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    result = store_normalized_record(
+        session,
+        connection,
+        loser,
+        loser.values["source_values"],
+        datetime(2026, 9, 5, tzinfo=UTC),
+    )
+
+    current = session.scalar(select(WhoopCycle))
+    assert current is not None
+    assert current.raw_record_id == session.scalar(
+        select(WhoopRawRecord.id).where(
+            WhoopRawRecord.payload_sha256 == winner.payload_hash
+        )
+    )
+    assert result.unchanged == 1
+
+
+def test_payload_user_must_match_connection_before_raw_is_written(
+    session: Session,
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "main", 10129, ("read:cycles",)
+    )
+    payload = {**cycle_payload(), "user_id": 99999}
+
+    with pytest.raises(WhoopRepositoryError, match="different account"):
+        store_normalized_record(
+            session,
+            connection,
+            normalize_whoop("cycle", payload),
+            payload,
+            datetime(2026, 9, 4, tzinfo=UTC),
+        )
+
+    assert session.scalar(select(func.count()).select_from(WhoopRawRecord)) == 0
+
+
 def test_whoop_migration_matches_sqlalchemy_metadata(session: Session) -> None:
     config = Config("alembic.ini")
     connection = session.connection()
@@ -138,10 +299,43 @@ def test_whoop_migration_matches_sqlalchemy_metadata(session: Session) -> None:
     command.check(config)
 
 
-def test_whoop_migration_round_trip(engine: Engine) -> None:
+def test_whoop_migration_round_trip(clean_database: Engine) -> None:
     config = Config("alembic.ini")
-    with engine.begin() as connection:
+    with clean_database.begin() as connection:
         config.attributes["connection"] = connection
         command.downgrade(config, "0004_chart_integrity")
         command.upgrade(config, "head")
         command.check(config)
+
+
+def test_whoop_downgrade_refuses_to_destroy_existing_data(
+    clean_database: Engine,
+) -> None:
+    connection_id = uuid4()
+    with clean_database.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO whoop_connections "
+                "(id, profile_id, account_name, external_user_id, auth_status, "
+                "granted_scopes) VALUES "
+                "(:id, :profile_id, 'main', 10129, 'connected', '[]'::jsonb)"
+            ),
+            {"id": connection_id, "profile_id": DEFAULT_PROFILE_ID},
+        )
+
+    config = Config("alembic.ini")
+    with pytest.raises(
+        DBAPIError, match="Refusing to downgrade"
+    ), clean_database.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "0004_chart_integrity")
+
+    with clean_database.begin() as connection:
+        assert connection.scalar(
+            text("SELECT count(*) FROM whoop_connections WHERE id = :id"),
+            {"id": connection_id},
+        ) == 1
+        connection.execute(
+            text("DELETE FROM whoop_connections WHERE id = :id"),
+            {"id": connection_id},
+        )

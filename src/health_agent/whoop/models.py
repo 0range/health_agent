@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -24,37 +25,61 @@ from sqlalchemy.orm import Mapped, mapped_column
 from health_agent.models import Base
 
 
-def _current_constraints() -> tuple[Any, ...]:
+def _current_constraints(resource_kind: str) -> tuple[Any, ...]:
     return (
         ForeignKeyConstraint(
             ["connection_id", "profile_id"],
             ["whoop_connections.id", "whoop_connections.profile_id"],
         ),
         ForeignKeyConstraint(
-            ["raw_record_id", "profile_id", "connection_id"],
+            [
+                "raw_record_id",
+                "profile_id",
+                "connection_id",
+                "resource_kind",
+                "external_id",
+            ],
             [
                 "whoop_raw_records.id",
                 "whoop_raw_records.profile_id",
                 "whoop_raw_records.connection_id",
+                "whoop_raw_records.resource_kind",
+                "whoop_raw_records.external_id",
             ],
+        ),
+        CheckConstraint(
+            f"resource_kind = '{resource_kind}'",
+            name=f"ck_whoop_{resource_kind}_current_kind",
         ),
         UniqueConstraint("profile_id", "connection_id"),
     )
 
 
-def _history_constraints() -> tuple[Any, ...]:
+def _history_constraints(resource_kind: str) -> tuple[Any, ...]:
     return (
         ForeignKeyConstraint(
             ["connection_id", "profile_id"],
             ["whoop_connections.id", "whoop_connections.profile_id"],
         ),
         ForeignKeyConstraint(
-            ["raw_record_id", "profile_id", "connection_id"],
+            [
+                "raw_record_id",
+                "profile_id",
+                "connection_id",
+                "resource_kind",
+                "external_id",
+            ],
             [
                 "whoop_raw_records.id",
                 "whoop_raw_records.profile_id",
                 "whoop_raw_records.connection_id",
+                "whoop_raw_records.resource_kind",
+                "whoop_raw_records.external_id",
             ],
+        ),
+        CheckConstraint(
+            f"resource_kind = '{resource_kind}'",
+            name=f"ck_whoop_{resource_kind}_kind",
         ),
         UniqueConstraint("profile_id", "connection_id", "external_id"),
     )
@@ -123,7 +148,13 @@ class WhoopRawRecord(Base):
             "external_id",
             "payload_sha256",
         ),
-        UniqueConstraint("id", "profile_id", "connection_id"),
+        UniqueConstraint(
+            "id",
+            "profile_id",
+            "connection_id",
+            "resource_kind",
+            "external_id",
+        ),
         Index(
             "ix_whoop_raw_origin",
             "profile_id",
@@ -146,40 +177,47 @@ class WhoopRawRecord(Base):
 
 class WhoopProfileCurrent(Base):
     __tablename__ = "whoop_profile_current"
-    __table_args__ = _current_constraints()
+    __table_args__ = _current_constraints("profile")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="profile")
+    external_id: Mapped[str] = mapped_column(String(255))
     external_user_id: Mapped[int] = mapped_column(BigInteger)
     email: Mapped[str | None] = mapped_column(String(500))
     first_name: Mapped[str | None] = mapped_column(String(255))
     last_name: Mapped[str | None] = mapped_column(String(255))
     raw_record_id: Mapped[UUID]
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class WhoopBodyCurrent(Base):
     __tablename__ = "whoop_body_current"
-    __table_args__ = _current_constraints()
+    __table_args__ = _current_constraints("body")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="body")
+    external_id: Mapped[str] = mapped_column(String(255), default="current")
     height_meter: Mapped[Decimal | None] = mapped_column(Numeric)
     weight_kilogram: Mapped[Decimal | None] = mapped_column(Numeric)
     max_heart_rate: Mapped[int | None] = mapped_column(Integer)
     raw_record_id: Mapped[UUID]
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class WhoopCycle(Base):
     __tablename__ = "whoop_cycles"
-    __table_args__ = _history_constraints()
+    __table_args__ = _history_constraints("cycle")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="cycle")
     external_id: Mapped[str] = mapped_column(String(255))
     external_user_id: Mapped[int | None] = mapped_column(BigInteger)
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -193,15 +231,17 @@ class WhoopCycle(Base):
     max_heart_rate: Mapped[int | None] = mapped_column(Integer)
     raw_record_id: Mapped[UUID]
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class WhoopRecovery(Base):
     __tablename__ = "whoop_recoveries"
-    __table_args__ = _history_constraints()
+    __table_args__ = _history_constraints("recovery")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="recovery")
     external_id: Mapped[str] = mapped_column(String(255))
     cycle_id: Mapped[int] = mapped_column(BigInteger)
     sleep_id: Mapped[str | None] = mapped_column(String(255))
@@ -209,21 +249,23 @@ class WhoopRecovery(Base):
     score_state: Mapped[str | None] = mapped_column(String(32))
     user_calibrating: Mapped[bool | None] = mapped_column(Boolean)
     recovery_score: Mapped[Decimal | None] = mapped_column(Numeric)
-    resting_heart_rate: Mapped[int | None] = mapped_column(Integer)
+    resting_heart_rate: Mapped[Decimal | None] = mapped_column(Numeric)
     hrv_rmssd_milli: Mapped[Decimal | None] = mapped_column(Numeric)
     spo2_percentage: Mapped[Decimal | None] = mapped_column(Numeric)
     skin_temp_celsius: Mapped[Decimal | None] = mapped_column(Numeric)
     raw_record_id: Mapped[UUID]
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class WhoopSleep(Base):
     __tablename__ = "whoop_sleeps"
-    __table_args__ = _history_constraints()
+    __table_args__ = _history_constraints("sleep")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="sleep")
     external_id: Mapped[str] = mapped_column(String(255))
     cycle_id: Mapped[int | None] = mapped_column(BigInteger)
     external_user_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -252,15 +294,17 @@ class WhoopSleep(Base):
     nap_credit_milli: Mapped[int | None] = mapped_column(BigInteger)
     raw_record_id: Mapped[UUID]
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
 
 class WhoopWorkout(Base):
     __tablename__ = "whoop_workouts"
-    __table_args__ = _history_constraints()
+    __table_args__ = _history_constraints("workout")
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     connection_id: Mapped[UUID] = mapped_column(index=True)
+    resource_kind: Mapped[str] = mapped_column(String(32), default="workout")
     external_id: Mapped[str] = mapped_column(String(255))
     external_user_id: Mapped[int | None] = mapped_column(BigInteger)
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -286,3 +330,4 @@ class WhoopWorkout(Base):
     zone_five_milli: Mapped[int | None] = mapped_column(BigInteger)
     raw_record_id: Mapped[UUID]
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)

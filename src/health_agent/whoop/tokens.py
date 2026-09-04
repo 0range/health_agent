@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
 import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +84,10 @@ class TokenStore:
         account = self._validate_key(account_name, "account")
         return self.root / profile / f"{account}.json"
 
+    def validate_target(self, profile_slug: str, account_name: str) -> Path:
+        """Validate a token identity before starting an irreversible OAuth flow."""
+        return self._path(profile_slug, account_name)
+
     @staticmethod
     def _secure_directory(path: Path) -> None:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -88,7 +95,9 @@ class TokenStore:
             raise TokenStoreError("WHOOP token directory is not a regular directory")
         path.chmod(0o700)
 
-    def save(self, profile_slug: str, account_name: str, token: WhoopToken) -> Path:
+    def _save_unlocked(
+        self, profile_slug: str, account_name: str, token: WhoopToken
+    ) -> Path:
         target = self._path(profile_slug, account_name)
         self._secure_directory(self.root)
         self._secure_directory(target.parent)
@@ -119,7 +128,76 @@ class TokenStore:
                 Path(temporary_name).unlink(missing_ok=True)
         return target
 
-    def load(self, profile_slug: str, account_name: str) -> WhoopToken | None:
+    @contextmanager
+    def _locked(
+        self, profile_slug: str, account_name: str, *, exclusive: bool
+    ) -> Iterator[None]:
+        """Lock one account across threads and processes without unlinking the lock."""
+        target = self._path(profile_slug, account_name)
+        self._secure_directory(self.root)
+        self._secure_directory(target.parent)
+        lock_path = target.with_suffix(".lock")
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            lock_fd = os.open(lock_path, flags, 0o600)
+        except OSError as error:
+            raise TokenStoreError("WHOOP token lock cannot be opened") from error
+        try:
+            os.fchmod(lock_fd, 0o600)
+            if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+                raise TokenStoreError("WHOOP token lock is not a regular file")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+    def save(self, profile_slug: str, account_name: str, token: WhoopToken) -> Path:
+        with self._locked(profile_slug, account_name, exclusive=True):
+            return self._save_unlocked(profile_slug, account_name, token)
+
+    def rotate(
+        self,
+        profile_slug: str,
+        account_name: str,
+        stale_refresh_token: str,
+        refresher: Callable[[str], WhoopToken],
+    ) -> WhoopToken:
+        """Rotate once even when multiple processes observe the same stale token."""
+        with self._locked(profile_slug, account_name, exclusive=True):
+            current = self._load_unlocked(profile_slug, account_name)
+            if current is None:
+                raise TokenStoreError("WHOOP account is not authorized")
+            if current.refresh_token != stale_refresh_token and not current.expired:
+                return current
+            refreshed = refresher(current.refresh_token)
+            self._save_unlocked(profile_slug, account_name, refreshed)
+            return refreshed
+
+    @contextmanager
+    def replacement(
+        self,
+        profile_slug: str,
+        account_name: str,
+        token: WhoopToken,
+    ) -> Iterator[TokenReplacement]:
+        """Stage a token, publishing only when its database transaction is ready."""
+        with self._locked(profile_slug, account_name, exclusive=True):
+            previous = self._load_unlocked(profile_slug, account_name)
+            replacement = TokenReplacement(
+                self, profile_slug, account_name, previous, token
+            )
+            try:
+                yield replacement
+            except BaseException:
+                replacement.rollback()
+                raise
+
+    def _load_unlocked(
+        self, profile_slug: str, account_name: str
+    ) -> WhoopToken | None:
         target = self._path(profile_slug, account_name)
         if not target.exists():
             return None
@@ -142,3 +220,50 @@ class TokenStore:
         if not isinstance(payload, dict):
             raise TokenStoreError("WHOOP token file is invalid")
         return WhoopToken.from_json(payload)
+
+    def load(self, profile_slug: str, account_name: str) -> WhoopToken | None:
+        with self._locked(profile_slug, account_name, exclusive=False):
+            return self._load_unlocked(profile_slug, account_name)
+
+
+class TokenReplacement:
+    """A staged token replacement held under the account's exclusive file lock."""
+
+    def __init__(
+        self,
+        store: TokenStore,
+        profile_slug: str,
+        account_name: str,
+        previous: WhoopToken | None,
+        candidate: WhoopToken,
+    ) -> None:
+        self._store = store
+        self._profile_slug = profile_slug
+        self._account_name = account_name
+        self._previous = previous
+        self._candidate = candidate
+        self._published = False
+
+    def publish(self) -> Path:
+        path = self._store._save_unlocked(
+            self._profile_slug, self._account_name, self._candidate
+        )
+        self._published = True
+        return path
+
+    def rollback(self) -> None:
+        if not self._published:
+            return
+        if self._previous is not None:
+            self._store._save_unlocked(
+                self._profile_slug, self._account_name, self._previous
+            )
+        else:
+            target = self._store._path(self._profile_slug, self._account_name)
+            target.unlink(missing_ok=True)
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        self._published = False

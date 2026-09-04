@@ -30,18 +30,39 @@ def _connection_fk(table: str) -> sa.ForeignKeyConstraint:
 
 def _raw_fk(table: str) -> sa.ForeignKeyConstraint:
     return sa.ForeignKeyConstraint(
-        ["raw_record_id", "profile_id", "connection_id"],
+        [
+            "raw_record_id",
+            "profile_id",
+            "connection_id",
+            "resource_kind",
+            "external_id",
+        ],
         [
             "whoop_raw_records.id",
             "whoop_raw_records.profile_id",
             "whoop_raw_records.connection_id",
+            "whoop_raw_records.resource_kind",
+            "whoop_raw_records.external_id",
         ],
-        name=f"fk_{table}_raw_profile_connection",
+        name=f"fk_{table}_raw_origin",
     )
 
 
-def _normalized_identity(table: str) -> tuple[sa.ForeignKeyConstraint, ...]:
-    return (_connection_fk(table), _raw_fk(table))
+def _normalized_identity(
+    table: str, resource_kind: str
+) -> tuple[sa.SchemaItem, ...]:
+    return (
+        _connection_fk(table),
+        _raw_fk(table),
+        sa.CheckConstraint(
+            f"resource_kind = '{resource_kind}'",
+            name=(
+                f"ck_{table}_kind"
+                if table.endswith("_current")
+                else f"ck_whoop_{resource_kind}_kind"
+            ),
+        ),
+    )
 
 
 def upgrade() -> None:
@@ -136,7 +157,9 @@ def upgrade() -> None:
             "id",
             "profile_id",
             "connection_id",
-            name="uq_whoop_raw_id_profile_connection",
+            "resource_kind",
+            "external_id",
+            name="uq_whoop_raw_origin_identity",
         ),
     )
     op.create_index(
@@ -166,13 +189,16 @@ def _create_profile_current() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("profile_id", sa.Uuid(), nullable=False),
         sa.Column("connection_id", sa.Uuid(), nullable=False),
+        sa.Column("resource_kind", sa.String(length=32), nullable=False),
+        sa.Column("external_id", sa.String(length=255), nullable=False),
         sa.Column("external_user_id", sa.BigInteger(), nullable=False),
         sa.Column("email", sa.String(length=500), nullable=True),
         sa.Column("first_name", sa.String(length=255), nullable=True),
         sa.Column("last_name", sa.String(length=255), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("fetched_at", sa.DateTime(timezone=True), nullable=False),
-        *_normalized_identity(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_normalized_identity(table, "profile"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "profile_id", "connection_id", name="uq_whoop_profile_current_connection"
@@ -188,12 +214,15 @@ def _create_body_current() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("profile_id", sa.Uuid(), nullable=False),
         sa.Column("connection_id", sa.Uuid(), nullable=False),
+        sa.Column("resource_kind", sa.String(length=32), nullable=False),
+        sa.Column("external_id", sa.String(length=255), nullable=False),
         sa.Column("height_meter", sa.Numeric(), nullable=True),
         sa.Column("weight_kilogram", sa.Numeric(), nullable=True),
         sa.Column("max_heart_rate", sa.Integer(), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
-        *_normalized_identity(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_normalized_identity(table, "body"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "profile_id", "connection_id", name="uq_whoop_body_current_connection"
@@ -207,13 +236,16 @@ def _history_columns() -> list[sa.Column[object]]:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("profile_id", sa.Uuid(), nullable=False),
         sa.Column("connection_id", sa.Uuid(), nullable=False),
+        sa.Column("resource_kind", sa.String(length=32), nullable=False),
         sa.Column("external_id", sa.String(length=255), nullable=False),
     ]
 
 
-def _history_constraints(table: str) -> tuple[sa.SchemaItem, ...]:
+def _history_constraints(
+    table: str, resource_kind: str
+) -> tuple[sa.SchemaItem, ...]:
     return (
-        *_normalized_identity(table),
+        *_normalized_identity(table, resource_kind),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "profile_id",
@@ -241,7 +273,8 @@ def _create_cycles() -> None:
         sa.Column("max_heart_rate", sa.Integer(), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("source_updated_at", sa.DateTime(timezone=True), nullable=True),
-        *_history_constraints(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_history_constraints(table, "cycle"),
     )
     _normalized_indexes(table)
 
@@ -257,13 +290,14 @@ def _create_recoveries() -> None:
         sa.Column("score_state", sa.String(length=32), nullable=True),
         sa.Column("user_calibrating", sa.Boolean(), nullable=True),
         sa.Column("recovery_score", sa.Numeric(), nullable=True),
-        sa.Column("resting_heart_rate", sa.Integer(), nullable=True),
+        sa.Column("resting_heart_rate", sa.Numeric(), nullable=True),
         sa.Column("hrv_rmssd_milli", sa.Numeric(), nullable=True),
         sa.Column("spo2_percentage", sa.Numeric(), nullable=True),
         sa.Column("skin_temp_celsius", sa.Numeric(), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("source_updated_at", sa.DateTime(timezone=True), nullable=True),
-        *_history_constraints(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_history_constraints(table, "recovery"),
     )
     _normalized_indexes(table)
 
@@ -300,7 +334,8 @@ def _create_sleeps() -> None:
         sa.Column("nap_credit_milli", sa.BigInteger(), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("source_updated_at", sa.DateTime(timezone=True), nullable=True),
-        *_history_constraints(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_history_constraints(table, "sleep"),
     )
     _normalized_indexes(table)
 
@@ -334,7 +369,8 @@ def _create_workouts() -> None:
         sa.Column("zone_five_milli", sa.BigInteger(), nullable=True),
         sa.Column("raw_record_id", sa.Uuid(), nullable=False),
         sa.Column("source_updated_at", sa.DateTime(timezone=True), nullable=True),
-        *_history_constraints(table),
+        sa.Column("source_values", postgresql.JSONB(), nullable=False),
+        *_history_constraints(table, "workout"),
     )
     _normalized_indexes(table)
 
@@ -348,10 +384,13 @@ def _create_views() -> None:
     op.execute(
         "CREATE VIEW whoop_daily_health AS "
         "SELECT c.profile_id, c.connection_id, c.local_day AS day, "
-        "c.external_id AS cycle_id, c.strain, c.average_heart_rate, "
+        "c.external_id AS cycle_id, c.score_state AS cycle_score_state, "
+        "c.strain, c.average_heart_rate, "
+        "r.score_state AS recovery_score_state, r.user_calibrating, "
         "r.recovery_score, r.resting_heart_rate, r.hrv_rmssd_milli, "
         "r.spo2_percentage, r.skin_temp_celsius, "
-        "s.external_id AS sleep_id, s.total_sleep_milli, "
+        "s.external_id AS sleep_id, s.score_state AS sleep_score_state, "
+        "s.total_sleep_milli, "
         "s.sleep_performance_percentage, s.sleep_efficiency_percentage, "
         "s.respiratory_rate "
         "FROM whoop_cycles c "
@@ -377,11 +416,18 @@ def _create_views() -> None:
         "altitude_gain_meter FROM whoop_workouts"
     )
     op.execute(
+        "CREATE VIEW whoop_body_snapshot AS "
+        "SELECT profile_id, connection_id, observed_at, height_meter, "
+        "weight_kilogram, max_heart_rate FROM whoop_body_current"
+    )
+    op.execute(
         "CREATE VIEW whoop_source_status AS "
         "SELECT c.profile_id, c.id AS connection_id, c.account_name, c.auth_status, "
         "c.last_attempt_at, c.last_success_at, c.last_error_code, "
         "(SELECT count(*) FROM whoop_cycles x WHERE x.profile_id = c.profile_id "
         "AND x.connection_id = c.id) AS cycle_count, "
+        "(SELECT count(*) FROM whoop_recoveries x WHERE x.profile_id = c.profile_id "
+        "AND x.connection_id = c.id) AS recovery_count, "
         "(SELECT count(*) FROM whoop_sleeps x WHERE x.profile_id = c.profile_id "
         "AND x.connection_id = c.id) AS sleep_count, "
         "(SELECT count(*) FROM whoop_workouts x WHERE x.profile_id = c.profile_id "
@@ -391,7 +437,23 @@ def _create_views() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DO $$ BEGIN "
+        "IF EXISTS (SELECT 1 FROM whoop_connections LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_sync_runs LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_raw_records LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_profile_current LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_body_current LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_cycles LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_recoveries LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_sleeps LIMIT 1) "
+        "OR EXISTS (SELECT 1 FROM whoop_workouts LIMIT 1) "
+        "THEN RAISE EXCEPTION "
+        "'Refusing to downgrade: WHOOP data exists; export or delete it explicitly'; "
+        "END IF; END $$"
+    )
     op.execute("DROP VIEW whoop_source_status")
+    op.execute("DROP VIEW whoop_body_snapshot")
     op.execute("DROP VIEW whoop_workout_history")
     op.execute("DROP VIEW whoop_sleep_history")
     op.execute("DROP VIEW whoop_daily_health")

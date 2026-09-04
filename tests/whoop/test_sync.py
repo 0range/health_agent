@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,6 +20,7 @@ from health_agent.whoop.models import (
 from health_agent.whoop.repository import register_authorized_connection
 from health_agent.whoop.status import get_whoop_status
 from health_agent.whoop.sync import WhoopSyncReport, sync_whoop
+from health_agent.whoop.tokens import TokenStore, WhoopToken
 
 
 class FakeWhoopClient:
@@ -216,17 +218,37 @@ def test_two_profile_syncs_never_mix_rows(session: Session) -> None:
             WhoopRecovery.profile_id
         )
     ).all()
-    assert dict(grouped) == {DEFAULT_PROFILE_ID: 1, second_profile.id: 1}
+    assert {row[0]: row[1] for row in grouped} == {
+        DEFAULT_PROFILE_ID: 1,
+        second_profile.id: 1,
+    }
 
 
-def test_status_is_safe_and_scoped_to_selected_profile(session: Session) -> None:
+def test_status_is_safe_and_scoped_to_selected_profile(
+    session: Session, tmp_path: Path
+) -> None:
     connect(session)
     sync_whoop(session, DEFAULT_PROFILE_ID, "main", FakeWhoopClient(), full=True)
+    tokens = TokenStore(tmp_path / "tokens")
+    tokens.save(
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        WhoopToken(
+            "access",
+            "refresh",
+            datetime.now(UTC) + timedelta(hours=1),
+            ("offline",),
+        ),
+    )
 
-    status = get_whoop_status(session, DEFAULT_PROFILE_ID, "main")
-    missing = get_whoop_status(session, uuid4(), "main")
+    status = get_whoop_status(
+        session, tokens, DEFAULT_PROFILE_ID, str(DEFAULT_PROFILE_ID), "main"
+    )
+    missing_id = uuid4()
+    missing = get_whoop_status(session, tokens, missing_id, str(missing_id), "main")
 
     assert status.configured is True
+    assert status.token_status == "ready"
     assert status.weight_available is True
     assert (
         status.cycle_count,
@@ -240,6 +262,31 @@ def test_status_is_safe_and_scoped_to_selected_profile(session: Session) -> None
         1,
     )
     assert missing.configured is False
+    assert missing.token_status == "missing"
+
+
+def test_status_reports_unreadable_token_without_exposing_contents(
+    session: Session, tmp_path: Path
+) -> None:
+    connect(session)
+    tokens = TokenStore(tmp_path / "tokens")
+    path = tokens.save(
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        WhoopToken(
+            "access",
+            "refresh",
+            datetime.now(UTC) + timedelta(hours=1),
+            ("offline",),
+        ),
+    )
+    path.write_text("not-json", encoding="utf-8")
+
+    status = get_whoop_status(
+        session, tokens, DEFAULT_PROFILE_ID, str(DEFAULT_PROFILE_ID), "main"
+    )
+
+    assert status.token_status == "unreadable"
 
 
 def _summary(report: WhoopSyncReport) -> tuple[str, int, int, int, int]:

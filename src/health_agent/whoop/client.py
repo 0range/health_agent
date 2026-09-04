@@ -3,13 +3,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from threading import Lock
 from typing import Any
 
 import httpx
 
 from health_agent.whoop.oauth import WhoopOAuth, WhoopOAuthError
-from health_agent.whoop.tokens import TokenStore, WhoopToken
+from health_agent.whoop.tokens import TokenStore, TokenStoreError, WhoopToken
 
 API_BASE_URL = "https://api.prod.whoop.com/developer"
 PROFILE_PATH = "/v2/user/profile/basic"
@@ -58,7 +57,6 @@ class WhoopClient:
         self._http = http_client or httpx.Client(timeout=30)
         self._sleep = sleeper
         self._max_attempts = max_attempts
-        self._refresh_lock = Lock()
 
     def get_object(self, path: str) -> dict[str, Any]:
         payload = self._request(path, {})
@@ -116,28 +114,28 @@ class WhoopClient:
         if token is None:
             raise WhoopAuthorizationRequired("WHOOP account is not authorized")
         if token.expired:
-            return self._refresh_token()
+            return self._refresh_token(token.refresh_token)
         return token
 
-    def _refresh_token(self) -> WhoopToken:
-        with self._refresh_lock:
-            current = self._tokens.load(self._profile_slug, self._account_name)
-            if current is None:
-                raise WhoopAuthorizationRequired("WHOOP account is not authorized")
-            try:
-                refreshed = self._oauth.refresh(current.refresh_token)
-            except WhoopOAuthError as error:
-                raise WhoopAuthorizationRequired(
-                    "WHOOP authorization must be renewed"
-                ) from error
-            self._tokens.save(self._profile_slug, self._account_name, refreshed)
-            return refreshed
+    def _refresh_token(self, stale_refresh_token: str) -> WhoopToken:
+        try:
+            return self._tokens.rotate(
+                self._profile_slug,
+                self._account_name,
+                stale_refresh_token,
+                self._oauth.refresh,
+            )
+        except (TokenStoreError, WhoopOAuthError) as error:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization must be renewed"
+            ) from error
 
     def _request(self, path: str, params: dict[str, str | int]) -> Any:
         token = self._load_token()
         refreshed_after_unauthorized = False
         last_status: int | None = None
-        for attempt in range(self._max_attempts):
+        transient_attempt = 0
+        while transient_attempt < self._max_attempts:
             try:
                 response = self._http.get(
                     f"{API_BASE_URL}{path}",
@@ -145,22 +143,24 @@ class WhoopClient:
                     headers={"Authorization": f"Bearer {token.access_token}"},
                 )
             except httpx.TransportError as error:
-                if attempt + 1 == self._max_attempts:
+                transient_attempt += 1
+                if transient_attempt == self._max_attempts:
                     raise WhoopApiError(
                         "WHOOP API is temporarily unavailable"
                     ) from error
-                self._sleep(float(2**attempt))
+                self._sleep(float(2 ** (transient_attempt - 1)))
                 continue
 
             last_status = response.status_code
             if response.status_code == 401 and not refreshed_after_unauthorized:
-                token = self._refresh_token()
+                token = self._refresh_token(token.refresh_token)
                 refreshed_after_unauthorized = True
                 continue
             if response.status_code == 429 or response.status_code >= 500:
-                if attempt + 1 == self._max_attempts:
+                transient_attempt += 1
+                if transient_attempt == self._max_attempts:
                     break
-                self._sleep(self._retry_delay(response, attempt))
+                self._sleep(self._retry_delay(response, transient_attempt - 1))
                 continue
             if not 200 <= response.status_code < 300:
                 if response.status_code == 401:
@@ -180,7 +180,7 @@ class WhoopClient:
             raw_value = response.headers.get(header)
             if raw_value is not None:
                 try:
-                    return max(0.0, min(float(raw_value), 60.0))
+                    return max(0.0, float(raw_value))
                 except ValueError:
                     pass
         return float(2**attempt)

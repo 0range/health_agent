@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -44,6 +45,7 @@ def normalize_whoop(
     except KeyError as error:
         raise WhoopNormalizationError("Unsupported WHOOP resource kind") from error
     external_id, updated_at, values = normalizer(payload)
+    values["source_values"] = deepcopy(payload)
     return NormalizedWhoopRecord(
         resource_kind=resource_kind,
         external_id=external_id,
@@ -93,7 +95,7 @@ def _normalize_cycle(
         external_id,
         _datetime(payload.get("updated_at")),
         {
-            "external_user_id": _integer(payload.get("user_id")),
+            "external_user_id": _required_integer(payload, "user_id"),
             "start_at": start,
             "end_at": _datetime(payload.get("end")),
             "local_day": _local_day(start, payload.get("timezone_offset")),
@@ -118,11 +120,11 @@ def _normalize_recovery(
         {
             "cycle_id": int(external_id),
             "sleep_id": _optional_string(payload, "sleep_id"),
-            "external_user_id": _integer(payload.get("user_id")),
+            "external_user_id": _required_integer(payload, "user_id"),
             "score_state": _optional_string(payload, "score_state"),
             "user_calibrating": _boolean(score.get("user_calibrating")),
             "recovery_score": _decimal(score.get("recovery_score")),
-            "resting_heart_rate": _integer(score.get("resting_heart_rate")),
+            "resting_heart_rate": _decimal(score.get("resting_heart_rate")),
             "hrv_rmssd_milli": _decimal(score.get("hrv_rmssd_milli")),
             "spo2_percentage": _decimal(score.get("spo2_percentage")),
             "skin_temp_celsius": _decimal(score.get("skin_temp_celsius")),
@@ -151,7 +153,7 @@ def _normalize_sleep(
         _datetime(payload.get("updated_at")),
         {
             "cycle_id": _integer(payload.get("cycle_id")),
-            "external_user_id": _integer(payload.get("user_id")),
+            "external_user_id": _required_integer(payload, "user_id"),
             "start_at": start,
             "end_at": _datetime(payload.get("end")),
             "local_day": _local_day(start, payload.get("timezone_offset")),
@@ -204,7 +206,7 @@ def _normalize_workout(
         external_id,
         _datetime(payload.get("updated_at")),
         {
-            "external_user_id": _integer(payload.get("user_id")),
+            "external_user_id": _required_integer(payload, "user_id"),
             "start_at": start,
             "end_at": _datetime(payload.get("end")),
             "local_day": _local_day(start, payload.get("timezone_offset")),
@@ -240,6 +242,13 @@ def _required_id(payload: dict[str, Any], key: str) -> str:
 def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
     return str(value) if value is not None else None
+
+
+def _required_integer(payload: dict[str, Any], key: str) -> int:
+    value = _integer(payload.get(key))
+    if value is None:
+        raise WhoopNormalizationError(f"WHOOP {key} is missing or invalid")
+    return value
 
 
 def _datetime(value: Any, *, required: bool = False) -> datetime | None:

@@ -16,12 +16,14 @@ from health_agent.whoop.models import (
     WhoopSleep,
     WhoopWorkout,
 )
+from health_agent.whoop.tokens import TokenStore, TokenStoreError
 
 
 @dataclass(frozen=True, slots=True)
 class WhoopStatus:
     configured: bool
     auth_status: str
+    token_status: str
     last_success_at: datetime | None
     last_error_code: str | None
     weight_available: bool
@@ -32,9 +34,20 @@ class WhoopStatus:
 
 
 def get_whoop_status(
-    session: Session, profile_id: UUID, account_name: str
+    session: Session,
+    token_store: TokenStore,
+    profile_id: UUID,
+    profile_key: str,
+    account_name: str,
 ) -> WhoopStatus:
     """Return non-sensitive status for the CLI and future local management UI."""
+    try:
+        token = token_store.load(profile_key, account_name)
+        token_status = (
+            "missing" if token is None else "expired" if token.expired else "ready"
+        )
+    except TokenStoreError:
+        token_status = "unreadable"
     connection = session.scalar(
         select(WhoopConnection).where(
             WhoopConnection.profile_id == profile_id,
@@ -42,7 +55,9 @@ def get_whoop_status(
         )
     )
     if connection is None:
-        return WhoopStatus(False, "not_connected", None, None, False, 0, 0, 0, 0)
+        return WhoopStatus(
+            False, "not_connected", token_status, None, None, False, 0, 0, 0, 0
+        )
 
     def count(model: type[Any]) -> int:
         value: int | None = session.scalar(
@@ -67,6 +82,7 @@ def get_whoop_status(
     return WhoopStatus(
         configured=True,
         auth_status=connection.auth_status,
+        token_status=token_status,
         last_success_at=connection.last_success_at,
         last_error_code=connection.last_error_code,
         weight_available=weight_available,

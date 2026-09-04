@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import ipaddress
 import webbrowser
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 import httpx
+from sqlalchemy.orm import Session
 
 from health_agent.whoop.client import API_BASE_URL, PROFILE_PATH, WhoopApiError
-from health_agent.whoop.oauth import WhoopOAuth
-from health_agent.whoop.tokens import TokenStore
+from health_agent.whoop.oauth import WHOOP_SCOPES, WhoopOAuth, WhoopOAuthError
+from health_agent.whoop.repository import (
+    register_authorized_connection,
+    validate_registration_target,
+)
+from health_agent.whoop.tokens import TokenStore, WhoopToken
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +32,7 @@ class PendingWhoopAuthorization:
 class AuthorizedWhoopAccount:
     external_user_id: int
     granted_scopes: tuple[str, ...]
+    token: WhoopToken
 
 
 def begin_whoop_authorization(oauth: WhoopOAuth) -> PendingWhoopAuthorization:
@@ -34,17 +43,17 @@ def begin_whoop_authorization(oauth: WhoopOAuth) -> PendingWhoopAuthorization:
 
 def complete_whoop_authorization(
     oauth: WhoopOAuth,
-    token_store: TokenStore,
-    profile_key: str,
-    account_name: str,
     pending: PendingWhoopAuthorization,
     callback_query: dict[str, str],
     *,
     http_client: httpx.Client | None = None,
 ) -> AuthorizedWhoopAccount:
-    """Exchange, verify the WHOOP identity, then atomically retain the token."""
+    """Exchange and verify a candidate without publishing its token yet."""
     code = oauth.validate_callback(callback_query, pending.state)
     token = oauth.exchange_code(code)
+    missing_scopes = set(WHOOP_SCOPES).difference(token.scopes)
+    if missing_scopes:
+        raise WhoopOAuthError("WHOOP did not grant every required read scope")
     client = http_client or httpx.Client(timeout=30)
     try:
         response = client.get(
@@ -68,8 +77,46 @@ def complete_whoop_authorization(
         raise WhoopApiError(
             "WHOOP profile verification returned an invalid response"
         ) from error
-    token_store.save(profile_key, account_name, token)
-    return AuthorizedWhoopAccount(external_user_id, token.scopes)
+    return AuthorizedWhoopAccount(external_user_id, token.scopes, token)
+
+
+def validate_whoop_authorization_target(
+    session: Session,
+    token_store: TokenStore,
+    profile_id: UUID,
+    profile_key: str,
+    account_name: str,
+) -> None:
+    """Fail before opening a browser if the local profile/account is invalid."""
+    token_store.validate_target(profile_key, account_name)
+    validate_registration_target(session, profile_id, account_name)
+
+
+def publish_whoop_authorization(
+    session_context: Callable[[], AbstractContextManager[Session]],
+    token_store: TokenStore,
+    profile_id: UUID,
+    profile_key: str,
+    account_name: str,
+    authorized: AuthorizedWhoopAccount,
+) -> None:
+    """Atomically expose a verified token and its matching database connection."""
+    if set(WHOOP_SCOPES).difference(authorized.granted_scopes):
+        raise WhoopOAuthError("WHOOP did not grant every required read scope")
+    with token_store.replacement(
+        profile_key, account_name, authorized.token
+    ) as replacement, session_context() as session:
+        validate_whoop_authorization_target(
+            session, token_store, profile_id, profile_key, account_name
+        )
+        register_authorized_connection(
+            session,
+            profile_id,
+            account_name,
+            authorized.external_user_id,
+            authorized.granted_scopes,
+        )
+        replacement.publish()
 
 
 def open_and_wait_for_whoop_authorization(

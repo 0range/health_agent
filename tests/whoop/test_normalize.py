@@ -50,6 +50,7 @@ def test_unscored_sleep_is_kept_with_null_scores_and_correct_local_day() -> None
         "sleep",
         {
             "id": "sleep-1",
+            "user_id": 10129,
             "start": "2026-09-03T22:30:00Z",
             "end": "2026-09-04T06:30:00Z",
             "timezone_offset": "+03:00",
@@ -68,6 +69,7 @@ def test_sleep_stage_totals_produce_total_sleep() -> None:
         "sleep",
         {
             "id": "sleep-1",
+            "user_id": 10129,
             "start": "2026-09-03T22:30:00Z",
             "score": {
                 "stage_summary": {
@@ -91,6 +93,22 @@ def test_body_is_a_current_snapshot_not_a_dated_measurement() -> None:
     assert result.external_id == "current"
     assert result.source_updated_at is None
     assert result.values["weight_kilogram"] == Decimal("80.5")
+
+
+def test_fractional_recovery_value_and_full_source_are_preserved() -> None:
+    payload = {
+        "cycle_id": 93845,
+        "user_id": 10129,
+        "updated_at": "2026-09-04T08:00:00Z",
+        "score": {"resting_heart_rate": 63.75},
+        "created_at": "2026-09-04T07:00:00Z",
+        "future_official_field": {"value": 1},
+    }
+
+    result = normalize_whoop("recovery", payload)
+
+    assert result.values["resting_heart_rate"] == Decimal("63.75")
+    assert result.values["source_values"] == payload
 
 
 def test_missing_identity_is_rejected() -> None:
