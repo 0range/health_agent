@@ -37,6 +37,11 @@ from health_agent.models import (
 )
 from health_agent.panel.http import serve_panel
 from health_agent.panel.service import build_panel_service
+from health_agent.staging import (
+    StagingConfigurationError,
+    StagingEnvironment,
+    StagingManager,
+)
 from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
 from health_agent.telegram.api import TelegramBotAPI
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
@@ -62,12 +67,15 @@ profile_app = typer.Typer(help="Manage local person profiles.")
 gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
 telegram_app = typer.Typer(help="Configure the local Telegram connector.")
 panel_app = typer.Typer(help="Serve the local management panel.")
+staging_app = typer.Typer(help="Manage the isolated local staging environment.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
 app.add_typer(profile_app, name="profile")
 app.add_typer(gmail_app, name="gmail")
 app.add_typer(telegram_app, name="telegram")
+app.add_typer(panel_app, name="panel")
+app.add_typer(staging_app, name="staging")
 app.add_typer(panel_app, name="panel")
 
 
@@ -236,6 +244,65 @@ def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
             )
         )
     )
+
+
+@staging_app.command("start")
+def staging_start(
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
+    """Start isolated staging services and migrate the staging database."""
+    manager = _staging_manager(env_file)
+    manager.start()
+    typer.echo("status=started project=health-agent-staging volumes=preserved")
+
+
+@staging_app.command("status")
+def staging_status(
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
+    """Show only the dedicated staging Compose project."""
+    manager = _staging_manager(env_file)
+    manager.status()
+
+
+@staging_app.command("stop")
+def staging_stop(
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
+    """Stop staging while preserving its volumes and local files."""
+    manager = _staging_manager(env_file)
+    manager.stop()
+    typer.echo("status=stopped project=health-agent-staging volumes=preserved")
+
+
+@staging_app.command("clean")
+def staging_clean(
+    confirmation: Annotated[str, typer.Option("--confirm")],
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
+    """Delete staging Compose volumes after an exact project confirmation."""
+    manager = _staging_manager(env_file)
+    try:
+        manager.clean(confirmation)
+    except StagingConfigurationError as error:
+        raise typer.BadParameter(str(error), param_hint="--confirm") from error
+    typer.echo("status=cleaned project=health-agent-staging local_files=preserved")
+
+
+@staging_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def staging_run(
+    context: typer.Context,
+    env_file: Annotated[Path | None, typer.Option("--env-file")] = None,
+) -> None:
+    """Run an application command using staging settings; use `run -- ...`."""
+    manager = _staging_manager(env_file)
+    try:
+        manager.run_application(context.args)
+    except StagingConfigurationError as error:
+        raise typer.BadParameter(str(error)) from error
 
 
 @whoop_app.command("auth")
@@ -756,3 +823,12 @@ def _telegram_admin(settings: Settings) -> TelegramAdminService:
         SqliteTelegramState(settings.telegram_state_file),
         DatabaseProfileDirectory(settings),
     )
+
+
+def _staging_manager(env_file: Path | None) -> StagingManager:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        environment = StagingEnvironment.load(root, env_file)
+    except StagingConfigurationError as error:
+        raise typer.BadParameter(str(error), param_hint="--env-file") from error
+    return StagingManager(environment)
