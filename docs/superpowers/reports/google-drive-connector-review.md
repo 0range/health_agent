@@ -134,3 +134,166 @@ These gaps explain why a green mocked suite does not establish the implementatio
 5. Make OAuth account binding/token commit atomic; bind callback to `127.0.0.1`; represent revoked/Testing-expired tokens honestly.
 6. Add the missing mocked gateway/OAuth/CLI edge tests plus database-backed two-profile and Drive-file-to-review/dashboard acceptance tests.
 7. Perform a live acceptance with the user’s real private folder only after the above; do not claim it from mocked tests.
+
+## Final re-review — 2026-09-04 (`1cd772f`)
+
+**SPEC verdict: CHANGES.** The fix closes most of the original connector blockers,
+including real profile-aware PDF import, explicit My Drive-only policy, trash and
+move reconciliation, stable account binding, truthful local status, and isolated
+per-file outcomes. It still does not complete the Drive-to-dashboard scenario,
+and two cursor/configuration paths can silently defer or miss files.
+
+**QUALITY verdict: CHANGES.** The independently reproduced test and static gates
+are green, and the implementation is materially stronger than the reviewed
+foundation. The remaining gaps are not style issues: they affect unattended
+completeness and bounded operation, and the tests currently assert one of the
+unsafe cursor outcomes.
+
+**OVERALL verdict: CHANGES (do not merge as the completed Drive slice yet).**
+
+### Remaining blockers, ordered by severity
+
+#### 1. Drive laboratory PDFs have no medical date and therefore cannot reach the shipped chart
+
+`MedicalDriveConsumer` calls `import_document` without `collected_date` or
+`issued_date` (`src/health_agent/google_drive/medical_consumer.py:64-76`). The
+importer does not infer either date from the PDF, and the Drive connector has no
+review action or CLI input for one. Consequently a Drive-imported lab can be
+parsed and approved while its `result_date` remains `NULL`. The exact Metabase
+card query excludes such rows with `AND result_date IS NOT NULL`
+(`src/health_agent/metabase.py:19-28`).
+
+This leaves original finding 1 and its requested Drive-file-to-dashboard
+acceptance only partially fixed. It also conflicts with the approved rule that
+charts use the collection date, falling back to issue date, and never substitute
+an import timestamp (`docs/superpowers/specs/2026-09-04-personal-health-agent-v1-design.md:134-142`).
+Drive `createdTime`/`modifiedTime` must not be silently used as a medical date.
+Add extraction/review of the document's medical date and a database-backed
+acceptance proving `Drive PDF -> review -> approve -> exact card row`.
+
+#### 2. An exhausted transient per-file failure is consumed permanently by normal incremental sync
+
+`_safe_process_item` converts a transport/rate/download exception into a local
+item status and returns (`src/health_agent/google_drive/service.py:402-430`). Both
+full and incremental scans then publish their new cursor
+(`src/health_agent/google_drive/service.py:178-192,238-298`). No retry queue or
+failed-item replay exists. A later normal incremental run starts after that
+change and has no reason to receive the file again; it is retried only if Google
+reports a new revision or an operator manually runs `--full`.
+
+The test explicitly locks in this behavior for an incremental consumer failure:
+it expects `processing_failed` and cursor advancement
+(`tests/google_drive/test_service.py:303-323`). A 429/5xx/transport failure after
+the gateway's five attempts follows the same path. This contradicts the approved
+autonomy requirement that technical failures are retried without user action
+(`personal-health-agent-v1-design.md:193-208`). Continue-after-one-file is good,
+but cursor advancement must be paired with a durable retry queue (or equivalent
+replay) for retryable outcomes. Permanent attention outcomes can remain consumed.
+
+#### 3. Changing roots is not serialized with sync, so the old cursor can be restored after invalidation
+
+`DriveService.sync` holds the profile `sync.lock`
+(`src/health_agent/google_drive/service.py:146-148`), but `drive configure` reads
+the current profile, clears the cursor, and replaces the profile without that
+lock (`src/health_agent/cli.py:586-603`). One concrete interleaving is:
+
+1. a sync command loads the old roots;
+2. configure clears the cursor and saves new roots;
+3. the old-root sync finishes and writes its start/new-start token;
+4. the next command loads the new roots but chooses incremental mode from the
+   old-root cursor, so files already present in the new root are missed.
+
+The sequential invalidation test (`tests/google_drive/test_cli.py:38-55`) cannot
+detect this. Make profile replacement plus cursor invalidation atomic under the
+same profile lock used by sync, and add a deterministic cross-process/concurrency
+test. Original finding 3 is otherwise fixed: a non-racing root change forces a
+full scan, and unchanged content refreshes its path provenance.
+
+#### 4. Drive HTTP operations still have no finite socket/request timeout
+
+The callback itself now correctly binds to `127.0.0.1` with a five-minute timeout.
+The Drive API client, however, is created with bare
+`build("drive", "v3", credentials=..., cache_discovery=False)`
+(`src/health_agent/google_drive/api.py:111-113`). No timeout-bearing `httplib2`
+transport or connector setting is supplied. Tenacity can retry only after an
+exception is raised; it cannot bound a socket call that never returns. Such a
+call also holds the profile sync lock indefinitely. Add and test a finite request
+timeout for metadata, changes, downloads/exports, account lookup, and token
+refresh as applicable.
+
+### Original finding disposition
+
+- **1 — medical ingestion:** partially closed. PDFs now enter PostgreSQL,
+  source occurrence/revision, extraction, and review; images enter a
+  profile-scoped attention vault. The medical-date/chart acceptance remains
+  blocked by finding 1 above.
+- **2 — shared drives:** closed for v1. Roots with `driveId` are rejected, change
+  payloads request/branch on `changeType`, and drive membership changes no longer
+  assume `fileId`.
+- **3 — root changes/path refresh:** partially closed. Sequential changes clear
+  the cursor and full reconciliation refreshes path metadata, but the missing
+  configure/sync lock leaves the race in finding 3 above.
+- **4 — one bad file/per-item status:** partially closed. Isolated errors
+  no longer block later files and safe statuses are retained, but retryable
+  failures are consumed without durable replay (finding 2 above).
+- **5 — trash:** closed. `trashed` is requested and trash/untrash plus folder-tree
+  removal are exercised.
+- **6 — account binding/token commit:** closed for the local threat model. OAuth
+  is staged, account identity uses stable `permissionId`, cross-profile account
+  reuse and mismatched reauthorization fail before atomic token replacement, and
+  prior verified tokens survive lookup/mismatch failures.
+- **7 — database profile boundary:** closed. CLI configuration and the production
+  consumer require an existing Profile UUID; database constraints and the
+  disposable-Postgres test keep equal IDs/bytes separate across profiles.
+- **8 — OAuth scope/callback/disclosure:** closed. Exact `drive.readonly`, literal
+  loopback bind, finite callback timeout, and account-wide scope disclosure are
+  present.
+- **9 — Testing refresh-token lifetime:** closed in code/docs. Refresh failures
+  become explicit reauthorization state and the seven-day External/Testing caveat
+  is documented.
+- **10 — status truthfulness:** closed for a local status command. Token validity,
+  binding, cursor, interrupted run, last timestamps/error, and outcome counts are
+  distinct. Remote reachability is intentionally represented by the last sync.
+- **11 — retry classification:** partially closed. 429, eligible 403, 5xx, and
+  transport exceptions are retried, but findings 2 and 4 prevent a bounded,
+  autonomous end-to-end retry guarantee.
+
+The remaining original test gate is also incomplete: there is still no CLI-level
+successful `drive auth`, `drive sync`, `--full`, or failed-sync acceptance test,
+and no Drive-to-exact-card-row test. The lower-level gateway/service/consumer
+tests cover most individual wiring, but not the executable path or medical-date
+behavior above.
+
+### Independently reproduced gates
+
+- `uv run pytest -q tests/google_drive`: **52 passed** (five existing PyMuPDF
+  SWIG deprecation warnings).
+- `uv run pytest -q`: **277 passed** (same five warnings).
+- `uv run ruff check .`: **passed**.
+- `uv run mypy src`: **passed**, 41 source files.
+- `uv lock --check`: **passed**.
+- `git diff --check f38e635..HEAD` and final `git diff --check`: **passed**.
+- `uv run health-agent drive --help` and `drive sync --help`: **passed**.
+- Static credential-pattern inspection found identifiers/test placeholders only;
+  no committed token, client-secret value, or runtime state file was found.
+
+The suite uses a randomly named disposable PostgreSQL container, checks the
+database/container names before cleanup, and removes it afterward. Drive API and
+OAuth tests remain mocked; no live Google account or private medical file was
+used.
+
+### Live-only and integration concerns (not additional code findings)
+
+- Complete one real OAuth/account/root smoke after the blockers are fixed:
+  account identity, recursive My Drive traversal, binary download, native export,
+  an incremental mutation, trash/restore, and reauthorization behavior are not
+  proven by mocked tests.
+- External/Testing refresh tokens can require reauthorization after seven days;
+  durable unattended use still depends on the documented Production/Internal
+  setup.
+- Shared drives remain intentionally unsupported, not silently partial.
+- Periodic `--full` safety reconciliation and source scheduling are documented
+  but are not installed by this connector branch. They remain integration work;
+  they must not be used as the recovery mechanism for finding 2.
+- Archive status is currently local CLI/JSON state. Publishing those statuses to
+  Sheets/Telegram is later integration work and was not claimed as live here.
