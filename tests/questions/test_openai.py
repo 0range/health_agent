@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -60,7 +61,9 @@ def test_responses_adapter_uses_exact_stateless_safe_call_arguments() -> None:
             "safety_identifier": hashed_safety_identifier(PROFILE_ID),
         }
     ]
-    assert str(PROFILE_ID) not in responses.calls[0]["safety_identifier"]
+    safety_identifier = responses.calls[0]["safety_identifier"]
+    assert isinstance(safety_identifier, str)
+    assert str(PROFILE_ID) not in safety_identifier
     assert "previous_response_id" not in responses.calls[0]
     assert "conversation" not in responses.calls[0]
 
@@ -105,8 +108,9 @@ def test_input_is_bounded_content_separated_json_data() -> None:
     input_messages = build_responder_input("q" * 5_000, _context())
 
     assert [message["role"] for message in input_messages] == ["user"]
-    question_data = json.loads(input_messages[0]["content"][0]["text"])
-    evidence_data = json.loads(input_messages[0]["content"][1]["text"])
+    contents = cast(list[dict[str, str]], input_messages[0]["content"])
+    question_data = json.loads(contents[0]["text"])
+    evidence_data = json.loads(contents[1]["text"])
     assert question_data == {"question": "q" * 4_000}
     assert evidence_data == {
         "verified_observations": [
@@ -133,8 +137,9 @@ def test_adversarial_question_cannot_forge_evidence_or_instructions() -> None:
     )
 
     input_messages = build_responder_input(question, _context())
-    question_text = input_messages[0]["content"][0]["text"]
-    evidence_text = input_messages[0]["content"][1]["text"]
+    contents = cast(list[dict[str, str]], input_messages[0]["content"])
+    question_text = contents[0]["text"]
+    evidence_text = contents[1]["text"]
     question_data = json.loads(question_text)
     evidence_data = json.loads(evidence_text)
 

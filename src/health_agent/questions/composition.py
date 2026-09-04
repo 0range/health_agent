@@ -32,6 +32,7 @@ from health_agent.questions.service import (
     QUESTION_UNAVAILABLE_TEXT,
     HealthQuestionApplicationService,
     HealthQuestionResponder,
+    QuestionAnswerResult,
 )
 from health_agent.telegram.api import TelegramBotAPI
 from health_agent.telegram.messenger import TelegramMessenger
@@ -69,7 +70,13 @@ class ResponderFactory(Protocol):
 
 
 class QuestionApplicationFactory(Protocol):
-    def __call__(self, settings: Settings) -> HealthQuestionApplicationService: ...
+    def __call__(self, settings: Settings) -> QuestionApplication: ...
+
+
+class QuestionApplication(Protocol):
+    """The single method the Telegram adapter needs from the application layer."""
+
+    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +111,7 @@ class DatabaseHealthContextBuilder:
 class TelegramHealthQuestionService:
     """Adapt only the authenticated Telegram context to the question boundary."""
 
-    def __init__(self, application: HealthQuestionApplicationService) -> None:
+    def __init__(self, application: QuestionApplication) -> None:
         self._application = application
 
     def answer(self, question: HealthQuestion) -> str:

@@ -45,6 +45,7 @@ def test_streams_to_profile_account_isolated_vault(tmp_path: Path) -> None:
         "application/pdf",
     )
     receipt = importer.import_attachment(provenance(), prepared)
+    assert receipt.storage_reference is not None
     stored = Path(receipt.storage_reference)
     assert receipt.sha256 == hashlib.sha256(b"medical-pdf").hexdigest()
     assert stored.read_bytes() == b"medical-pdf"

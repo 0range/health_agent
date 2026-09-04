@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -25,6 +26,7 @@ from health_agent.questions.composition import (
 )
 from health_agent.questions.models import EvidenceSource
 from health_agent.questions.service import QuestionAnswerResult
+from health_agent.telegram.stores import SqliteTelegramState
 from health_agent.telegram.types import (
     AttachmentProvenance,
     HealthQuestion,
@@ -273,7 +275,7 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
         ),
         question_application_factory=lambda _: application,  # type: ignore[arg-type]
         token_store_factory=TokenStore,  # type: ignore[arg-type]
-        state_factory=lambda _: State(),  # type: ignore[arg-type]
+        state_factory=lambda _: cast(SqliteTelegramState, State()),
         gateway_factory=lambda candidate: _gateway(candidate, token, gateway),
         messenger_factory=lambda *_: SimpleNamespace(),  # type: ignore[arg-type]
         update_service_factory=update_factory,  # type: ignore[arg-type]
@@ -283,8 +285,10 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
     )
 
     assert runtime.poller is poller
-    assert captured["poller_args"][:2] == (99, gateway)
-    assert captured["poller_args"][-1] is captured["updates"]
+    poller_args = captured["poller_args"]
+    assert isinstance(poller_args, tuple)
+    assert poller_args[:2] == (99, gateway)
+    assert poller_args[-1] is captured["updates"]
     assert registrations == [(99, "safe_bot")]
     assert token not in repr(captured)
 
