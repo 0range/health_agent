@@ -13,9 +13,17 @@ from health_agent.config import Settings
 from health_agent.db import session_scope
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailStateStore
+from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.stores import (
+    LocalProfileStore,
+    LocalSyncStateStore,
+    LocalTokenStore,
+)
+from health_agent.google_drive.types import DriveAccountIdentity
 from health_agent.models import Profile
 from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
 from health_agent.panel.service import (
+    DriveConfiguration,
     GmailStatusReader,
     PanelService,
     ProfileNotFoundError,
@@ -51,7 +59,9 @@ class FakeProfiles:
 
 
 class FakeReader:
-    def __init__(self, connector: str, cards: Callable[[UUID], tuple[ConnectorCard, ...]]) -> None:
+    def __init__(
+        self, connector: str, cards: Callable[[UUID], tuple[ConnectorCard, ...]]
+    ) -> None:
         self.connector = connector
         self._cards = cards
 
@@ -59,7 +69,9 @@ class FakeReader:
         return self._cards(profile_id)
 
 
-def card(connector: str, status: str, *, error_code: str | None = None) -> ConnectorCard:
+def card(
+    connector: str, status: str, *, error_code: str | None = None
+) -> ConnectorCard:
     return ConnectorCard(
         connector=connector,
         status=status,
@@ -69,9 +81,7 @@ def card(connector: str, status: str, *, error_code: str | None = None) -> Conne
     )
 
 
-def service_with(
-    profiles: FakeProfiles, *readers: FakeReader
-) -> PanelService:
+def service_with(profiles: FakeProfiles, *readers: FakeReader) -> PanelService:
     return PanelService(profiles, readers)
 
 
@@ -119,21 +129,27 @@ def test_profile_connector_statuses_are_isolated() -> None:
     profiles = FakeProfiles({first.id: first, second.id: second})
     whoop = FakeReader(
         "whoop",
-        lambda profile_id: (card("whoop", "ready"),)
-        if profile_id == first.id
-        else (card("whoop", "not_connected"),),
+        lambda profile_id: (
+            (card("whoop", "ready"),)
+            if profile_id == first.id
+            else (card("whoop", "not_connected"),)
+        ),
     )
     gmail = FakeReader(
         "gmail",
-        lambda profile_id: (card("gmail", "needs_authorization"),)
-        if profile_id == first.id
-        else (card("gmail", "ready"),),
+        lambda profile_id: (
+            (card("gmail", "needs_authorization"),)
+            if profile_id == first.id
+            else (card("gmail", "ready"),)
+        ),
     )
     telegram = FakeReader(
         "telegram",
-        lambda profile_id: (card("telegram", "bound"),)
-        if profile_id == first.id
-        else (card("telegram", "not_configured"),),
+        lambda profile_id: (
+            (card("telegram", "bound"),)
+            if profile_id == first.id
+            else (card("telegram", "not_configured"),)
+        ),
     )
     service = service_with(profiles, whoop, gmail, telegram)
 
@@ -154,6 +170,144 @@ def test_profile_connector_statuses_are_isolated() -> None:
     ]
 
 
+def test_drive_configuration_is_profile_scoped_and_normalizes_folder_urls(
+    tmp_path,
+) -> None:
+    first = ProfileSummary(uuid4(), "First")
+    second = ProfileSummary(uuid4(), "Second")
+    profiles = FakeProfiles({first.id: first, second.id: second})
+    drive_root = tmp_path / "drive"
+    drive = DriveConfiguration(
+        LocalProfileStore(drive_root),
+        LocalTokenStore(drive_root),
+        LocalSyncStateStore(drive_root),
+    )
+    service = PanelService(profiles, drive=drive)
+    first_folder = "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"
+    second_folder = "2g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsC"
+
+    service.configure_drive(
+        first.id,
+        [f"https://drive.google.com/drive/folders/{first_folder}"],
+    )
+    service.configure_drive(second.id, [second_folder])
+
+    assert LocalProfileStore(drive_root).load(str(first.id)).root_folder_ids == (
+        first_folder,
+    )
+    assert LocalProfileStore(drive_root).load(str(second.id)).root_folder_ids == (
+        second_folder,
+    )
+    assert service.profile(first.id).drive_folder_ids == (first_folder,)
+    assert service.profile(second.id).drive_folder_ids == (second_folder,)
+    assert service.profile(first.id).connectors[-1].status == "needs_authorization"
+
+
+def test_drive_reconfiguration_preserves_binding_and_resets_only_changed_cursor(
+    tmp_path,
+) -> None:
+    selected = ProfileSummary(uuid4(), "Selected")
+    profiles = FakeProfiles({selected.id: selected})
+    drive_root = tmp_path / "drive"
+    profile_store = LocalProfileStore(drive_root)
+    state = LocalSyncStateStore(drive_root)
+    drive = DriveConfiguration(profile_store, LocalTokenStore(drive_root), state)
+    service = PanelService(profiles, drive=drive)
+    first = "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"
+    second = "2g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsC"
+    profile_store.save(
+        DriveProfile.create(str(selected.id), [first]).with_account(
+            "permission-1", "owner@example.com"
+        )
+    )
+    state.set_cursor(str(selected.id), "cursor-1")
+
+    service.configure_drive(selected.id, [first])
+
+    assert state.get_cursor(str(selected.id)) == "cursor-1"
+    service.configure_drive(selected.id, [second])
+    configured = profile_store.load(str(selected.id))
+    assert configured.root_folder_ids == (second,)
+    assert configured.account_permission_id == "permission-1"
+    assert configured.account_email == "owner@example.com"
+    assert state.get_cursor(str(selected.id)) is None
+
+
+def test_drive_configuration_rejects_unknown_database_profile_without_writing(
+    tmp_path,
+) -> None:
+    drive_root = tmp_path / "drive"
+    drive = DriveConfiguration(
+        LocalProfileStore(drive_root),
+        LocalTokenStore(drive_root),
+        LocalSyncStateStore(drive_root),
+    )
+    service = PanelService(FakeProfiles({}), drive=drive)
+    unknown = uuid4()
+
+    with pytest.raises(ProfileNotFoundError):
+        service.configure_drive(unknown, ["1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"])
+
+    assert not (drive_root / str(unknown) / "profile.json").exists()
+
+
+def test_drive_status_maps_persisted_failure_to_safe_error_code(tmp_path) -> None:
+    selected = ProfileSummary(uuid4(), "Selected")
+    drive_root = tmp_path / "drive"
+    profile_store = LocalProfileStore(drive_root)
+    state = LocalSyncStateStore(drive_root)
+    profile_store.save(
+        DriveProfile.create(str(selected.id), ["1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"])
+    )
+    unsafe_error = "refresh_token=secret MRI-result.pdf"
+    state.fail_sync(str(selected.id), unsafe_error)
+    service = PanelService(
+        FakeProfiles({selected.id: selected}),
+        drive=DriveConfiguration(profile_store, LocalTokenStore(drive_root), state),
+    )
+
+    panel = service.profile(selected.id)
+    payload = json.dumps(panel.to_dict())
+
+    assert panel.connectors[-1].error_code == "drive_status_error"
+    assert unsafe_error not in payload
+    assert "refresh_token" not in payload
+
+
+def test_drive_status_verifies_binding_without_serializing_oauth_credentials(
+    tmp_path,
+) -> None:
+    selected = ProfileSummary(uuid4(), "Selected")
+    drive_root = tmp_path / "drive"
+    identity = DriveAccountIdentity("permission-1", "owner@example.com")
+    profiles = LocalProfileStore(drive_root)
+    profiles.save(
+        DriveProfile.create(
+            str(selected.id), ["1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"]
+        ).with_account(identity.permission_id, identity.email)
+    )
+    tokens = LocalTokenStore(drive_root)
+    tokens.publish_verified(
+        str(selected.id),
+        identity,
+        json.dumps(
+            {"access_token": "private-access", "refresh_token": "private-refresh"}
+        ),
+    )
+    service = PanelService(
+        FakeProfiles({selected.id: selected}),
+        drive=DriveConfiguration(profiles, tokens, LocalSyncStateStore(drive_root)),
+    )
+
+    panel = service.profile(selected.id)
+    payload = json.dumps(panel.to_dict())
+
+    assert panel.connectors[-1].status == "configured"
+    assert "private-access" not in payload
+    assert "private-refresh" not in payload
+    assert "access_token" not in payload
+
+
 def test_gmail_reader_uses_only_the_selected_profile_directory(tmp_path) -> None:
     first = uuid4()
     second = uuid4()
@@ -166,7 +320,9 @@ def test_gmail_reader_uses_only_the_selected_profile_directory(tmp_path) -> None
     reader = GmailStatusReader(
         profiles,
         state,
-        lambda profile_id, _account_id: "valid" if profile_id == str(first) else "missing",
+        lambda profile_id, _account_id: (
+            "valid" if profile_id == str(first) else "missing"
+        ),
     )
 
     first_card = reader.cards(first)[0]
@@ -187,12 +343,14 @@ def test_production_panel_construction_does_not_create_telegram_state(tmp_path) 
         whoop_token_root=tmp_path / "whoop",
         telegram_token_file=tmp_path / "telegram" / "bot-token",
         telegram_state_path=state_path,
+        google_drive_root=tmp_path / "drive",
     )
 
     build_panel_service(settings)
 
     assert state_path.exists() is False
     assert state_path.parent.exists() is False
+    assert (tmp_path / "drive").exists() is False
 
 
 def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> None:
@@ -216,12 +374,16 @@ def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> N
 
     assert first_status.identity_bound is True
     assert second_status.identity_bound is False
-    assert first_status.delivery_unknown_count == second_status.delivery_unknown_count == 0
+    assert (
+        first_status.delivery_unknown_count == second_status.delivery_unknown_count == 0
+    )
     assert first_card.last_success_at is second_card.last_success_at is None
     assert first_card.error_code is second_card.error_code is None
 
 
-def test_persisted_connector_error_values_are_mapped_to_closed_safe_sets(tmp_path) -> None:
+def test_persisted_connector_error_values_are_mapped_to_closed_safe_sets(
+    tmp_path,
+) -> None:
     profile_id = uuid4()
     unsafe_error = "refresh_token=secret MRI-result.pdf hemoglobin=12"
     whoop = _whoop_card(
@@ -267,7 +429,9 @@ def test_persisted_connector_error_values_are_mapped_to_closed_safe_sets(tmp_pat
     ).cards(profile_id)[0]
 
     payload = json.dumps(
-        ProfilePanel(ProfileSummary(profile_id, "Person"), (whoop, gmail, telegram)).to_dict()
+        ProfilePanel(
+            ProfileSummary(profile_id, "Person"), (whoop, gmail, telegram)
+        ).to_dict()
     )
 
     assert [whoop.error_code, gmail.error_code, telegram.error_code] == [
@@ -341,7 +505,10 @@ def test_closed_connector_details_are_russian_ui_copy() -> None:
     )
 
     assert telegram.detail == "Telegram не настроен локально."
-    assert service.profile(profile_id).connectors[0].detail == "Локальный статус коннектора недоступен."
+    assert (
+        service.profile(profile_id).connectors[0].detail
+        == "Локальный статус коннектора недоступен."
+    )
     assert service.profile(profile_id).connectors[-1].detail == (
         "Google Drive не интегрирован в этой установке."
     )

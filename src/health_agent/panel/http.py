@@ -86,34 +86,59 @@ class PanelApplication:
         path = parsed.path
         if method == "GET":
             if path == "/":
-                return self._html(200, _render_home(self._service.list_profiles(), self._csrf_token))
+                return self._html(
+                    200, _render_home(self._service.list_profiles(), self._csrf_token)
+                )
             profile_id = _profile_id_from_path(path)
             if profile_id is not None:
                 try:
                     panel = self._service.profile(profile_id)
                 except ProfileNotFoundError:
                     return self._not_found()
-                return self._html(200, _render_profile(panel))
+                return self._html(200, _render_profile(panel, self._csrf_token))
+            saved_profile_id = _profile_action_id_from_path(path, "drive-saved")
+            if saved_profile_id is not None:
+                try:
+                    panel = self._service.profile(saved_profile_id)
+                except ProfileNotFoundError:
+                    return self._not_found()
+                return self._html(
+                    200,
+                    _render_profile(
+                        panel,
+                        self._csrf_token,
+                        notice="Настройка Google Drive сохранена.",
+                    ),
+                )
             if path in {"/profiles", "/profiles/"}:
                 return self._not_found()
             return self._not_found()
         if method == "POST":
-            if path != "/profiles":
-                return self._not_found()
-            return self._create_profile(headers, body)
+            if path == "/profiles":
+                return self._create_profile(headers, body)
+            profile_id = _profile_action_id_from_path(path, "drive")
+            if profile_id is not None:
+                return self._configure_drive(profile_id, headers, body)
+            return self._not_found()
         if path == "/":
             return self._method_not_allowed("GET")
         if _profile_id_from_path(path) is not None:
             return self._method_not_allowed("GET")
         if path == "/profiles":
             return self._method_not_allowed("POST")
+        if _profile_action_id_from_path(path, "drive") is not None:
+            return self._method_not_allowed("POST")
+        if _profile_action_id_from_path(path, "drive-saved") is not None:
+            return self._method_not_allowed("GET")
         return self._not_found()
 
     def _create_profile(self, headers: Mapping[str, str], body: bytes) -> PanelResponse:
         if len(body) > MAX_FORM_BYTES:
             return self._html(413, _message_page("Слишком большой запрос."))
         if not _same_origin(_header(headers, "origin"), self._origin):
-            return self._html(403, _message_page("Запрос отклонён проверкой источника."))
+            return self._html(
+                403, _message_page("Запрос отклонён проверкой источника.")
+            )
         try:
             fields = dict(
                 parse_qsl(
@@ -135,6 +160,71 @@ class PanelApplication:
             return self._html(400, _message_page("Введите имя от 1 до 255 символов."))
         return PanelResponse(303, {**_SECURITY_HEADERS, "Location": "/"}, b"")
 
+    def _configure_drive(
+        self,
+        profile_id: UUID,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> PanelResponse:
+        if len(body) > MAX_FORM_BYTES:
+            return self._html(413, _message_page("Слишком большой запрос."))
+        if not _same_origin(_header(headers, "origin"), self._origin):
+            return self._html(
+                403, _message_page("Запрос отклонён проверкой источника.")
+            )
+        try:
+            pairs = parse_qsl(
+                body.decode("utf-8"),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=2,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return self._html(400, _message_page("Некорректная форма."))
+        if len(pairs) != 2 or len({name for name, _ in pairs}) != 2:
+            return self._html(400, _message_page("Некорректная форма."))
+        fields = dict(pairs)
+        if set(fields) != {"folders", "csrf_token"}:
+            return self._html(403, _message_page("Запрос отклонён защитой формы."))
+        if not compare_digest(fields["csrf_token"], self._csrf_token):
+            return self._html(403, _message_page("Запрос отклонён защитой формы."))
+        folders = [
+            line.strip() for line in fields["folders"].splitlines() if line.strip()
+        ]
+        try:
+            self._service.configure_drive(profile_id, folders)
+        except ProfileNotFoundError:
+            return self._not_found()
+        except (TypeError, ValueError):
+            try:
+                panel = self._service.profile(profile_id)
+            except ProfileNotFoundError:
+                return self._not_found()
+            return self._html(
+                400,
+                _render_profile(
+                    panel,
+                    self._csrf_token,
+                    notice="Проверьте ссылки на папки Google Drive.",
+                    notice_is_error=True,
+                ),
+            )
+        except (OSError, RuntimeError):
+            return self._html(
+                500,
+                _message_page(
+                    "Не удалось сохранить настройку Google Drive. Попробуйте ещё раз."
+                ),
+            )
+        return PanelResponse(
+            303,
+            {
+                **_SECURITY_HEADERS,
+                "Location": f"/profiles/{profile_id}/drive-saved",
+            },
+            b"",
+        )
+
     @staticmethod
     def _html(status: int, page: str) -> PanelResponse:
         return PanelResponse(
@@ -150,13 +240,16 @@ class PanelApplication:
     @classmethod
     def _method_not_allowed(cls, allow: str) -> PanelResponse:
         response = cls._html(405, _message_page("Этот метод не поддерживается."))
-        return PanelResponse(response.status, {**response.headers, "Allow": allow}, response.body)
+        return PanelResponse(
+            response.status, {**response.headers, "Allow": allow}, response.body
+        )
 
 
 def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTPServer:
     """Create a panel server that can bind only the IPv4 loopback address."""
     if host != "127.0.0.1":
         raise ValueError("The management panel may bind only to 127.0.0.1")
+
     class PanelRequestHandler(BaseHTTPRequestHandler):
         application: PanelApplication
 
@@ -167,10 +260,14 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
-                self._send(self.application._html(400, _message_page("Некорректный запрос.")))
+                self._send(
+                    self.application._html(400, _message_page("Некорректный запрос."))
+                )
                 return
             if length < 0:
-                self._send(self.application._html(400, _message_page("Некорректный запрос.")))
+                self._send(
+                    self.application._html(400, _message_page("Некорректный запрос."))
+                )
                 return
             if length > MAX_FORM_BYTES:
                 self._send(
@@ -235,7 +332,9 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
             """Do not write request metadata to the user's terminal."""
 
     server = ThreadingHTTPServer(("127.0.0.1", port), PanelRequestHandler)
-    PanelRequestHandler.application = PanelApplication(service, port=server.server_address[1])
+    PanelRequestHandler.application = PanelApplication(
+        service, port=server.server_address[1]
+    )
     return server
 
 
@@ -268,20 +367,35 @@ def _profile_id_from_path(path: str) -> UUID | None:
     return profile_id if str(profile_id) == value else None
 
 
+def _profile_action_id_from_path(path: str, action: str) -> UUID | None:
+    parts = path.split("/")
+    if len(parts) != 4 or parts[:2] != ["", "profiles"] or parts[3] != action:
+        return None
+    try:
+        profile_id = UUID(parts[2])
+    except ValueError:
+        return None
+    return profile_id if str(profile_id) == parts[2] else None
+
+
 def _page(title: str, content: str) -> str:
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title><style>
 body{{font-family:system-ui,sans-serif;margin:0;background:#f5f7fa;color:#172033}} main{{max-width:960px;margin:auto;padding:2rem 1rem}}
 a{{color:#075985}} .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}} .card,form{{background:#fff;border-radius:.6rem;padding:1rem;box-shadow:0 1px 3px #0002}}
-.status{{font-weight:700}} label,input,button{{display:block;font:inherit}} input{{margin:.4rem 0 1rem;padding:.5rem;width:min(100%,28rem)}} button{{padding:.5rem .8rem}} .muted{{color:#536174}}
+.status{{font-weight:700}} label,input,textarea,button{{display:block;font:inherit}} input,textarea{{box-sizing:border-box;margin:.4rem 0 1rem;padding:.5rem;width:min(100%,40rem)}} textarea{{min-height:7rem}} button{{padding:.5rem .8rem}} .muted{{color:#536174}} .notice{{background:#dcfce7;border-radius:.4rem;padding:.8rem}} .notice.error{{background:#fee2e2}}
 </style></head><body><main>{content}</main></body></html>"""
 
 
 def _render_home(profiles: tuple[ProfileSummary, ...], csrf_token: str) -> str:
-    profile_items = "".join(
-        f'<li><a href="/profiles/{profile.id}">{escape(profile.name)}</a></li>' for profile in profiles
-    ) or "<li>Профилей пока нет.</li>"
+    profile_items = (
+        "".join(
+            f'<li><a href="/profiles/{profile.id}">{escape(profile.name)}</a></li>'
+            for profile in profiles
+        )
+        or "<li>Профилей пока нет.</li>"
+    )
     content = f"""<h1>Health Agent</h1><p class="muted">Локальная панель управления профилями и подключениями.</p>
 <section aria-labelledby="profiles"><h2 id="profiles">Профили</h2><ul>{profile_items}</ul></section>
 <form method="post" action="/profiles"><h2>Создать профиль</h2><label for="name">Имя</label><input id="name" name="name" aria-label="Имя нового профиля" required maxlength="255">
@@ -289,21 +403,40 @@ def _render_home(profiles: tuple[ProfileSummary, ...], csrf_token: str) -> str:
     return _page("Health Agent — профили", content)
 
 
-def _render_profile(panel: ProfilePanel) -> str:
+def _render_profile(
+    panel: ProfilePanel,
+    csrf_token: str,
+    *,
+    notice: str | None = None,
+    notice_is_error: bool = False,
+) -> str:
     cards = "".join(_render_card(card, panel.profile.id) for card in panel.connectors)
+    notice_html = ""
+    if notice:
+        notice_class = "notice error" if notice_is_error else "notice"
+        notice_html = f'<p class="{notice_class}" role="status">{escape(notice)}</p>'
+    folders = "\n".join(panel.drive_folder_ids)
     content = f"""<p><a href="/">← Все профили</a></p><h1>Профиль: {escape(panel.profile.name)}</h1>
-<section aria-labelledby="connectors"><h2 id="connectors">Подключения</h2><div class="cards">{cards}</div></section>"""
+{notice_html}<section aria-labelledby="connectors"><h2 id="connectors">Подключения</h2><div class="cards">{cards}</div></section>
+<form method="post" action="/profiles/{panel.profile.id}/drive"><h2>Настроить Google Drive</h2>
+<p class="muted">Одна или несколько папок, по одной ссылке или ID на строке. Сохранение заменит текущий список.</p>
+<label for="drive-folders">Ссылки на папки</label><textarea id="drive-folders" name="folders" required maxlength="3000" autocomplete="off" spellcheck="false">{escape(folders)}</textarea>
+<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Сохранить папки</button></form>"""
     return _page(f"Health Agent — {panel.profile.name}", content)
 
 
 def _render_card(card: ConnectorCard, profile_id: UUID) -> str:
     label = _STATUS_LABELS.get(card.status, "Статус неизвестен")
-    last_success = card.last_success_at.isoformat() if card.last_success_at else "ещё не было"
+    last_success = (
+        card.last_success_at.isoformat() if card.last_success_at else "ещё не было"
+    )
     error = f"<p>Код ошибки: {escape(card.error_code)}</p>" if card.error_code else ""
     accounts = ""
     if card.account_ids:
         account_label = "Аккаунт" if len(card.account_ids) == 1 else "Аккаунты"
-        account_values = ", ".join(escape(account_id) for account_id in card.account_ids)
+        account_values = ", ".join(
+            escape(account_id) for account_id in card.account_ids
+        )
         accounts = f"<p>{account_label}: {account_values}</p>"
     return f"""<article class="card"><h3>{escape(card.connector.upper())}</h3><p class="status">{label}</p>
 <p>{escape(card.detail)}</p>{accounts}<p>Последняя успешная операция: {escape(last_success)}</p>{error}
@@ -315,7 +448,11 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
     if healthy:
         return "действий не требуется."
     if card.connector == "drive":
-        return "интеграция Google Drive пока недоступна."
+        if card.status == "not_configured":
+            return "укажите папку Google Drive в форме ниже."
+        if card.status == "needs_authorization":
+            return f"выполните в Terminal: health-agent drive auth {profile_id}"
+        return f"проверьте в Terminal: health-agent drive status {profile_id}"
     if card.connector == "whoop":
         if len(card.account_ids) > 1:
             return (
@@ -323,14 +460,18 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
                 f"status --profile-id {profile_id} --account <account>"
             )
         account = card.account_ids[0] if card.account_ids else "<account>"
-        command = "auth" if card.status in {"not_connected", "reauth_required"} else "status"
+        command = (
+            "auth" if card.status in {"not_connected", "reauth_required"} else "status"
+        )
         return (
             f"выполните в Terminal: health-agent whoop {command} --profile-id "
             f"{profile_id} --account {account}"
         )
     if card.connector == "gmail":
         if len(card.account_ids) > 1:
-            return f"проверьте аккаунты в Terminal: health-agent gmail status {profile_id}"
+            return (
+                f"проверьте аккаунты в Terminal: health-agent gmail status {profile_id}"
+            )
         if card.status == "not_configured":
             return (
                 "выполните в Terminal: health-agent gmail configure "
@@ -338,7 +479,9 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
             )
         account = card.account_ids[0] if card.account_ids else "<account-id>"
         if card.status in {"needs_authorization", "reauth_required"}:
-            return f"выполните в Terminal: health-agent gmail auth {profile_id} {account}"
+            return (
+                f"выполните в Terminal: health-agent gmail auth {profile_id} {account}"
+            )
         return (
             f"выполните в Terminal: health-agent gmail status {profile_id} "
             f"--account-id {account}"
@@ -353,4 +496,7 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
 
 
 def _message_page(message: str) -> str:
-    return _page("Health Agent", f"<h1>Health Agent</h1><p>{escape(message)}</p><p><a href=\"/\">К профилям</a></p>")
+    return _page(
+        "Health Agent",
+        f'<h1>Health Agent</h1><p>{escape(message)}</p><p><a href="/">К профилям</a></p>',
+    )

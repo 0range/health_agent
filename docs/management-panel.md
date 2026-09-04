@@ -16,8 +16,10 @@ uv run health-agent panel serve
 
 - просмотр списка локальных профилей;
 - создание нового локального профиля;
-- просмотр безопасных, профиль-изолированных карточек статуса WHOOP, Gmail и
-  Telegram;
+- просмотр безопасных, профиль-изолированных карточек статуса WHOOP, Gmail,
+  Telegram и Google Drive;
+- добавление или замена одной или нескольких входящих папок Google Drive для
+  выбранного профиля: вставьте ссылку или ID, по одному значению на строке;
 - отображение времени последней успешной локально известной операции и
   ограниченных кодов ошибок;
 - текстовая подсказка с явной CLI-командой для следующего действия.
@@ -31,15 +33,16 @@ uv run health-agent panel serve
 
 Панель не содержит кнопок OAuth, sync, отключения аккаунта или удалённого
 действия. Открытие страницы читает только локальный статус выбранного профиля;
-она не обращается к WHOOP, Gmail или Telegram API. OAuth-клиент и токены не
+она не обращается к WHOOP, Gmail, Telegram или Google Drive API. OAuth-клиент и токены не
 читаются при построении сервера — соответствующее локальное состояние проверяется
 только при запросе страницы. SQLite-state Telegram также не создаётся при
 построении сервера: его адаптер создаётся только после выбора существующего
 профиля и проверки локальных учётных данных при запросе статуса.
 
-Google Drive в этой ветке **недоступен**. Карточка Drive намеренно сообщает
-`not_available`; нет подключения папок, OAuth, обхода файлов или синхронизации
-Drive. Панель не выдаёт эту интеграцию за реализованную.
+Форма Google Drive меняет только локальный список read-only входящих папок.
+Сохранение заменяет текущий список для выбранного профиля, сохраняет уже
+подтверждённую привязку Google-аккаунта и сбрасывает курсор, если папки реально
+изменились. Авторизация, обход файлов и синхронизация остаются явными CLI-действиями.
 
 ## Передача действий в CLI
 
@@ -51,6 +54,8 @@ uv run health-agent whoop sync --profile-id PROFILE_UUID --account main
 uv run health-agent gmail configure PROFILE_UUID personal
 uv run health-agent gmail auth PROFILE_UUID personal
 uv run health-agent gmail sync PROFILE_UUID --account-id personal
+uv run health-agent drive auth PROFILE_UUID
+uv run health-agent drive sync PROFILE_UUID
 uv run health-agent telegram status --profile-id PROFILE_UUID
 ```
 
@@ -58,7 +63,8 @@ uv run health-agent telegram status --profile-id PROFILE_UUID
 созданного через панель или `uv run health-agent profile create "Имя"`. Более
 полные инструкции находятся в [WHOOP runbook](runbooks/whoop.md),
 [Gmail integration guide](integrations/gmail.md) и
-[Telegram integration guide](integrations/telegram.md).
+[Telegram integration guide](integrations/telegram.md), а также
+[Google Drive integration guide](integrations/google-drive.md).
 
 ## Проверочный статус
 

@@ -48,9 +48,11 @@ class ProfilePanel:
 
     profile: ProfileSummary
     connectors: tuple[ConnectorCard, ...]
+    drive_folder_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "profile": self.profile.to_dict(),
             "connectors": [connector.to_dict() for connector in self.connectors],
+            "drive_folder_ids": list(self.drive_folder_ids),
         }

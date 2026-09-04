@@ -20,6 +20,12 @@ from health_agent.gmail.stores import (
     LocalGmailStateStore,
     LocalGmailTokenStore,
 )
+from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.stores import (
+    LocalProfileStore,
+    LocalSyncStateStore,
+    LocalTokenStore,
+)
 from health_agent.models import Profile
 from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
@@ -54,6 +60,12 @@ class ConnectorStatusReader(Protocol):
     connector: str
 
     def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]: ...
+
+
+class DriveConfigurationPort(ConnectorStatusReader, Protocol):
+    def folder_ids(self, profile_id: UUID) -> tuple[str, ...]: ...
+
+    def configure(self, profile_id: UUID, folders: list[str]) -> None: ...
 
 
 class ProfileNotFoundError(LookupError):
@@ -213,6 +225,93 @@ class TelegramStatusReader:
         )
 
 
+class DriveConfiguration:
+    """Read and update one profile's local Drive roots without remote calls."""
+
+    connector = "drive"
+
+    def __init__(
+        self,
+        profiles: LocalProfileStore,
+        tokens: LocalTokenStore,
+        state: LocalSyncStateStore,
+    ) -> None:
+        self._profiles = profiles
+        self._tokens = tokens
+        self._state = state
+
+    def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]:
+        profile_key = str(profile_id)
+        if not self._profiles.exists(profile_key):
+            return (
+                ConnectorCard(
+                    self.connector,
+                    "not_configured",
+                    "Для этого профиля не настроена папка Google Drive.",
+                ),
+            )
+        profile = self._profiles.load(profile_key)
+        run = self._state.run_state(profile_key)
+        last_success = (
+            _parse_datetime(run["last_success_at"]) if run["last_success_at"] else None
+        )
+        verified = self._tokens.load_verified(profile_key)
+        token_identity = verified[0] if verified is not None else None
+        authorized = (
+            token_identity is not None
+            and profile.account_permission_id is not None
+            and profile.account_email is not None
+            and token_identity.permission_id == profile.account_permission_id
+            and token_identity.email == profile.account_email
+        )
+        if not authorized:
+            status = "needs_authorization"
+        elif last_success is None:
+            status = "configured"
+        else:
+            status = "ready"
+        error_code = "drive_status_error" if run["last_error_code"] else None
+        detail = f"Папок Google Drive в профиле: {len(profile.root_folder_ids)}."
+        if not authorized:
+            detail += " Требуется авторизация Google."
+        return (
+            ConnectorCard(
+                self.connector,
+                status,
+                detail,
+                last_success,
+                error_code,
+            ),
+        )
+
+    def folder_ids(self, profile_id: UUID) -> tuple[str, ...]:
+        profile_key = str(profile_id)
+        if not self._profiles.exists(profile_key):
+            return ()
+        return self._profiles.load(profile_key).root_folder_ids
+
+    def configure(self, profile_id: UUID, folders: list[str]) -> None:
+        profile_key = str(profile_id)
+        candidate = DriveProfile.create(profile_key, folders)
+        with self._state.sync_lock(profile_key):
+            current = (
+                self._profiles.load(profile_key)
+                if self._profiles.exists(profile_key)
+                else None
+            )
+            if (
+                current is not None
+                and current.account_permission_id is not None
+                and current.account_email is not None
+            ):
+                candidate = candidate.with_account(
+                    current.account_permission_id, current.account_email
+                )
+            if current is None or current.root_folder_ids != candidate.root_folder_ids:
+                self._state.clear_cursor(profile_key)
+            self._profiles.save(candidate)
+
+
 class PanelService:
     """Build safe, isolated profile panels from injected repositories/readers."""
 
@@ -220,9 +319,12 @@ class PanelService:
         self,
         profiles: ProfileRepository,
         readers: tuple[ConnectorStatusReader, ...] | list[ConnectorStatusReader] = (),
+        *,
+        drive: DriveConfigurationPort | None = None,
     ) -> None:
         self._profiles = profiles
         self._readers = tuple(readers)
+        self._drive = drive
 
     def list_profiles(self) -> tuple[ProfileSummary, ...]:
         return self._profiles.list()
@@ -239,10 +341,28 @@ class PanelService:
             for reader in self._readers
             for card in self._safe_cards(reader, profile_id)
         )
+        drive_cards: tuple[ConnectorCard, ...]
+        if self._drive is None:
+            drive_cards = (_drive_card(),)
+            drive_folder_ids: tuple[str, ...] = ()
+        else:
+            drive_cards = self._safe_cards(self._drive, profile_id)
+            try:
+                drive_folder_ids = self._drive.folder_ids(profile_id)
+            except Exception:  # noqa: BLE001 - keep local state failures off the page.
+                drive_folder_ids = ()
         return ProfilePanel(
             profile=profile,
-            connectors=(*cards, _drive_card()),
+            connectors=(*cards, *drive_cards),
+            drive_folder_ids=drive_folder_ids,
         )
+
+    def configure_drive(self, profile_id: UUID, folders: list[str]) -> None:
+        if self._profiles.get(profile_id) is None:
+            raise ProfileNotFoundError(str(profile_id))
+        if self._drive is None:
+            raise RuntimeError("Google Drive configuration is unavailable")
+        self._drive.configure(profile_id, folders)
 
     @staticmethod
     def _safe_cards(
@@ -275,6 +395,9 @@ def build_panel_service(settings: Settings) -> PanelService:
     telegram_status = lambda profile_id: _local_telegram_status(
         telegram_tokens, telegram_state, profile_id
     )
+    drive_profiles = LocalProfileStore(settings.google_drive_root)
+    drive_tokens = LocalTokenStore(settings.google_drive_root)
+    drive_state = LocalSyncStateStore(settings.google_drive_root)
     return PanelService(
         SqlAlchemyProfileRepository(sessions),
         (
@@ -282,6 +405,7 @@ def build_panel_service(settings: Settings) -> PanelService:
             GmailStatusReader(gmail_profiles, gmail_state, gmail_oauth.local_status),
             TelegramStatusReader(telegram_status),
         ),
+        drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
     )
 
 
@@ -342,7 +466,8 @@ def _gmail_card(
             None,
         )
     statuses = tuple(
-        oauth_status(profile.profile_id, account.account_id) for account in profile.accounts
+        oauth_status(profile.profile_id, account.account_id)
+        for account in profile.accounts
     )
     runs = tuple(
         state.get_run_state(profile.profile_id, account.account_id)
@@ -356,7 +481,8 @@ def _gmail_card(
     )
     last_success = max(successes, default=None)
     error_code = _panel_error_code(
-        "gmail", next((run.last_error_code for run in runs if run.last_error_code), None)
+        "gmail",
+        next((run.last_error_code for run in runs if run.last_error_code), None),
     )
     if any(status in {"invalid", "reauth_required"} for status in statuses):
         result = "reauth_required"
@@ -450,7 +576,9 @@ def _local_telegram_status(
         bot_username=credential.username,
         webhook_configured=None,
         poller_running=False,
-        delivery_unknown_count=state.delivery_unknown_count(credential.bot_id, profile_id),
+        delivery_unknown_count=state.delivery_unknown_count(
+            credential.bot_id, profile_id
+        ),
         profile_id=profile_id,
         identity_bound=(
             state.identity_for_profile(credential.bot_id, profile_id) is not None
