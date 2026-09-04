@@ -4,6 +4,7 @@ import ipaddress
 import json
 import stat
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -28,6 +29,28 @@ class Settings(BaseSettings):
     )
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     vault_root: Path = Field(default=Path("data/vault"), validation_alias="VAULT_ROOT")
+    gmail_root: Path = Field(
+        default=Path("data/google/gmail"), validation_alias="GMAIL_ROOT"
+    )
+    google_oauth_client_secrets: Path = Field(
+        default=Path("data/secrets/google-oauth-client.json"),
+        validation_alias="GOOGLE_OAUTH_CLIENT_SECRETS",
+    )
+    temporary_root: Path = Field(
+        default=Path("data/tmp"), validation_alias="TEMPORARY_ROOT"
+    )
+    gmail_max_attachment_bytes: int = Field(
+        default=25 * 1024 * 1024,
+        ge=1,
+        le=25 * 1024 * 1024,
+        validation_alias="GMAIL_MAX_ATTACHMENT_BYTES",
+    )
+    gmail_http_timeout_seconds: int = Field(
+        default=30, ge=1, le=300, validation_alias="GMAIL_HTTP_TIMEOUT_SECONDS"
+    )
+    google_oauth_publishing_status: Literal["testing", "production", "internal"] = (
+        Field(default="testing", validation_alias="GOOGLE_OAUTH_PUBLISHING_STATUS")
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )

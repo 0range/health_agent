@@ -10,8 +10,15 @@
 
 WHOOP-коннектор готов к локальной OAuth-авторизации и проверен на синтетических
 ответах API; реальные данные появятся только после однократного входа владельца
-WHOOP-аккаунта. Google Drive, Gmail и Telegram пока не выдаются за готовые
-интеграции.
+WHOOP-аккаунта.
+
+Gmail-коннектор реализован и проверен на mocked API и disposable PostgreSQL: PDF
+из почты проходит тот же импорт и review, что локальный файл. Для живой почты
+нужны Desktop OAuth client и авторизация каждого аккаунта. В режиме Google
+External/Testing она истекает через семь дней; для фоновой работы нужен реально
+опубликованный Production-проект (либо Internal Workspace).
+
+Google Drive и Telegram пока не выдаются за готовые интеграции.
 
 ## Три команды
 
@@ -51,3 +58,24 @@ WHOOP-аккаунта. Google Drive, Gmail и Telegram пока не выдаю
 WHOOP подключается отдельно по короткой
 [инструкции](docs/runbooks/whoop.md). Каждый WHOOP-аккаунт принадлежит выбранному
 локальному профилю; данные двух людей не смешиваются.
+
+## Gmail
+
+У одного профиля может быть несколько почтовых аккаунтов. Первый запуск смотрит
+последние семь дней, дальше использует Gmail history cursor; письма и вложения не
+меняются. Неоднозначные PDF классифицируются по содержимому; распознанные визиты
+и другие медицинские письма без файла получают минимальную запись-источник в
+общей БД без сохранения текста письма. Они и файлы, которым нужен OCR, остаются
+во внутреннем attention-статусе без лишних вопросов в Telegram. Spam и Trash не
+импортируются, а полный/recovery-скан перепроверяет состояние уже известных
+медицинских сообщений.
+
+```bash
+uv run health-agent gmail configure PROFILE_UUID personal
+uv run health-agent gmail auth PROFILE_UUID personal
+uv run health-agent gmail sync PROFILE_UUID --account-id personal
+uv run health-agent gmail status PROFILE_UUID
+```
+
+Точная OAuth-настройка и правила классификации описаны в
+[инструкции Gmail-коннектора](docs/integrations/gmail.md).
