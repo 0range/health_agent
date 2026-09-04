@@ -24,7 +24,7 @@ INSUFFICIENT_EVIDENCE_TEXT = (
     "safely."
 )
 
-_CITATION_TOKEN = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*[0-9]+\]")
+_BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]{1,64}\]")
 
 
 class QuestionAnswerErrorCode(StrEnum):
@@ -170,7 +170,7 @@ def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bo
     avoids trying to infer sentence semantics while making fabricated labels fail closed.
     """
 
-    labels = set(_CITATION_TOKEN.findall(answer))
+    labels = set(_BRACKETED_TOKEN.findall(answer))
     allowed = {item.citation_label for item in context.evidence}
     return bool(labels & allowed) and labels <= allowed
 
