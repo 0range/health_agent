@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -36,40 +36,100 @@ class ReviewStatus(StrEnum):
     REJECTED = "rejected"
 
 
-class SourceRecord(Base):
-    __tablename__ = "source_records"
-    __table_args__ = (UniqueConstraint("provider", "external_id", "revision"),)
+DEFAULT_PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+class Profile(Base):
+    __tablename__ = "profiles"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    documents: Mapped[list[Document]] = relationship(back_populates="profile")
+    source_records: Mapped[list[SourceRecord]] = relationship(back_populates="profile")
+
+
+class SourceRecord(Base):
+    __tablename__ = "source_records"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "provider", "external_id", "revision"),
+        UniqueConstraint("id", "profile_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    profile_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id"), index=True)
     provider: Mapped[str] = mapped_column(String(100))
     external_id: Mapped[str] = mapped_column(String(500))
     revision: Mapped[str] = mapped_column(String(500))
     source_uri: Mapped[str | None] = mapped_column(String(2000))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
-    documents: Mapped[list[Document]] = relationship(back_populates="source_record")
+    profile: Mapped[Profile] = relationship(back_populates="source_records")
+    document_links: Mapped[list[DocumentSourceRecord]] = relationship(
+        back_populates="source_record", viewonly=True
+    )
 
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("profile_id", "sha256"),
+        UniqueConstraint("id", "profile_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    source_record_id: Mapped[UUID] = mapped_column(ForeignKey("source_records.id"), index=True)
-    sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    profile_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id"), index=True)
+    sha256: Mapped[str] = mapped_column(String(64))
     vault_path: Mapped[str] = mapped_column(String(2000))
     media_type: Mapped[str] = mapped_column(String(255))
     document_type: Mapped[str] = mapped_column(String(100))
-    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issued_date: Mapped[date | None]
+    collected_date: Mapped[date | None]
     processing_status: Mapped[str] = mapped_column(String(100), default="pending")
     safe_error_code: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    source_record: Mapped[SourceRecord] = relationship(back_populates="documents")
+    profile: Mapped[Profile] = relationship(back_populates="documents")
+    source_links: Mapped[list[DocumentSourceRecord]] = relationship(
+        back_populates="document", viewonly=True
+    )
     pages: Mapped[list[DocumentPage]] = relationship(back_populates="document")
     observations: Mapped[list[LabObservation]] = relationship(back_populates="document")
+
+
+class DocumentSourceRecord(Base):
+    """One immutable document's occurrence in one external/local source."""
+
+    __tablename__ = "document_source_records"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "profile_id"],
+            ["documents.id", "documents.profile_id"],
+        ),
+        ForeignKeyConstraint(
+            ["source_record_id", "profile_id"],
+            ["source_records.id", "source_records.profile_id"],
+        ),
+    )
+
+    document_id: Mapped[UUID] = mapped_column(primary_key=True)
+    source_record_id: Mapped[UUID] = mapped_column(primary_key=True)
+    profile_id: Mapped[UUID] = mapped_column(index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    document: Mapped[Document] = relationship(
+        back_populates="source_links", viewonly=True
+    )
+    source_record: Mapped[SourceRecord] = relationship(
+        back_populates="document_links", viewonly=True
+    )
 
 
 class DocumentPage(Base):
@@ -103,6 +163,12 @@ class LabObservation(Base):
             "reference_low IS NULL OR reference_high IS NULL OR reference_low <= reference_high",
             name="ck_lab_observations_reference_range",
         ),
+        CheckConstraint(
+            "status <> 'verified' OR "
+            "(parsed_value IS NOT NULL AND normalized_value IS NOT NULL "
+            "AND normalized_unit IS NOT NULL)",
+            name="ck_verified_observations_normalized",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -114,6 +180,7 @@ class LabObservation(Base):
     canonical_name: Mapped[str] = mapped_column(String(255), index=True)
     source_name: Mapped[str] = mapped_column(String(500))
     source_value: Mapped[str] = mapped_column(String(255))
+    parsed_value: Mapped[Decimal | None] = mapped_column(Numeric)
     source_unit: Mapped[str | None] = mapped_column(String(100))
     normalized_value: Mapped[Decimal | None] = mapped_column(Numeric)
     normalized_unit: Mapped[str | None] = mapped_column(String(100))
@@ -150,10 +217,11 @@ class LabObservation(Base):
 
 class ReviewItem(Base):
     __tablename__ = "review_items"
+    __table_args__ = (UniqueConstraint("observation_id"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     observation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("lab_observations.id"), unique=True, index=True
+        ForeignKey("lab_observations.id"), index=True
     )
     reason_code: Mapped[str] = mapped_column(String(100))
     decision: Mapped[str | None] = mapped_column(String(100))

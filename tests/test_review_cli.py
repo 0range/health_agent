@@ -23,8 +23,9 @@ def test_import_output_contains_only_safe_counts(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(
         cli,
         "import_document",
-        lambda _session, _vault, _path, _source_uri: ImportReport(
+        lambda _session, _vault, _path, _source_uri, **_kwargs: ImportReport(
             status="imported",
+            processing_status="needs_review",
             document_id=UUID("00000000-0000-0000-0000-000000000001"),
             candidate_count=1,
             review_count=1,
@@ -36,7 +37,7 @@ def test_import_output_contains_only_safe_counts(monkeypatch, tmp_path: Path) ->
     assert result.exit_code == 0
     assert result.stdout == (
         "status=imported document_id=00000000-0000-0000-0000-000000000001 "
-        "candidates=1 review_items=1\n"
+        "processing_status=needs_review candidates=1 review_items=1\n"
     )
 
 
@@ -47,3 +48,35 @@ def test_review_commands_are_registered() -> None:
     assert "list" in result.stdout
     assert "approve" in result.stdout
     assert "reject" in result.stdout
+
+
+def test_import_output_surfaces_ocr_required(monkeypatch, tmp_path: Path) -> None:
+    class FakeSettings:
+        vault_root = tmp_path / "vault"
+
+    @contextmanager
+    def fake_session_scope(_engine: object):
+        yield object()
+
+    monkeypatch.setattr(cli, "Settings", FakeSettings)
+    monkeypatch.setattr(cli, "build_engine", lambda _settings: object())
+    monkeypatch.setattr(cli, "session_scope", fake_session_scope)
+    monkeypatch.setattr(cli, "FileVault", lambda _root: object())
+    monkeypatch.setattr(
+        cli,
+        "import_document",
+        lambda _session, _vault, _path, _source_uri, **_kwargs: ImportReport(
+            status="ocr_required",
+            processing_status="ocr_required",
+            document_id=UUID("00000000-0000-0000-0000-000000000002"),
+            candidate_count=0,
+            review_count=0,
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["import-file", str(tmp_path / "scan.pdf")])
+
+    assert result.exit_code == 0
+    assert "status=ocr_required" in result.stdout
+    assert "processing_status=ocr_required" in result.stdout
+    assert "candidates=0 review_items=0" in result.stdout

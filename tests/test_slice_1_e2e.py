@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +14,7 @@ from sqlalchemy import Engine, text
 from typer.testing import CliRunner
 
 from health_agent import cli
+from health_agent.metabase import LAB_HISTORY_QUERY
 
 _SYNTHETIC_EVIDENCE = "Ferritin 42 ng/mL 30-400"
 
@@ -54,7 +57,14 @@ def test_synthetic_pdf_reaches_verified_history_once(
 
     first_import = runner.invoke(
         cli.app,
-        ["import-file", str(pdf_path), "--source-uri", source_uri],
+        [
+            "import-file",
+            str(pdf_path),
+            "--source-uri",
+            source_uri,
+            "--collected-date",
+            "2021-05-17",
+        ],
     )
     second_import = runner.invoke(
         cli.app,
@@ -79,8 +89,14 @@ def test_synthetic_pdf_reaches_verified_history_once(
         ).one()
         document = connection.execute(
             text(
-                "SELECT id, source_record_id, sha256, vault_path "
+                "SELECT id, profile_id, sha256, vault_path, collected_date "
                 "FROM documents"
+            )
+        ).one()
+        source_link = connection.execute(
+            text(
+                "SELECT document_id, source_record_id, profile_id "
+                "FROM document_source_records"
             )
         ).one()
         document_page = connection.execute(
@@ -91,7 +107,8 @@ def test_synthetic_pdf_reaches_verified_history_once(
         ).one()
         observation = connection.execute(
             text(
-                "SELECT id, document_id, page_number, canonical_name, "
+                "SELECT id, document_id, page_number, canonical_name, source_value, "
+                "parsed_value, "
                 "evidence_excerpt, status::text AS status FROM lab_observations"
             )
         ).one()
@@ -103,8 +120,11 @@ def test_synthetic_pdf_reaches_verified_history_once(
         source_uri,
     )
     assert document.id == first_document_id
-    assert document.source_record_id == source.id
+    assert source_link.document_id == document.id
+    assert source_link.source_record_id == source.id
+    assert source_link.profile_id == document.profile_id
     assert document.sha256 == digest
+    assert document.collected_date == date(2021, 5, 17)
     assert Path(document.vault_path).resolve() == (
         settings.vault_root / digest[:2] / digest
     ).resolve()
@@ -114,6 +134,8 @@ def test_synthetic_pdf_reaches_verified_history_once(
     assert observation.document_id == document.id
     assert observation.page_number == document_page.page_number
     assert observation.canonical_name == "ferritin"
+    assert observation.source_value == "42"
+    assert observation.parsed_value == Decimal(42)
     assert observation.evidence_excerpt == _SYNTHETIC_EVIDENCE
     assert observation.status == "needs_review"
 
@@ -130,6 +152,7 @@ def test_synthetic_pdf_reaches_verified_history_once(
             for table_name in (
                 "source_records",
                 "documents",
+                "document_source_records",
                 "document_pages",
                 "lab_observations",
                 "review_items",
@@ -148,6 +171,7 @@ def test_synthetic_pdf_reaches_verified_history_once(
                 "FROM verified_lab_history"
             )
         ).one()
+        chart_rows = connection.execute(text(LAB_HISTORY_QUERY)).all()
 
     vault_objects = [path for path in settings.vault_root.rglob("*") if path.is_file()]
 
@@ -155,6 +179,7 @@ def test_synthetic_pdf_reaches_verified_history_once(
     assert counts == {
         "source_records": 1,
         "documents": 1,
+        "document_source_records": 1,
         "document_pages": 1,
         "lab_observations": 1,
         "review_items": 1,
@@ -169,3 +194,7 @@ def test_synthetic_pdf_reaches_verified_history_once(
     assert verified.canonical_name == "ferritin"
     assert verified.evidence_excerpt == _SYNTHETIC_EVIDENCE
     assert verified.status == "verified"
+    assert [
+        (row.date, row.normalized_value, row.normalized_unit, row.canonical_name)
+        for row in chart_rows
+    ] == [(date(2021, 5, 17), Decimal(42), "ng/mL", "ferritin")]

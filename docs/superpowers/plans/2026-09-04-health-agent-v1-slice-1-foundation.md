@@ -4,7 +4,7 @@
 
 > **TL;DR:** поднять локальный PostgreSQL и Metabase, импортировать один PDF без дублей, сохранить происхождение, исключить сомнительные значения из графиков и показать проверенную динамику.
 
-> **Статус на 2026-09-04:** код и синтетическая сквозная приемка готовы. Безопасные счетчики приемки: 1 объект vault, 1 документ, 1 наблюдение, 1 решение проверки, 1 строка `verified_lab_history`. Приемка пользовательского PDF отложена до Drive-адаптера Slice 2: текущий коннектор вернул внутренний URI, но не локальный путь к файлу. Медицинские значения и текст в evidence не записывались.
+> **Статус на 2026-09-04:** код и синтетическая сквозная приемка готовы. Проверенный путь теперь заканчивается строкой точного Metabase-запроса с реальной медицинской датой и нормализованной единицей. Схема готова к нескольким профилям без общей дедупликации и сохраняет несколько источников одного документа. Приемка пользовательского PDF отложена до Drive-адаптера Slice 2: текущий коннектор вернул внутренний URI, но не локальный путь к файлу. Медицинские значения и текст в evidence не записывались.
 
 **Goal:** Build the smallest real vertical slice in which a medical PDF becomes provenance-backed laboratory data and a local Metabase chart.
 
@@ -33,7 +33,7 @@
 - `docker/postgres/init/001-metabase.sql` — separate Metabase application database in the same local PostgreSQL service.
 - `src/health_agent/config.py` — validated paths and connection settings.
 - `src/health_agent/db.py` — engine and transaction boundary.
-- `src/health_agent/models.py` — source, document, page, lab observation and review models.
+- `src/health_agent/models.py` — profile, source occurrence, document, page, lab observation and review models.
 - `alembic/` — reproducible schema and verified-only dashboard view.
 - `src/health_agent/vault.py` — immutable content-addressed file storage.
 - `src/health_agent/pdf.py` — PDF text extraction with page coordinates.
@@ -239,7 +239,9 @@ class SourceRecord(Base):
 
 Add the following required columns:
 
-- `documents(source_record_id, sha256, vault_path, media_type, document_type, issued_at, collected_at, processing_status, safe_error_code)`;
+- `profiles(id, name)` and profile-scoped documents/source records;
+- `documents(profile_id, sha256, vault_path, media_type, document_type, issued_date, collected_date, processing_status, safe_error_code)`;
+- `document_source_records(document_id, source_record_id, profile_id)` for one document seen in multiple sources;
 - `document_pages(document_id, page_number, extracted_text, extraction_method)`;
 - `lab_observations(document_id, page_number, canonical_name, source_name, source_value, source_unit, normalized_value, normalized_unit, reference_low, reference_high, reference_text, evidence_excerpt, confidence, status)`;
 - `review_items(observation_id, reason_code, decision, correction_json, created_at, resolved_at)`.
@@ -533,7 +535,12 @@ git commit -m "feat: provision first lab dashboard"
 
 - [x] **Step 1: Add the automated synthetic journey**
 
-The test creates a PDF in a temporary directory, imports it twice, approves one ferritin candidate and asserts: one vault object, one document, one observation, one audit decision and one row in `verified_lab_history`.
+The test creates a PDF with a historical specimen date in a temporary directory,
+imports it twice, approves one ferritin candidate and executes the exact SQL used
+by the Metabase card. It asserts one vault object, one profile-scoped document,
+one source occurrence, one observation, one audit decision and one dated,
+normalized chart row. Separate tests prove cross-profile isolation, source
+provenance accumulation and actionable OCR status.
 
 Run: `uv run pytest tests/test_slice_1_e2e.py -q`
 

@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from health_agent import cli
 from health_agent.config import Settings
 from health_agent.metabase import (
+    LAB_HISTORY_QUERY,
     MetabaseBootstrapResult,
     bootstrap_metabase,
     ensure_dashboard_reader,
@@ -172,7 +173,7 @@ def test_bootstrap_reuses_existing_collection_dashboard_and_card(
 
     card = fake_metabase.cards[0]
     assert card["display"] == "line"
-    assert "verified_lab_history" in card["dataset_query"]["native"]["query"]
+    assert card["dataset_query"]["native"]["query"] == LAB_HISTORY_QUERY
     assert card["visualization_settings"]["graph.dimensions"] == [
         "date",
         "canonical_name",
@@ -293,9 +294,7 @@ def test_bootstrap_repairs_drifted_same_named_objects(
     assert fake_metabase.dashboards[0]["collection_id"] == 7
     assert fake_metabase.cards[0]["collection_id"] == 7
     assert fake_metabase.cards[0]["display"] == "line"
-    assert "verified_lab_history" in (
-        fake_metabase.cards[0]["dataset_query"]["native"]["query"]
-    )
+    assert fake_metabase.cards[0]["dataset_query"]["native"]["query"] == LAB_HISTORY_QUERY
     assert fake_metabase.cards[0]["visualization_settings"] == {
         "graph.dimensions": ["date", "canonical_name"],
         "graph.metrics": ["normalized_value"],

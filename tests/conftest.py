@@ -23,8 +23,10 @@ _TABLES_IN_DELETE_ORDER = (
     "review_items",
     "lab_observations",
     "document_pages",
-    "documents",
+    "document_source_records",
     "source_records",
+    "documents",
+    "profiles",
 )
 
 
@@ -155,6 +157,12 @@ def clean_database(disposable_postgres: DisposablePostgres) -> Engine:
     with disposable_postgres.engine.begin() as connection:
         for table in _TABLES_IN_DELETE_ORDER:
             connection.execute(text(f"DELETE FROM {table}"))
+        connection.execute(
+            text(
+                "INSERT INTO profiles (id, name) VALUES "
+                "('00000000-0000-0000-0000-000000000001', 'Default')"
+            )
+        )
     return disposable_postgres.engine
 
 

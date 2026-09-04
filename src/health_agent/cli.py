@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from uuid import UUID
 
@@ -12,7 +13,14 @@ from health_agent.importer import (
     reject_observation,
 )
 from health_agent.metabase import bootstrap_metabase
-from health_agent.models import Document, LabObservation, ReviewStatus, SourceRecord
+from health_agent.models import (
+    DEFAULT_PROFILE_ID,
+    Document,
+    DocumentSourceRecord,
+    LabObservation,
+    ReviewStatus,
+    SourceRecord,
+)
 from health_agent.vault import FileVault
 
 app = typer.Typer(help="Personal Health Agent")
@@ -28,18 +36,31 @@ def health_agent() -> None:
 
 
 @app.command("import-file")
-def import_file(path: Path, source_uri: str | None = None) -> None:
+def import_file(
+    path: Path,
+    source_uri: str | None = None,
+    collected_date: str | None = None,
+    issued_date: str | None = None,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> None:
     """Store and extract one local PDF."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
         report = import_document(
-            session, FileVault(settings.vault_root), path, source_uri
+            session,
+            FileVault(settings.vault_root),
+            path,
+            source_uri,
+            profile_id=profile_id,
+            collected_date=_medical_date("collected-date", collected_date),
+            issued_date=_medical_date("issued-date", issued_date),
         )
     typer.echo(
         " ".join(
             (
                 f"status={report.status}",
                 f"document_id={report.document_id}",
+                f"processing_status={report.processing_status}",
                 f"candidates={report.candidate_count}",
                 f"review_items={report.review_count}",
             )
@@ -48,15 +69,26 @@ def import_file(path: Path, source_uri: str | None = None) -> None:
 
 
 @review_app.command("list")
-def list_review_items() -> None:
+def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
     """List candidate source evidence awaiting a human decision."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
+        filename = (
+            select(SourceRecord.external_id)
+            .join(
+                DocumentSourceRecord,
+                DocumentSourceRecord.source_record_id == SourceRecord.id,
+            )
+            .where(DocumentSourceRecord.document_id == LabObservation.document_id)
+            .order_by(SourceRecord.received_at, SourceRecord.id)
+            .limit(1)
+            .scalar_subquery()
+        )
         rows = session.execute(
-            select(LabObservation, SourceRecord.external_id)
+            select(LabObservation, filename)
             .join(LabObservation.document)
-            .join(Document.source_record)
             .where(LabObservation.status == ReviewStatus.NEEDS_REVIEW)
+            .where(Document.profile_id == profile_id)
             .order_by(LabObservation.created_at, LabObservation.id)
         ).all()
     for observation, filename in rows:
@@ -75,20 +107,24 @@ def list_review_items() -> None:
 
 
 @review_app.command("approve")
-def approve_review_item(observation_id: UUID) -> None:
+def approve_review_item(
+    observation_id: UUID, profile_id: UUID = DEFAULT_PROFILE_ID
+) -> None:
     """Approve one pending observation by UUID."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
-        approve_observation(session, observation_id)
+        approve_observation(session, observation_id, profile_id=profile_id)
     typer.echo(f"status=approved observation_id={observation_id}")
 
 
 @review_app.command("reject")
-def reject_review_item(observation_id: UUID) -> None:
+def reject_review_item(
+    observation_id: UUID, profile_id: UUID = DEFAULT_PROFILE_ID
+) -> None:
     """Reject one pending observation by UUID."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
-        reject_observation(session, observation_id)
+        reject_observation(session, observation_id, profile_id=profile_id)
     typer.echo(f"status=rejected observation_id={observation_id}")
 
 
@@ -111,3 +147,14 @@ def setup_dashboard() -> None:
 
 def main() -> None:
     app()
+
+
+def _medical_date(option_name: str, value: str | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise typer.BadParameter(
+            "must use YYYY-MM-DD", param_hint=f"--{option_name}"
+        ) from error

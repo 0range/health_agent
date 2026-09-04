@@ -9,8 +9,10 @@ from sqlalchemy.sql import insert
 
 from health_agent.config import Settings
 from health_agent.models import (
+    DEFAULT_PROFILE_ID,
     Document,
     DocumentPage,
+    DocumentSourceRecord,
     LabObservation,
     ReviewStatus,
     SourceRecord,
@@ -40,19 +42,28 @@ def test_review_status_binds_lowercase_values() -> None:
 
 def make_document(session: Session, identity: str = "1") -> Document:
     source = SourceRecord(
+        profile_id=DEFAULT_PROFILE_ID,
         provider="local_file",
         external_id=f"abc-{identity}",
         revision=f"sha256:{identity}",
     )
     document = Document(
-        source_record=source,
+        profile_id=DEFAULT_PROFILE_ID,
         sha256=identity * 64,
         vault_path=f"data/vault/{identity}{identity}/" + identity * 64,
         media_type="application/pdf",
         document_type="laboratory_report",
         processing_status="pending",
     )
-    session.add(document)
+    session.add_all((source, document))
+    session.flush()
+    session.add(
+        DocumentSourceRecord(
+            document_id=document.id,
+            source_record_id=source.id,
+            profile_id=DEFAULT_PROFILE_ID,
+        )
+    )
     session.flush()
     return document
 
@@ -70,9 +81,23 @@ def make_page(session: Session, document: Document, page_number: int = 1) -> Doc
 
 
 def test_same_source_revision_is_unique(session: Session) -> None:
-    session.add(SourceRecord(provider="local_file", external_id="abc", revision="sha256:1"))
+    session.add(
+        SourceRecord(
+            profile_id=DEFAULT_PROFILE_ID,
+            provider="local_file",
+            external_id="abc",
+            revision="sha256:1",
+        )
+    )
     session.flush()
-    session.add(SourceRecord(provider="local_file", external_id="abc", revision="sha256:1"))
+    session.add(
+        SourceRecord(
+            profile_id=DEFAULT_PROFILE_ID,
+            provider="local_file",
+            external_id="abc",
+            revision="sha256:1",
+        )
+    )
 
     with pytest.raises(IntegrityError):
         session.flush()
@@ -88,6 +113,7 @@ def test_review_required_observation_is_not_publishable(session: Session) -> Non
         canonical_name="ferritin",
         source_name="Ferritin",
         source_value="42",
+        parsed_value=42,
         source_unit="ng/mL",
         evidence_excerpt="Ferritin 42 ng/mL",
         confidence=0.7,
@@ -107,7 +133,10 @@ def test_verified_history_view_excludes_non_verified_observations(session: Sessi
         canonical_name="ferritin",
         source_name="Ferritin",
         source_value="42",
+        parsed_value=42,
         source_unit="ng/mL",
+        normalized_value=42,
+        normalized_unit="ng/mL",
         evidence_excerpt="Ferritin 42 ng/mL",
         confidence=0.9,
         status=ReviewStatus.VERIFIED,
@@ -136,6 +165,32 @@ def test_verified_history_view_excludes_non_verified_observations(session: Sessi
 
     assert names == ["ferritin"]
     assert status == "verified"
+
+
+def test_verified_observation_requires_normalized_value_and_unit(
+    session: Session,
+) -> None:
+    document = make_document(session)
+    make_page(session, document)
+    session.add(
+        LabObservation(
+            document=document,
+            page_number=1,
+            canonical_name="ferritin",
+            source_name="Ferritin",
+            source_value="42",
+            source_unit="ng/mL",
+            normalized_value=None,
+            normalized_unit=None,
+            evidence_excerpt="Ferritin 42 ng/mL",
+            confidence=0.9,
+            status=ReviewStatus.VERIFIED,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
 
 
 def test_observation_page_must_exist_in_its_document(session: Session) -> None:

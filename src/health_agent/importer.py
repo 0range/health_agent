@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from health_agent.labs import LabCandidate, parse_lab_candidates
+from health_agent.labs import (
+    LabCandidate,
+    normalize_lab_result,
+    parse_decimal_token,
+    parse_lab_candidates,
+)
 from health_agent.models import (
+    DEFAULT_PROFILE_ID,
     Document,
     DocumentPage,
+    DocumentSourceRecord,
     LabObservation,
     ReviewItem,
     ReviewStatus,
@@ -23,12 +31,18 @@ from health_agent.models import (
 from health_agent.pdf import extract_pdf
 from health_agent.vault import FileVault
 
+ImportStatus = Literal["imported", "duplicate", "ocr_required", "needs_attention"]
+ProcessingStatus = Literal[
+    "processed", "needs_review", "ocr_required", "needs_attention"
+]
+
 
 @dataclass(frozen=True, slots=True)
 class ImportReport:
     """Safe import result: it intentionally contains no extracted medical text."""
 
-    status: Literal["imported", "duplicate"]
+    status: ImportStatus
+    processing_status: ProcessingStatus
     document_id: UUID
     candidate_count: int
     review_count: int
@@ -84,6 +98,12 @@ def import_document(
     vault: FileVault,
     source_path: Path,
     source_uri: str | None,
+    *,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+    source_provider: str = "local_file",
+    source_external_id: str | None = None,
+    collected_date: date | None = None,
+    issued_date: date | None = None,
 ) -> ImportReport:
     """Import one PDF as an all-or-nothing database transaction.
 
@@ -98,11 +118,26 @@ def import_document(
     )
     with transaction:
         existing = session.scalar(
-            select(Document).where(Document.sha256 == stored_file.sha256)
+            select(Document).where(
+                Document.profile_id == profile_id,
+                Document.sha256 == stored_file.sha256,
+            )
         )
         if existing is not None:
+            _record_source_occurrence(
+                session,
+                document=existing,
+                provider=source_provider,
+                external_id=source_external_id or source_path.name,
+                revision=f"sha256:{stored_file.sha256}",
+                source_uri=source_uri,
+            )
+            _merge_medical_dates(
+                existing, collected_date=collected_date, issued_date=issued_date
+            )
             return ImportReport(
                 status="duplicate",
+                processing_status=cast(ProcessingStatus, existing.processing_status),
                 document_id=existing.id,
                 candidate_count=0,
                 review_count=0,
@@ -110,22 +145,32 @@ def import_document(
 
         extracted_pdf = extract_pdf(source_path)
         candidates = parse_lab_candidates(extracted_pdf.pages)
-        source_record = SourceRecord(
-            provider="local_file",
-            external_id=source_path.name,
-            revision=f"sha256:{stored_file.sha256}",
-            source_uri=source_uri,
+        processing_status, safe_error_code = _processing_state(
+            extracted_pdf.extraction_method,
+            any(page.extraction_method == "ocr_required" for page in extracted_pdf.pages),
+            bool(candidates),
         )
         document = Document(
-            source_record=source_record,
+            profile_id=profile_id,
             sha256=stored_file.sha256,
             vault_path=str(stored_file.path),
             media_type="application/pdf",
             document_type="laboratory_report",
-            processing_status="needs_review" if candidates else "processed",
+            collected_date=collected_date,
+            issued_date=issued_date,
+            processing_status=processing_status,
+            safe_error_code=safe_error_code,
         )
         session.add(document)
         session.flush()
+        _record_source_occurrence(
+            session,
+            document=document,
+            provider=source_provider,
+            external_id=source_external_id or source_path.name,
+            revision=f"sha256:{stored_file.sha256}",
+            source_uri=source_uri,
+        )
 
         session.add_all(
             DocumentPage(
@@ -149,28 +194,52 @@ def import_document(
             for observation in observations
         )
 
+        report_status: ImportStatus = "imported"
+        if processing_status == "ocr_required":
+            report_status = "ocr_required"
+        elif processing_status == "needs_attention":
+            report_status = "needs_attention"
         return ImportReport(
-            status="imported",
+            status=report_status,
+            processing_status=processing_status,
             document_id=document.id,
             candidate_count=len(observations),
             review_count=len(observations),
         )
 
 
-def approve_observation(session: Session, observation_id: UUID) -> None:
+def approve_observation(
+    session: Session,
+    observation_id: UUID,
+    *,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> None:
     """Approve a pending candidate exactly once."""
-    observation = session.get_one(LabObservation, observation_id)
+    observation = _profile_observation(session, observation_id, profile_id)
     _require_pending(observation)
     review_item = _review_item(observation)
+    normalized_value, normalized_unit = normalize_lab_result(
+        observation.canonical_name,
+        observation.source_value,
+        observation.source_unit,
+    )
+    observation.parsed_value = parse_decimal_token(observation.source_value)
+    observation.normalized_value = normalized_value
+    observation.normalized_unit = normalized_unit
     observation.status = ReviewStatus.VERIFIED
     review_item.decision = "approved"
     review_item.resolved_at = utc_now()
     session.flush()
 
 
-def reject_observation(session: Session, observation_id: UUID) -> None:
+def reject_observation(
+    session: Session,
+    observation_id: UUID,
+    *,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> None:
     """Reject a pending candidate exactly once."""
-    observation = session.get_one(LabObservation, observation_id)
+    observation = _profile_observation(session, observation_id, profile_id)
     _require_pending(observation)
     review_item = _review_item(observation)
     observation.status = ReviewStatus.REJECTED
@@ -186,25 +255,33 @@ def correct_observation(
     source_value: str,
     source_unit: str | None = None,
     canonical_name: str | None = None,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
 ) -> LabObservation:
     """Version a pending observation as a verified human correction.
 
     The original extracted row remains untouched apart from its review state;
     the corrected values live only in a new, lineage-linked observation.
     """
-    original = session.get_one(LabObservation, observation_id)
+    original = _profile_observation(session, observation_id, profile_id)
     _require_pending(original)
     review_item = _review_item(original)
+    corrected_name = canonical_name or original.canonical_name
+    corrected_unit = source_unit if source_unit is not None else original.source_unit
+    normalized_value, normalized_unit = normalize_lab_result(
+        corrected_name, source_value, corrected_unit
+    )
+    parsed_value = parse_decimal_token(source_value)
     corrected = LabObservation(
         document_id=original.document_id,
         page_number=original.page_number,
         supersedes_observation_id=original.id,
-        canonical_name=canonical_name or original.canonical_name,
+        canonical_name=corrected_name,
         source_name=original.source_name,
         source_value=source_value,
-        source_unit=source_unit if source_unit is not None else original.source_unit,
-        normalized_value=None,
-        normalized_unit=None,
+        parsed_value=parsed_value,
+        source_unit=corrected_unit,
+        normalized_value=normalized_value,
+        normalized_unit=normalized_unit,
         reference_low=original.reference_low,
         reference_high=original.reference_high,
         reference_text=original.reference_text,
@@ -233,7 +310,8 @@ def _observation_from_candidate(
         page_number=candidate.page_number,
         canonical_name=_canonical_name(candidate.source_name),
         source_name=candidate.source_name,
-        source_value=str(candidate.source_value),
+        source_value=candidate.raw_source_value,
+        parsed_value=candidate.parsed_value,
         source_unit=candidate.unit,
         normalized_value=None,
         normalized_unit=None,
@@ -260,3 +338,85 @@ def _review_item(observation: LabObservation) -> ReviewItem:
     if observation.review_item is None:
         raise RuntimeError("Pending observations must have a review item")
     return observation.review_item
+
+
+def _profile_observation(
+    session: Session, observation_id: UUID, profile_id: UUID
+) -> LabObservation:
+    return session.scalars(
+        select(LabObservation)
+        .join(LabObservation.document)
+        .where(
+            LabObservation.id == observation_id,
+            Document.profile_id == profile_id,
+        )
+    ).one()
+
+
+def _record_source_occurrence(
+    session: Session,
+    *,
+    document: Document,
+    provider: str,
+    external_id: str,
+    revision: str,
+    source_uri: str | None,
+) -> None:
+    source_record = session.scalar(
+        select(SourceRecord).where(
+            SourceRecord.profile_id == document.profile_id,
+            SourceRecord.provider == provider,
+            SourceRecord.external_id == external_id,
+            SourceRecord.revision == revision,
+        )
+    )
+    if source_record is None:
+        source_record = SourceRecord(
+            profile_id=document.profile_id,
+            provider=provider,
+            external_id=external_id,
+            revision=revision,
+            source_uri=source_uri,
+        )
+        session.add(source_record)
+        session.flush()
+    link = session.get(DocumentSourceRecord, (document.id, source_record.id))
+    if link is None:
+        session.add(
+            DocumentSourceRecord(
+                document_id=document.id,
+                source_record_id=source_record.id,
+                profile_id=document.profile_id,
+            )
+        )
+        session.flush()
+
+
+def _merge_medical_dates(
+    document: Document,
+    *,
+    collected_date: date | None,
+    issued_date: date | None,
+) -> None:
+    for field, incoming in (
+        ("collected_date", collected_date),
+        ("issued_date", issued_date),
+    ):
+        existing = getattr(document, field)
+        if existing is None:
+            setattr(document, field, incoming)
+        elif incoming is not None and existing != incoming:
+            document.processing_status = "needs_attention"
+            document.safe_error_code = "conflicting_medical_date"
+
+
+def _processing_state(
+    extraction_method: str, has_ocr_page: bool, has_candidates: bool
+) -> tuple[ProcessingStatus, str | None]:
+    if extraction_method == "ocr_required":
+        return "ocr_required", "ocr_required"
+    if has_ocr_page:
+        return "needs_attention", "partial_ocr_required"
+    if has_candidates:
+        return "needs_review", None
+    return "processed", None

@@ -10,7 +10,8 @@ def test_parser_preserves_source_and_marks_candidates_for_review() -> None:
     candidate = parse_lab_candidates(pages)[0]
 
     assert candidate.source_name == "Ферритин"
-    assert candidate.source_value == Decimal(42)
+    assert candidate.raw_source_value == "42"
+    assert candidate.parsed_value == Decimal(42)
     assert candidate.unit == "нг/мл"
     assert candidate.reference_text == "30-400"
     assert candidate.evidence_excerpt == "Ферритин 42 нг/мл 30-400"
@@ -30,9 +31,12 @@ def test_parser_accepts_known_aliases_and_decimal_commas() -> None:
 
     candidates = parse_lab_candidates(pages)
 
-    assert [(candidate.source_name, candidate.source_value) for candidate in candidates] == [
-        ("Vitamin D", Decimal("25.5")),
-        ("Холестерин ЛПНП", Decimal("3.2")),
+    assert [
+        (candidate.source_name, candidate.raw_source_value, candidate.parsed_value)
+        for candidate in candidates
+    ] == [
+        ("Vitamin D", "25.5", Decimal("25.5")),
+        ("Холестерин ЛПНП", "3,2", Decimal("3.2")),
     ]
 
 

@@ -9,12 +9,22 @@ from sqlalchemy import Engine, text
 
 from health_agent.config import Settings
 from health_agent.db import build_engine
+from health_agent.models import DEFAULT_PROFILE_ID
 
 COLLECTION_NAME = "Health Agent"
 DATABASE_NAME = "Health Agent"
 DASHBOARD_NAME = "Анализы крови"
 CARD_NAME = "Динамика анализов крови"
 READER_ROLE = "health_dashboard"
+LAB_HISTORY_QUERY = (
+    "SELECT result_date AS date, normalized_value, normalized_unit, canonical_name "
+    "FROM verified_lab_history "
+    f"WHERE profile_id = '{DEFAULT_PROFILE_ID}' "
+    "AND result_date IS NOT NULL "
+    "AND normalized_value IS NOT NULL "
+    "AND normalized_unit IS NOT NULL "
+    "ORDER BY date, canonical_name"
+)
 
 
 @dataclass(frozen=True)
@@ -318,12 +328,6 @@ def _database_payload(settings: Settings) -> dict[str, Any]:
 
 
 def _card_payload(database_id: int, collection_id: int) -> dict[str, Any]:
-    query = (
-        "SELECT created_at::date AS date, normalized_value, canonical_name "
-        "FROM verified_lab_history "
-        "WHERE normalized_value IS NOT NULL "
-        "ORDER BY date, canonical_name"
-    )
     return {
         "name": CARD_NAME,
         "collection_id": collection_id,
@@ -331,7 +335,7 @@ def _card_payload(database_id: int, collection_id: int) -> dict[str, Any]:
         "dataset_query": {
             "database": database_id,
             "type": "native",
-            "native": {"query": query, "template-tags": {}},
+            "native": {"query": LAB_HISTORY_QUERY, "template-tags": {}},
         },
         "visualization_settings": {
             "graph.dimensions": ["date", "canonical_name"],

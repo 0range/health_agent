@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pymupdf
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
 from health_agent.importer import (
@@ -14,7 +18,15 @@ from health_agent.importer import (
     import_document,
     reject_observation,
 )
-from health_agent.models import LabObservation, ReviewStatus
+from health_agent.metabase import LAB_HISTORY_QUERY
+from health_agent.models import (
+    Document,
+    DocumentSourceRecord,
+    LabObservation,
+    Profile,
+    ReviewStatus,
+    SourceRecord,
+)
 from health_agent.vault import FileVault
 
 
@@ -60,7 +72,74 @@ def test_approval_moves_value_into_verified_view(
     approve_observation(session, observation)
     rows = session.execute(text("SELECT * FROM verified_lab_history")).all()
 
-    assert [row.canonical_name for row in rows] == ["ferritin"]
+    assert [
+        (
+            row.canonical_name,
+            row.source_value,
+            row.parsed_value,
+            row.normalized_value,
+            row.normalized_unit,
+        )
+        for row in rows
+    ] == [("ferritin", "42", Decimal(42), Decimal(42), "ng/mL")]
+
+
+def test_approval_preserves_decimal_comma_and_normalizes_separately(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "decimal-comma.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Ferritin 42,5 ng/mL 30-400")
+        pdf.save(path)
+    report = import_document(
+        session, vault, path, "local:comma", collected_date=date(2022, 6, 7)
+    )
+    observation = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": report.document_id},
+    )
+    assert observation is not None
+
+    approve_observation(session, observation)
+    row = session.execute(
+        text(
+            "SELECT source_value, parsed_value, normalized_value, normalized_unit "
+            "FROM lab_observations WHERE id = :id"
+        ),
+        {"id": observation},
+    ).one()
+
+    assert row == (
+        "42,5",
+        Decimal("42.5"),
+        Decimal("42.5"),
+        "ng/mL",
+    )
+
+
+def test_unsupported_pair_cannot_be_approved(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "unsupported-pair.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Ferritin 42 mmol/L 30-400")
+        pdf.save(path)
+    report = import_document(session, vault, path, "local:unsupported")
+    observation_id = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": report.document_id},
+    )
+    assert observation_id is not None
+
+    with pytest.raises(ValueError, match="Unsupported normalization"):
+        approve_observation(session, observation_id)
+
+    observation = session.get_one(LabObservation, observation_id)
+    assert observation.status is ReviewStatus.NEEDS_REVIEW
+    assert observation.normalized_value is None
+    assert observation.normalized_unit is None
 
 
 def test_review_transitions_are_one_way(
@@ -88,11 +167,163 @@ def test_correction_preserves_original_and_creates_verified_successor(
     )
 
     assert original_id is not None
-    corrected = correct_observation(session, original_id, source_value="43")
+    corrected = correct_observation(session, original_id, source_value="43,5")
     original = session.get_one(LabObservation, original_id)
 
     assert original.source_value == "42"
     assert original.status is ReviewStatus.REJECTED
     assert corrected.status is ReviewStatus.VERIFIED
-    assert corrected.source_value == "43"
+    assert corrected.source_value == "43,5"
+    assert corrected.normalized_value == Decimal("43.5")
+    assert corrected.normalized_unit == "ng/mL"
     assert corrected.supersedes_observation_id == original.id
+
+
+def test_invalid_correction_leaves_original_pending(
+    session: Session, vault: FileVault, synthetic_lab_pdf: Path
+) -> None:
+    report = import_document(session, vault, synthetic_lab_pdf, "local:test")
+    original_id = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": report.document_id},
+    )
+    assert original_id is not None
+
+    with pytest.raises(ValueError, match="Unsupported normalization"):
+        correct_observation(
+            session,
+            original_id,
+            source_value="43",
+            source_unit="mmol/L",
+        )
+
+    original = session.get_one(LabObservation, original_id)
+    assert original.status is ReviewStatus.NEEDS_REVIEW
+    assert original.review_item is not None
+    assert original.review_item.decision is None
+
+
+def test_duplicate_bytes_keep_each_distinct_source_occurrence(
+    session: Session, vault: FileVault, synthetic_lab_pdf: Path
+) -> None:
+    first = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "local:test",
+        source_provider="local_file",
+        source_external_id="local-labs.pdf",
+    )
+    second = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "https://drive.test/file/abc",
+        source_provider="google_drive",
+        source_external_id="abc",
+    )
+
+    assert second.status == "duplicate"
+    assert second.document_id == first.document_id
+    assert session.query(Document).count() == 1
+    assert session.query(SourceRecord).count() == 2
+    assert session.query(DocumentSourceRecord).count() == 2
+    assert session.query(LabObservation).count() == 1
+
+
+def test_identical_bytes_are_deduplicated_only_within_one_profile(
+    session: Session, vault: FileVault, synthetic_lab_pdf: Path
+) -> None:
+    second_profile = Profile(id=uuid4(), name="Second person")
+    session.add(second_profile)
+    session.flush()
+
+    first = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "local:first",
+        collected_date=date(2020, 1, 2),
+    )
+    second = import_document(
+        session,
+        vault,
+        synthetic_lab_pdf,
+        "local:second",
+        profile_id=second_profile.id,
+        collected_date=date(2021, 2, 3),
+    )
+
+    assert first.document_id != second.document_id
+    documents = session.query(Document).order_by(Document.collected_date).all()
+    assert [(row.profile_id, row.collected_date) for row in documents] == [
+        (documents[0].profile_id, date(2020, 1, 2)),
+        (second_profile.id, date(2021, 2, 3)),
+    ]
+
+    first_observation = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": first.document_id},
+    )
+    assert first_observation is not None
+    with pytest.raises(NoResultFound):
+        approve_observation(
+            session, first_observation, profile_id=second_profile.id
+        )
+
+
+def test_chart_excludes_unknown_dates_and_non_default_profiles(
+    session: Session, vault: FileVault, synthetic_lab_pdf: Path, tmp_path: Path
+) -> None:
+    no_date = import_document(session, vault, synthetic_lab_pdf, "local:no-date")
+    no_date_observation = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": no_date.document_id},
+    )
+    assert no_date_observation is not None
+    approve_observation(session, no_date_observation)
+
+    second_profile = Profile(id=uuid4(), name="Second person")
+    session.add(second_profile)
+    session.flush()
+    second_path = tmp_path / "second-profile.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Ferritin 44 ng/mL 30-400")
+        pdf.save(second_path)
+    second = import_document(
+        session,
+        vault,
+        second_path,
+        "local:second",
+        profile_id=second_profile.id,
+        collected_date=date(2020, 1, 1),
+    )
+    second_observation = session.scalar(
+        text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
+        {"document_id": second.document_id},
+    )
+    assert second_observation is not None
+    approve_observation(
+        session, second_observation, profile_id=second_profile.id
+    )
+
+    assert session.execute(text(LAB_HISTORY_QUERY)).all() == []
+
+
+def test_scanned_pdf_returns_actionable_ocr_status(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "scanned.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:scan")
+    document = session.get_one(Document, report.document_id)
+
+    assert report.status == "ocr_required"
+    assert report.processing_status == "ocr_required"
+    assert report.candidate_count == 0
+    assert document.processing_status == "ocr_required"
+    assert document.safe_error_code == "ocr_required"
