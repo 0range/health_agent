@@ -4,6 +4,8 @@
 
 > **TL;DR:** поднять локальный PostgreSQL и Metabase, импортировать один PDF без дублей, сохранить происхождение, исключить сомнительные значения из графиков и показать проверенную динамику.
 
+> **Статус на 2026-09-04:** код и синтетическая сквозная приемка готовы. Безопасные счетчики приемки: 1 объект vault, 1 документ, 1 наблюдение, 1 решение проверки, 1 строка `verified_lab_history`. Приемка пользовательского PDF отложена до Drive-адаптера Slice 2: текущий коннектор вернул внутренний URI, но не локальный путь к файлу. Медицинские значения и текст в evidence не записывались.
+
 **Goal:** Build the smallest real vertical slice in which a medical PDF becomes provenance-backed laboratory data and a local Metabase chart.
 
 **Architecture:** A Python CLI writes immutable originals and normalized records to local PostgreSQL. A conservative PDF extractor creates verified or review-required lab observations; only verified observations enter a SQL view used by Metabase. Containers bind only to localhost and application code is independent from later Drive, Gmail, WHOOP and Telegram adapters.
@@ -57,7 +59,7 @@
 **Interfaces:**
 - Produces: shell command `health-agent --help`; services `postgres` and `metabase`; localhost ports `55432` and `53000`.
 
-- [ ] **Step 1: Initialize Git and dependency metadata**
+- [x] **Step 1: Initialize Git and dependency metadata**
 
 Run:
 
@@ -68,7 +70,7 @@ uv python install 3.13
 uv init --bare --python 3.13
 ```
 
-- [ ] **Step 2: Write the failing CLI smoke test**
+- [x] **Step 2: Write the failing CLI smoke test**
 
 ```python
 from typer.testing import CliRunner
@@ -86,7 +88,7 @@ Run: `uv run pytest tests/test_cli.py -q`
 
 Expected: FAIL because `health_agent.cli` does not exist.
 
-- [ ] **Step 3: Add dependencies and the minimal CLI**
+- [x] **Step 3: Add dependencies and the minimal CLI**
 
 Run:
 
@@ -107,7 +109,7 @@ def main() -> None:
 
 `pyproject.toml` exposes `health-agent = "health_agent.cli:main"`. `.gitignore` includes `.env`, `.tokens/`, `data/`, `*.pdf`, `*.png`, `*.jpg`, `*.sql`, `*.dump`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/` and `.DS_Store`.
 
-- [ ] **Step 4: Add the local services**
+- [x] **Step 4: Add the local services**
 
 `compose.yaml` defines:
 
@@ -168,13 +170,13 @@ volumes:
   health_metabase: {}
 ```
 
-- [ ] **Step 5: Verify the project boundary**
+- [x] **Step 5: Verify the project boundary**
 
 Run: `uv sync && uv run pytest tests/test_cli.py -q && uv run ruff check .`
 
 Expected: PASS; `git status --short` lists no `.env` or `data/` contents.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .python-version .gitignore .env.example pyproject.toml uv.lock compose.yaml docker src tests
@@ -195,7 +197,7 @@ git commit -m "build: bootstrap local health agent"
 **Interfaces:**
 - Produces: `Settings`, `build_engine(settings)`, `session_scope(engine)`, SQLAlchemy models `SourceRecord`, `Document`, `DocumentPage`, `LabObservation`, `ReviewItem`.
 
-- [ ] **Step 1: Write schema-invariant tests**
+- [x] **Step 1: Write schema-invariant tests**
 
 ```python
 def test_same_source_revision_is_unique(session):
@@ -215,7 +217,7 @@ Run: `uv run pytest tests/test_schema.py -q`
 
 Expected: FAIL because the schema does not exist.
 
-- [ ] **Step 2: Implement explicit models and enums**
+- [x] **Step 2: Implement explicit models and enums**
 
 ```python
 class ReviewStatus(StrEnum):
@@ -244,7 +246,7 @@ Add the following required columns:
 
 Create SQL view `verified_lab_history` that selects only `lab_observations.status = 'verified'`.
 
-- [ ] **Step 3: Generate and apply the migration**
+- [x] **Step 3: Generate and apply the migration**
 
 Run:
 
@@ -256,13 +258,13 @@ uv run alembic upgrade head
 
 Expected: first command creates the schema; the second upgrade is a no-op.
 
-- [ ] **Step 4: Run schema tests**
+- [x] **Step 4: Run schema tests**
 
 Run: `uv run pytest tests/test_schema.py -q`
 
 Expected: PASS against the local PostgreSQL test database.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add alembic.ini alembic src/health_agent/config.py src/health_agent/db.py src/health_agent/models.py tests/test_schema.py
@@ -278,7 +280,7 @@ git commit -m "feat: add provenance-first medical schema"
 **Interfaces:**
 - Produces: `StoredFile(sha256: str, path: Path, size_bytes: int)` and `FileVault.store(source: Path) -> StoredFile`.
 
-- [ ] **Step 1: Write failing immutability tests**
+- [x] **Step 1: Write failing immutability tests**
 
 ```python
 def test_same_bytes_have_one_vault_object(tmp_path):
@@ -298,7 +300,7 @@ Run: `uv run pytest tests/test_vault.py -q`
 
 Expected: FAIL because `FileVault` does not exist.
 
-- [ ] **Step 2: Implement atomic content-addressed storage**
+- [x] **Step 2: Implement atomic content-addressed storage**
 
 ```python
 class FileVault:
@@ -316,7 +318,7 @@ class FileVault:
 
 Verify an existing target's hash before returning it; raise `VaultIntegrityError` on mismatch without overwriting either file.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run: `uv run pytest tests/test_vault.py -q`
 
@@ -338,7 +340,7 @@ git commit -m "feat: add immutable medical file vault"
 **Interfaces:**
 - Produces: `extract_pdf(path: Path) -> ExtractedPdf`; `parse_lab_candidates(pages: tuple[ExtractedPage, ...]) -> tuple[LabCandidate, ...]`.
 
-- [ ] **Step 1: Write extraction and parsing tests**
+- [x] **Step 1: Write extraction and parsing tests**
 
 ```python
 def test_extract_pdf_preserves_page_number(synthetic_lab_pdf):
@@ -360,7 +362,7 @@ Run: `uv run pytest tests/test_pdf.py tests/test_labs.py -q`
 
 Expected: FAIL because extraction modules do not exist.
 
-- [ ] **Step 2: Implement digital-text extraction**
+- [x] **Step 2: Implement digital-text extraction**
 
 ```python
 def extract_pdf(path: Path) -> ExtractedPdf:
@@ -375,11 +377,11 @@ def extract_pdf(path: Path) -> ExtractedPdf:
 
 Empty/scanned pages receive `ocr_required`; no value is guessed from them. OCR is added only after inspecting the first real document that requires it.
 
-- [ ] **Step 3: Implement a conservative row parser**
+- [x] **Step 3: Implement a conservative row parser**
 
 Use `Decimal` for values. Preserve the complete source line as `evidence_excerpt`. Recognize a numeric value only when name, value and unit occur on one line; recognize a reference interval only when both limits parse unambiguously. Known aliases initially cover ferritin, B12, folate/B9, total/LDL/HDL cholesterol, triglycerides, iron, vitamin D and prolactin. Every candidate starts `needs_review`; only explicit review can verify it in Slice 1.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `uv run pytest tests/test_pdf.py tests/test_labs.py -q`
 
@@ -403,7 +405,7 @@ git commit -m "feat: extract conservative lab candidates from pdf"
 **Interfaces:**
 - Produces: `import_document(session, vault, source_path, source_uri) -> ImportReport`; CLI commands `import-file`, `review list`, `review approve`, `review reject`.
 
-- [ ] **Step 1: Write failing end-to-end service tests**
+- [x] **Step 1: Write failing end-to-end service tests**
 
 ```python
 def test_reimport_is_duplicate(session, vault, synthetic_lab_pdf):
@@ -424,7 +426,7 @@ Run: `uv run pytest tests/test_importer.py tests/test_review_cli.py -q`
 
 Expected: FAIL because orchestration does not exist.
 
-- [ ] **Step 2: Implement one transaction per document**
+- [x] **Step 2: Implement one transaction per document**
 
 `import_document` must:
 
@@ -436,7 +438,7 @@ Expected: FAIL because orchestration does not exist.
 6. commit all records together or roll back all database changes;
 7. return counts without including medical text.
 
-- [ ] **Step 3: Implement explicit review transitions**
+- [x] **Step 3: Implement explicit review transitions**
 
 ```python
 def approve_observation(session: Session, observation_id: UUID) -> None:
@@ -452,11 +454,11 @@ Reject follows the same one-way rule. A correction creates a new verified observ
 
 `LabObservation.supersedes_observation_id` is a nullable self-referencing foreign key stored on the corrected observation. Migration `0003_review_corrections.py` adds the column and index without rewriting existing evidence rows.
 
-- [ ] **Step 4: Add human-readable CLI output**
+- [x] **Step 4: Add human-readable CLI output**
 
 `health-agent import-file PATH` prints only status, document ID and candidate/review counts. `health-agent review list` prints observation ID, source name/value/unit, page and source filename. Approval requires the observation UUID.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `uv run pytest tests/test_importer.py tests/test_review_cli.py -q`
 
@@ -479,7 +481,7 @@ git commit -m "feat: import and review medical documents"
 **Interfaces:**
 - Produces: `bootstrap_metabase(settings) -> MetabaseBootstrapResult`; CLI command `health-agent dashboard setup`.
 
-- [ ] **Step 1: Write a failing idempotency test with mocked HTTP**
+- [x] **Step 1: Write a failing idempotency test with mocked HTTP**
 
 ```python
 def test_bootstrap_reuses_existing_collection_and_card(fake_metabase, settings):
@@ -493,13 +495,13 @@ Run: `uv run pytest tests/test_metabase.py -q`
 
 Expected: FAIL because the bootstrap client does not exist.
 
-- [ ] **Step 2: Implement idempotent Metabase setup**
+- [x] **Step 2: Implement idempotent Metabase setup**
 
 The client waits for `/api/health`, completes local admin setup only when necessary, registers the health PostgreSQL database with a read-only role, creates collection `Health Agent`, dashboard `Анализы крови`, and one line card over `verified_lab_history` with date on X, normalized value on Y and canonical name as series. Existing objects are found by name and reused.
 
 `Settings` adds `METABASE_URL` (default `http://127.0.0.1:53000`) and `METABASE_ADMIN_EMAIL` (default `health-agent@localhost`). For this single-user local install, the Metabase admin and database reader initially use the existing `POSTGRES_PASSWORD`; no new secret is requested from the user. Before registering the database, `bootstrap_metabase` idempotently creates PostgreSQL role `health_dashboard`, grants only connect/schema/select/default-select privileges, and never grants write or ownership privileges.
 
-- [ ] **Step 3: Run unit and live smoke tests**
+- [x] **Step 3: Run unit and live smoke tests**
 
 Run:
 
@@ -511,7 +513,7 @@ curl --fail http://127.0.0.1:53000/api/health
 
 Expected: unit test passes; Metabase reports healthy; repeated setup keeps one dashboard/card.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add .env.example src/health_agent/config.py src/health_agent/metabase.py src/health_agent/cli.py tests/test_metabase.py
@@ -529,7 +531,7 @@ git commit -m "feat: provision first lab dashboard"
 - Consumes: all Slice 1 CLI commands and views.
 - Produces: repeatable evidence that one PDF reaches a verified dashboard row without duplicates.
 
-- [ ] **Step 1: Add the automated synthetic journey**
+- [x] **Step 1: Add the automated synthetic journey**
 
 The test creates a PDF in a temporary directory, imports it twice, approves one ferritin candidate and asserts: one vault object, one document, one observation, one audit decision and one row in `verified_lab_history`.
 
@@ -537,7 +539,7 @@ Run: `uv run pytest tests/test_slice_1_e2e.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 2: Run all quality gates**
+- [x] **Step 2: Run all quality gates**
 
 Run:
 
@@ -555,11 +557,15 @@ Copy one read-only source PDF into `data/incoming/`, run `health-agent import-fi
 
 Acceptance evidence contains only IDs, counts, statuses and a Metabase URL—never medical values or document text.
 
-- [ ] **Step 4: Update the quick README and mark Slice 1 complete**
+Deferred to Slice 2: the connected Drive sample is visible, but the connector
+currently returns an internal `sediment://` URI without a workspace path. No
+user document was copied or accepted, and no medical text or values were saved.
+
+- [x] **Step 4: Update the quick README and record Slice 1 acceptance status**
 
 Document three commands only: start, import, open dashboard. Check completed boxes in this plan and add the acceptance date and safe counts.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md tests/test_slice_1_e2e.py docs/superpowers/plans/2026-09-04-health-agent-v1-slice-1-foundation.md
