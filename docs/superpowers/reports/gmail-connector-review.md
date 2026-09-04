@@ -408,3 +408,90 @@ cover an unnamed PDF attachment.
 - The Google client library necessarily materializes the attachment API's encoded
   response before the connector's bounded incremental decoder runs; the guide now
   states this accurately.
+
+## Fix round 2 final re-review
+
+Review target: `codex/v1-gmail` at `c2d8451`, relative to the prior review commit
+`1e00dc2`. This round inspected the implementation, documentation, and existing
+test evidence without rerunning tests, as requested.
+
+### Verdict
+
+- **SPEC: SHIP**
+- **QUALITY: SHIP**
+- **OVERALL: SHIP**
+
+No release-blocking findings remain for the mocked-ready Gmail connector scope.
+
+### Verification of the five remaining findings
+
+1. **Body-only routing and safe attention — resolved.** The bounded transient
+   classifier now recognizes appointment and conservative medical signals while
+   leaving arbitrary prose ignored (`src/health_agent/gmail/classifier.py:65-100`).
+   Recognized body-only messages create an idempotent, profile-scoped
+   `SourceRecord` containing type, Gmail occurrence identity, and source link but
+   no body or sender (`src/health_agent/gmail/message_inbox.py:21-63`). Local state
+   retains only safe message metadata, and `gmail attention` outputs profile,
+   account, message ID, kind, and classification—neither body nor sender
+   (`src/health_agent/cli.py:280-307`). Attachment-backed medical mail continues
+   through the existing common document importer rather than creating a redundant
+   body-inbox item.
+2. **Full/history-404 reconciliation — resolved.** While holding the existing
+   account-wide process lock, full and recovery scans now refetch every previously
+   relevant message before listing the lookback window and before committing the
+   new cursor (`src/health_agent/gmail/service.py:128-188`). A missing message is
+   tombstoned; current Spam/Trash labels exclude it while preserving its prior
+   relevant classification so a later full recovery can observe restoration;
+   restored mail is processed again. The reported tests cover manual-full Trash
+   and restoration plus history-404 deletion.
+3. **OCR status — resolved.** Images now use outcome `ocr_required` plus the more
+   specific `image_ocr_required` processing reason. Both values are persisted on
+   the immutable attachment revision; run output, lifetime status, and attention
+   output consistently expose them (`src/health_agent/gmail/medical_importer.py:54-62`,
+   `src/health_agent/gmail/service.py:386-428`,
+   `src/health_agent/gmail/stores.py:345-377`, `src/health_agent/cli.py:267-306`).
+   Legacy image-attention records receive a backward-compatible OCR count.
+4. **Preflight freshness — resolved.** Every CLI sync records `preflight` before
+   OAuth/network work, and every failure refreshes `last_attempt_at` without
+   changing `last_success_at` (`src/health_agent/cli.py:310-377`,
+   `src/health_agent/gmail/stores.py:243-263`). Account state remains protected by
+   the cross-process lock.
+5. **Unnamed supported attachments — resolved.** Explicitly supported MIME parts
+   with an attachment identity or attachment disposition are admitted even without
+   a filename. A deterministic SHA-256-derived basename and MIME-derived suffix are
+   used only after classification, never treating Gmail identifiers as paths
+   (`src/health_agent/gmail/classifier.py:103-127`,
+   `src/health_agent/gmail/service.py:485-554`). They retain all prior decoded-size,
+   magic/MIME, temporary-file, and importer checks.
+
+### Regression check
+
+The round-2 changes do not weaken the round-1 guarantees: Gmail remains exact-scope
+read-only; official installed-app state/callback handling and bounded waits are
+unchanged; verified token publication, old-token preservation, cross-profile
+mailbox binding, private permissions, and symlink rejection are unchanged; API
+timeouts/retries/page-loop guards remain; state and cursor writes remain serialized
+and ordered; PDFs still use the profile-aware common PostgreSQL importer with
+stable source identity; and attachment validation still completes before importer
+side effects. The migration chain was not changed in this round, so the corrected
+`0003` downgrade remains intact.
+
+### Live concerns, not ship blockers
+
+- OAuth consent-screen mode, restricted-scope approval/warning behavior, browser
+  callback, refresh, real Gmail MIME payloads, real history expiry/rate limiting,
+  and end-to-end ingestion of user data still require the documented live
+  acceptance pass. `GOOGLE_OAUTH_PUBLISHING_STATUS` is intentionally declarative;
+  code cannot verify Cloud Console state.
+- Attachment API responses are materialized by Google's client before bounded
+  incremental decode. The 25 MiB decoded limit and this transport limitation are
+  documented accurately.
+- Body-only rows are deliberately routing records, not extracted appointment or
+  clinical facts. Turning them into visit dates, questions, or medical assertions
+  belongs to the later agent workflow and must refetch/handle the message under an
+  explicit policy.
+- Full/recovery reconciliation refetches all historically relevant IDs, including
+  tombstoned ones. This is correctness-first and reasonable for a personal
+  mailbox, but its API cost should be observed as the local history grows.
+- Daily scheduling remains outside this connector branch; the delivered callable
+  is safe for a scheduler because account state/cursor mutation is process-locked.
