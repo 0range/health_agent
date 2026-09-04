@@ -635,15 +635,20 @@ def configure_gmail(
         current = profile.account(account_id)
     except KeyError:
         current = None
-    account = GmailAccount.create(
-        account_id,
-        initial_lookback_days=lookback_days,
-        trusted_senders=(
-            trusted_sender
-            if trusted_sender is not None
-            else (() if current is None else current.trusted_senders)
-        ),
-    )
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="account-id") from error
+    try:
+        account = GmailAccount.create(
+            account_id,
+            initial_lookback_days=lookback_days,
+            trusted_senders=(
+                trusted_sender
+                if trusted_sender is not None
+                else (() if current is None else current.trusted_senders)
+            ),
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
     if current is not None and current.email is not None:
         account = account.with_email(current.email)
     profiles.save(profile.upsert_account(account))
@@ -686,8 +691,23 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
     """Show safe local Gmail connection and cursor status."""
     settings = Settings()
     profiles, tokens, state = _gmail_stores(settings)
-    profile = profiles.load(str(profile_id))
-    accounts = _selected_gmail_accounts(profile, account_id)
+    profile_key = str(profile_id)
+    if not profiles.exists(profile_key):
+        typer.echo(
+            f"status=not_configured profile={profile_key} action_required=configure"
+        )
+        return
+    profile = profiles.load(profile_key)
+    try:
+        accounts = _selected_gmail_accounts(profile, account_id)
+    except KeyError:
+        typer.echo(
+            f"status=not_configured profile={profile_key} account={account_id} "
+            "action_required=configure"
+        )
+        return
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="account-id") from error
     for account in accounts:
         counts = state.counts(profile.profile_id, account.account_id)
         run = state.get_run_state(profile.profile_id, account.account_id)

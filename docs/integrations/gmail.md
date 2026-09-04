@@ -102,7 +102,9 @@ Omit `--account-id` to status/sync all configured account slots independently.
 Use `gmail sync PROFILE_UUID --full` to repeat the lookback and retry internally
 queued file revisions after configuration or OCR capability changes. Status
 separates staged, medically imported, attention, cursor freshness, last attempt,
-last success, safe error, token state, and declared OAuth mode.
+last success, safe error, token state, and declared OAuth mode. A missing profile
+or requested account is an expected status state: the command prints
+`status=not_configured action_required=configure` and exits successfully.
 
 ## Official references
 
