@@ -22,6 +22,7 @@ def test_extract_pdf_preserves_page_number_and_text(synthetic_lab_pdf: Path) -> 
 
     assert result.pages[0].page_number == 1
     assert "Ferritin" in result.pages[0].text
+    assert result.pages[0].extraction_method == "digital_text"
     assert result.extraction_method == "digital_text"
 
 
@@ -35,4 +36,23 @@ def test_extract_pdf_marks_scanned_documents_for_ocr(tmp_path: Path) -> None:
     result = extract_pdf(path)
 
     assert result.pages[0].text == ""
+    assert result.pages[0].extraction_method == "ocr_required"
     assert result.extraction_method == "ocr_required"
+
+
+def test_extract_pdf_marks_each_page_in_a_mixed_document(tmp_path: Path) -> None:
+    path = tmp_path / "mixed.pdf"
+    document = pymupdf.open()
+    text_page = document.new_page()
+    text_page.insert_text((72, 72), "Ferritin 42 ng/mL 30-400")
+    document.new_page()
+    document.save(path)
+    document.close()
+
+    result = extract_pdf(path)
+
+    assert [page.extraction_method for page in result.pages] == [
+        "digital_text",
+        "ocr_required",
+    ]
+    assert result.extraction_method == "digital_text"

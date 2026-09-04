@@ -53,3 +53,9 @@ def test_parser_rejects_unknown_names_and_does_not_guess_incomplete_ranges() -> 
         ("Ферритин", None),
         ("Ферритин", None),
     ]
+
+
+def test_parser_rejects_ordinary_prose_as_a_unit() -> None:
+    pages = (ExtractedPage(1, "Ferritin 42 words from a note"),)
+
+    assert parse_lab_candidates(pages) == ()

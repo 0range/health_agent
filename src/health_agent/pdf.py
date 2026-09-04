@@ -15,6 +15,7 @@ class ExtractedPage:
 
     page_number: int
     text: str
+    extraction_method: ExtractionMethod = "digital_text"
 
 
 @dataclass(frozen=True)
@@ -29,8 +30,13 @@ def extract_pdf(path: Path) -> ExtractedPdf:
     """Extract embedded page text, leaving image-only documents for later OCR."""
     with pymupdf.open(path) as document:
         pages = tuple(
-            ExtractedPage(page_number=index + 1, text=page.get_text("text"))
+            ExtractedPage(
+                page_number=index + 1,
+                text=text,
+                extraction_method="digital_text" if text.strip() else "ocr_required",
+            )
             for index, page in enumerate(document)
+            for text in (page.get_text("text"),)
         )
 
     extraction_method: ExtractionMethod = (

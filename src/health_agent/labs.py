@@ -75,6 +75,41 @@ _REFERENCE_PATTERN = re.compile(
     r"^\s*[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*[-–—]\s*"
     r"[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*$"
 )
+_LAB_UNITS = frozenset(
+    {
+        "%",
+        "ng/ml",
+        "ng/l",
+        "нг/мл",
+        "нг/л",
+        "pg/ml",
+        "пг/мл",
+        "pmol/l",
+        "пмоль/л",
+        "nmol/l",
+        "нмоль/л",
+        "mmol/l",
+        "ммоль/л",
+        "umol/l",
+        "µmol/l",
+        "мкмоль/л",
+        "ug/l",
+        "µg/l",
+        "мкг/л",
+        "ug/dl",
+        "µg/dl",
+        "мкг/дл",
+        "mg/dl",
+        "мг/дл",
+        "miu/l",
+        "мме/л",
+        "iu/l",
+        "ме/л",
+        "uiu/ml",
+        "µiu/ml",
+        "мкме/мл",
+    }
+)
 
 
 def parse_lab_candidates(
@@ -132,5 +167,6 @@ def _normalise_name(source_name: str) -> str:
 
 
 def _is_unit(value: str) -> bool:
-    """Exclude numeric-looking reference ranges from the unit position."""
-    return value == "%" or any(character.isalpha() for character in value)
+    """Accept only established units for the Slice 1 laboratory aliases."""
+    normalised = value.casefold().replace("μ", "µ")
+    return normalised in _LAB_UNITS
