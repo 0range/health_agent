@@ -148,3 +148,34 @@ a small, localized change.
 Reviewed the prior report, Task 2 report, commit range `71d1aee..e230365`, and current
 questions implementation/tests. I did not modify implementation or run tests, as
 requested.
+
+## Citation fix re-review (`3c400b1`)
+
+### Verdicts
+
+- **SPEC: FAIL**
+- **QUALITY: CHANGES REQUESTED**
+
+The new parser fixes the reported `[FORGED]` and `[not-a-source]` cases: both are now
+matched and, when paired with `[LAB1]`, fail closed to the local insufficient-evidence
+answer with its deterministic footer. The focused test adds those cases
+(`tests/questions/test_service.py:128-147`).
+
+### Remaining finding
+
+#### MEDIUM — overlong bracketed forged citations are still ignored
+
+`_BRACKETED_TOKEN` only matches bracket content of 1–64 non-newline characters
+(`src/health_agent/questions/service.py:27, 165-175`). A responder output such as
+`Ferritin is 42. [LAB1] [AAAAAAAA...65 characters...]` contains an exact valid label
+plus an overlong bracketed forged label. The latter is not extracted, so validation sees
+only `[LAB1]` and accepts the response. A 65-character token easily fits within the
+configured response budget and is still a citation-like token despite exceeding the
+parser's arbitrary bound. This does not meet the required fail-closed handling of forged
+citations.
+
+Action: ensure oversized or otherwise malformed bracketed spans cause validation failure
+rather than being omitted (for example, scan all bracketed spans within the already
+bounded generated output, then validate both shape and exact membership). Add a valid
+label plus an overlong forged-label case. No other remaining finding was identified in
+this narrow re-review.
