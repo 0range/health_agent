@@ -359,6 +359,7 @@ def _limitations_for(intent: QuestionIntent) -> tuple[ContextLimitation, ...]:
             "WHOOP provides a current body snapshot synced as of its timestamp, not "
             "dated measurement history. Fewer than two dated measurements are "
             "available, so a weight change cannot be established.",
+            prevents_requested_inference=True,
         ),
     )
 

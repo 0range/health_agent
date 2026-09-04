@@ -100,6 +100,51 @@ def test_missing_evidence_is_local_and_does_not_call_responder() -> None:
     assert responder.calls == []
 
 
+def test_inference_blocking_limitation_is_local_even_with_current_evidence() -> None:
+    limitation = ContextLimitation(
+        ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
+        "A dated trend cannot be established.",
+        prevents_requested_inference=True,
+    )
+    context = _context(
+        intent=QuestionIntent.WEIGHT_TREND, limitations=(limitation,)
+    )
+    responder = FakeResponder("Weight went down. [LAB1]")
+
+    result = HealthQuestionApplicationService(
+        FakeContextBuilder(context), responder
+    ).answer(PROFILE_ID, "Has my weight changed over time?")
+
+    assert result.text == (
+        f"{INSUFFICIENT_EVIDENCE_TEXT}\n\nSources:\n"
+        "- [LAB1] 2026-09-03: Ferritin — 42 ug/L\n\n"
+        "Limitations:\n- A dated trend cannot be established."
+    )
+    assert result.evidence == context.evidence
+    assert result.limitations == (limitation,)
+    assert responder.calls == []
+
+
+def test_model_output_with_missing_or_forged_citations_fails_closed() -> None:
+    context = _context()
+
+    for generated in (
+        "Ferritin is 42.",
+        "Ferritin is 42. [LAB99]",
+        "Ferritin is 42. [LAB1] [LAB99]",
+    ):
+        responder = FakeResponder(generated)
+        result = HealthQuestionApplicationService(
+            FakeContextBuilder(context), responder
+        ).answer(PROFILE_ID, "What does my ferritin show?")
+
+        assert result.safe_error_code is None
+        assert result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+        assert "[LAB99]" not in result.text
+        assert "- [LAB1] 2026-09-03: Ferritin — 42 ug/L" in result.text
+        assert len(responder.calls) == 1
+
+
 def test_context_and_responder_failures_are_stable_and_do_not_disclose_sensitive_data() -> None:
     secret = "sk-test-secret"
     question = "my medical question"
@@ -148,10 +193,11 @@ def _context(
     *,
     evidence: tuple[EvidenceItem, ...] | None = None,
     limitations: tuple[ContextLimitation, ...] = (),
+    intent: QuestionIntent = QuestionIntent.GENERAL,
 ) -> HealthQuestionContext:
     return HealthQuestionContext(
         profile_id=PROFILE_ID,
-        intent=QuestionIntent.GENERAL,
+        intent=intent,
         window_start=NOW,
         window_end=NOW,
         evidence=evidence

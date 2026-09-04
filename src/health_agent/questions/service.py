@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -22,6 +23,8 @@ INSUFFICIENT_EVIDENCE_TEXT = (
     "I don't have enough verified health data in the selected window to answer that "
     "safely."
 )
+
+_CITATION_TOKEN = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*[0-9]+\]")
 
 
 class QuestionAnswerErrorCode(StrEnum):
@@ -91,10 +94,14 @@ class HealthQuestionApplicationService:
         except Exception:  # noqa: BLE001 -- persistence details must not cross this boundary
             return _unavailable(QuestionAnswerErrorCode.CONTEXT_UNAVAILABLE)
 
-        if not context.evidence:
+        if not context.evidence or any(
+            limitation.prevents_requested_inference
+            for limitation in context.limitations
+        ):
             return QuestionAnswerResult(
                 text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
                 safe_error_code=None,
+                evidence=context.evidence,
                 limitations=context.limitations,
             )
 
@@ -112,6 +119,13 @@ class HealthQuestionApplicationService:
         if not isinstance(generated, str) or not generated.strip():
             return _unavailable(
                 QuestionAnswerErrorCode.RESPONDER_UNAVAILABLE,
+                evidence=context.evidence,
+                limitations=context.limitations,
+            )
+        if not _has_only_valid_citations(generated, context):
+            return QuestionAnswerResult(
+                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
+                safe_error_code=None,
                 evidence=context.evidence,
                 limitations=context.limitations,
             )
@@ -146,6 +160,19 @@ def _render_evidence(item: EvidenceItem) -> str:
 
 def _with_footer(answer: str, context: HealthQuestionContext) -> str:
     return f"{answer}\n\n{render_source_footer(context)}"
+
+
+def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bool:
+    """Accept data-bearing model text only when it cites local evidence labels.
+
+    All non-empty contexts sent to a responder can support data-dependent claims, so
+    requiring a citation for every generated answer is deliberately conservative. It
+    avoids trying to infer sentence semantics while making fabricated labels fail closed.
+    """
+
+    labels = set(_CITATION_TOKEN.findall(answer))
+    allowed = {item.citation_label for item in context.evidence}
+    return bool(labels & allowed) and labels <= allowed
 
 
 def _unavailable(

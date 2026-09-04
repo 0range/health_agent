@@ -50,6 +50,7 @@ class ContextLimitation:
 
     code: ContextLimitationCode
     message: str
+    prevents_requested_inference: bool = False
 
 
 @dataclass(frozen=True, slots=True)
