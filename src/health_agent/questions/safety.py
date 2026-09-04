@@ -4,18 +4,30 @@ from __future__ import annotations
 
 import re
 
+_INFORMATIONAL_QUESTION = re.compile(
+    r"""^\s*(?:
+        what|why|how|when|where|can|could|is|are|do|does|
+        что|почему|как|когда|где|какие
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_DIRECT_SUBJECT = re.compile(
+    r"\b(?:i|i'm|i am|my|у меня|мне|я)\b", re.IGNORECASE
+)
+
 _URGENT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\b(?:chest pain|pressure in (?:my )?chest)\b",
-        r"\b(?:can(?:not|'t) breathe|difficulty breathing|shortness of breath)\b",
-        r"\b(?:suicid(?:al|e)|kill myself|harm myself)\b",
+        r"\b(?:chest pain|chest (?:pressure|tightness)|pressure|tightness in (?:my )?chest)\b",
+        r"\b(?:can(?:not|'t) breathe|trouble breathing|difficulty breathing|shortness of breath)\b",
+        r"\b(?:suicid(?:al|e)|kill myself|harm myself|want to die|feel like killing myself)\b",
         r"\b(?:stroke symptoms?|face droop|one[- ]sided weakness)\b",
         r"\b(?:severe|uncontrolled) bleeding\b",
-        r"\b(?:боль|давление) в груди\b",
-        r"\b(?:не могу дышать|трудно дышать|одышк[аи])\b",
-        r"\b(?:суицид|покончить с собой|убить себя|навредить себе)\b",
-        r"\b(?:признаки инсульта|перекосило лицо|слабость с одной стороны)\b",
+        r"(?:болит грудь|(?:бол(?:ит|ь)|дав(?:ит|ление)|тяжесть) в груд(?:и|ь))\b",
+        r"(?:не могу дышать|не хватает воздуха|трудно дышать|задыхаюсь|одышк[аи])\b",
+        r"(?:суицид|покончить с собой|убить себя|навредить себе|хочу умереть)\b",
+        r"(?:признаки инсульта|перекосило лицо|слабость с одной стороны)\b",
         r"\b(?:сильное|неконтролируемое) кровотечение\b",
     )
 )
@@ -28,8 +40,10 @@ URGENT_RESPONSE = (
 
 
 def has_urgent_red_flag(question: str) -> bool:
-    """Return whether wording directly indicates a possible medical emergency."""
+    """Detect direct, high-confidence emergency wording without broad topic alarms."""
 
+    if _INFORMATIONAL_QUESTION.search(question) and not _DIRECT_SUBJECT.search(question):
+        return False
     return any(pattern.search(question) is not None for pattern in _URGENT_PATTERNS)
 
 

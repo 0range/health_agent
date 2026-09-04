@@ -31,6 +31,27 @@ class EvidenceSource(StrEnum):
         return self.value.upper()
 
 
+class EvidenceTimeSemantics(StrEnum):
+    """Meaning of an evidence timestamp, so renderers do not overstate it."""
+
+    OBSERVED = "observed"
+    SYNC_AS_OF = "sync_as_of"
+
+
+class ContextLimitationCode(StrEnum):
+    """Stable reason codes for evidence a responder must qualify."""
+
+    WEIGHT_TREND_INSUFFICIENT_HISTORY = "weight_trend_insufficient_history"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLimitation:
+    """Machine-readable limitation with safe text suitable for a user response."""
+
+    code: ContextLimitationCode
+    message: str
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceItem:
     """One display-ready fact, deliberately excluding raw provenance payloads."""
@@ -41,6 +62,7 @@ class EvidenceItem:
     metric: str
     value: str
     unit: str | None = None
+    time_semantics: EvidenceTimeSemantics = EvidenceTimeSemantics.OBSERVED
 
     @property
     def citation(self) -> str:
@@ -59,6 +81,7 @@ class HealthQuestionContext:
     window_end: datetime
     evidence: tuple[EvidenceItem, ...]
     source_counts: dict[EvidenceSource, int]
+    limitations: tuple[ContextLimitation, ...] = ()
 
     @property
     def citations(self) -> tuple[EvidenceItem, ...]:

@@ -20,7 +20,12 @@ from health_agent.questions.context import (
     detect_intent,
     window_days,
 )
-from health_agent.questions.models import EvidenceSource, QuestionIntent
+from health_agent.questions.models import (
+    ContextLimitationCode,
+    EvidenceSource,
+    EvidenceTimeSemantics,
+    QuestionIntent,
+)
 from health_agent.whoop.models import WhoopConnection
 from health_agent.whoop.normalize import normalize_whoop
 from health_agent.whoop.repository import (
@@ -96,6 +101,7 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
         "sleep",
         {
             "id": "sleep-1",
+            "cycle_id": 2,
             "user_id": 7,
             "start": "2026-09-01T20:00:00Z",
             "end": "2026-09-02T05:00:00Z",
@@ -114,6 +120,7 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
         "recovery",
         {
             "cycle_id": 2,
+            "sleep_id": "sleep-1",
             "user_id": 7,
             "updated_at": "2026-09-03T07:00:00Z",
             "score": {"recovery_score": 82},
@@ -140,6 +147,201 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
     ]
     assert not hasattr(context.evidence[0], "raw_record_id")
     assert not hasattr(context.evidence[0], "external_id")
+    weight = next(item for item in context.evidence if item.source is EvidenceSource.WEIGHT)
+    assert weight.metric == "WHOOP current weight (synced as of)"
+    assert weight.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
+    assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+
+
+def test_recovery_uses_associated_physiological_time_not_update_time(
+    session: Session,
+) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:recovery",)
+    )
+    _store_whoop(
+        session,
+        connection,
+        "sleep",
+        {
+            "id": "old-sleep",
+            "user_id": 7,
+            "start": "2026-08-01T22:00:00Z",
+            "score": {},
+        },
+    )
+    _store_whoop(
+        session,
+        connection,
+        "recovery",
+        {
+            "cycle_id": 1,
+            "sleep_id": "old-sleep",
+            "user_id": 7,
+            "updated_at": "2026-09-04T11:00:00Z",
+            "score": {"recovery_score": 10},
+        },
+    )
+    _store_whoop(
+        session,
+        connection,
+        "sleep",
+        {
+            "id": "recent-sleep",
+            "user_id": 7,
+            "start": "2026-09-03T22:00:00Z",
+            "score": {},
+        },
+    )
+    _store_whoop(
+        session,
+        connection,
+        "recovery",
+        {
+            "cycle_id": 2,
+            "sleep_id": "recent-sleep",
+            "user_id": 7,
+            "updated_at": "2026-08-01T11:00:00Z",
+            "score": {"recovery_score": 80},
+        },
+    )
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
+
+    recoveries = [item for item in context.evidence if item.source is EvidenceSource.RECOVERY]
+    assert [(item.value, item.observed_at) for item in recoveries] == [
+        ("80", datetime(2026, 9, 3, 22, tzinfo=UTC))
+    ]
+
+
+def test_recovery_join_is_profile_and_connection_scoped(session: Session) -> None:
+    other_profile = Profile(id=uuid4(), name="Other")
+    session.add(other_profile)
+    session.flush()
+    primary = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:recovery",)
+    )
+    other = register_authorized_connection(
+        session, other_profile.id, "other", 8, ("read:sleep",)
+    )
+    _store_whoop(
+        session,
+        primary,
+        "recovery",
+        {
+            "cycle_id": 1,
+            "sleep_id": "shared-sleep",
+            "user_id": 7,
+            "score": {"recovery_score": 50},
+        },
+    )
+    _store_whoop(
+        session,
+        other,
+        "sleep",
+        {
+            "id": "shared-sleep",
+            "user_id": 8,
+            "start": "2026-09-03T22:00:00Z",
+            "score": {},
+        },
+    )
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
+
+    assert not [item for item in context.evidence if item.source is EvidenceSource.RECOVERY]
+
+
+def test_recovery_falls_back_to_the_associated_cycle_time(session: Session) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:recovery",)
+    )
+    _store_whoop(
+        session,
+        connection,
+        "cycle",
+        {
+            "id": 2,
+            "user_id": 7,
+            "start": "2026-09-03T08:00:00Z",
+            "score": {},
+        },
+    )
+    _store_whoop(
+        session,
+        connection,
+        "recovery",
+        {
+            "cycle_id": 2,
+            "user_id": 7,
+            "updated_at": "2026-08-01T11:00:00Z",
+            "score": {"recovery_score": 70},
+        },
+    )
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
+
+    recovery = next(item for item in context.evidence if item.source is EvidenceSource.RECOVERY)
+    assert recovery.observed_at == datetime(2026, 9, 3, 8, tzinfo=UTC)
+
+
+def test_weight_trend_marks_a_stale_current_snapshot_as_sync_time(session: Session) -> None:
+    connection = register_authorized_connection(
+        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement",)
+    )
+    stale_sync = NOW - timedelta(days=180)
+    _store_whoop(
+        session,
+        connection,
+        "body",
+        {"height_meter": 1.8, "weight_kilogram": 74.5},
+        fetched_at=stale_sync,
+    )
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW)
+
+    weight = next(item for item in context.evidence if item.source is EvidenceSource.WEIGHT)
+    assert weight.observed_at == stale_sync
+    assert weight.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
+    assert len(context.limitations) == 1
+    assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+
+
+def test_lab_prefers_collection_date_for_window_and_citation(session: Session) -> None:
+    document = Document(
+        profile_id=DEFAULT_PROFILE_ID,
+        sha256=uuid4().hex + uuid4().hex,
+        vault_path="private",
+        media_type="application/pdf",
+        document_type="lab",
+        collected_date=(NOW - timedelta(days=30)).date(),
+        issued_date=(NOW - timedelta(days=31)).date(),
+    )
+    session.add(document)
+    session.flush()
+    session.add(DocumentPage(document_id=document.id, page_number=1, extraction_method="text"))
+    session.flush()
+    session.add(
+        LabObservation(
+            document_id=document.id,
+            page_number=1,
+            canonical_name="Ferritin",
+            source_name="Ferritin",
+            source_value="42",
+            parsed_value=Decimal(42),
+            source_unit="u",
+            normalized_value=Decimal(42),
+            normalized_unit="u",
+            evidence_excerpt="not returned by question context",
+            confidence=Decimal(1),
+            status=ReviewStatus.VERIFIED,
+        )
+    )
+    session.flush()
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "labs", clock=lambda: NOW)
+
+    assert context.evidence[0].observed_at == datetime(2026, 8, 5, tzinfo=UTC)
 
 
 def test_context_returns_empty_evidence_when_no_safe_records(session: Session) -> None:
@@ -195,6 +397,8 @@ def _store_whoop(
     connection: WhoopConnection,
     kind: str,
     payload: dict[str, object],
+    *,
+    fetched_at: datetime = NOW,
 ) -> None:
     record = normalize_whoop(kind, payload)
     store_normalized_record(
@@ -202,5 +406,5 @@ def _store_whoop(
         connection,
         record,
         payload,
-        NOW,
+        fetched_at,
     )

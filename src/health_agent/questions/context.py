@@ -7,13 +7,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, String, and_, cast, func, select
 from sqlalchemy.orm import Session
 
 from health_agent.models import Document, LabObservation, ReviewStatus
 from health_agent.questions.models import (
+    ContextLimitation,
+    ContextLimitationCode,
     EvidenceItem,
     EvidenceSource,
+    EvidenceTimeSemantics,
     HealthQuestionContext,
     QuestionIntent,
 )
@@ -107,12 +110,13 @@ class HealthContextBuilder:
             window_end=window_end,
             evidence=evidence,
             source_counts={source: len(rows_by_source[source]) for source in _SOURCE_ORDER},
+            limitations=_limitations_for(intent),
         )
 
     def _labs(
         self, profile_id: UUID, window_start: datetime, window_end: datetime
     ) -> EvidenceRows:
-        observed_on = func.coalesce(Document.issued_date, Document.collected_date)
+        observed_on = func.coalesce(Document.collected_date, Document.issued_date)
         statement = (
             select(LabObservation, observed_on)
             .join(Document, LabObservation.document_id == Document.id)
@@ -167,27 +171,50 @@ class HealthContextBuilder:
     def _recoveries(
         self, profile_id: UUID, window_start: datetime, window_end: datetime
     ) -> EvidenceRows:
-        statement: Select[tuple[WhoopRecovery]] = (
-            select(WhoopRecovery)
+        """Date recoveries by their associated sleep, falling back to the cycle.
+
+        ``sleep_id`` and ``cycle_id`` are used only inside this normalized,
+        profile-and-connection-scoped join; no external identifier reaches evidence.
+        """
+
+        physiological_at = func.coalesce(WhoopSleep.start_at, WhoopCycle.start_at)
+        statement = (
+            select(WhoopRecovery, physiological_at)
+            .outerjoin(
+                WhoopSleep,
+                and_(
+                    WhoopSleep.profile_id == WhoopRecovery.profile_id,
+                    WhoopSleep.connection_id == WhoopRecovery.connection_id,
+                    WhoopSleep.external_id == WhoopRecovery.sleep_id,
+                ),
+            )
+            .outerjoin(
+                WhoopCycle,
+                and_(
+                    WhoopCycle.profile_id == WhoopRecovery.profile_id,
+                    WhoopCycle.connection_id == WhoopRecovery.connection_id,
+                    WhoopCycle.external_id == cast(WhoopRecovery.cycle_id, String),
+                ),
+            )
             .where(
                 WhoopRecovery.profile_id == profile_id,
-                WhoopRecovery.source_updated_at >= window_start,
-                WhoopRecovery.source_updated_at <= window_end,
+                physiological_at >= window_start,
+                physiological_at <= window_end,
             )
-            .order_by(WhoopRecovery.source_updated_at.desc(), WhoopRecovery.id.desc())
+            .order_by(physiological_at.desc(), WhoopRecovery.id.desc())
             .limit(self._max_items_per_source)
         )
         return tuple(
             EvidenceItem(
                 "",
                 EvidenceSource.RECOVERY,
-                _as_utc(record.source_updated_at),
+                _as_utc(observed_at),
                 "Recovery score",
                 _display_number(record.recovery_score),
                 "%",
             )
-            for record in self._session.scalars(statement)
-            if record.source_updated_at is not None and record.recovery_score is not None
+            for record, observed_at in self._session.execute(statement)
+            if observed_at is not None and record.recovery_score is not None
         )
 
     def _cycles(
@@ -245,14 +272,12 @@ class HealthContextBuilder:
     def _weights(
         self, profile_id: UUID, window_start: datetime, window_end: datetime
     ) -> EvidenceRows:
-        """Use the normalized current snapshot, but still reject stale/future data."""
+        """Return only a current WHOOP body snapshot, never a dated measurement."""
 
         statement: Select[tuple[WhoopBodyCurrent]] = (
             select(WhoopBodyCurrent)
             .where(
                 WhoopBodyCurrent.profile_id == profile_id,
-                WhoopBodyCurrent.observed_at >= window_start,
-                WhoopBodyCurrent.observed_at <= window_end,
                 WhoopBodyCurrent.weight_kilogram.is_not(None),
             )
             .order_by(WhoopBodyCurrent.observed_at.desc(), WhoopBodyCurrent.id.desc())
@@ -262,10 +287,11 @@ class HealthContextBuilder:
             EvidenceItem(
                 "",
                 EvidenceSource.WEIGHT,
-                _as_utc(record.observed_at),
-                "Weight",
+                _as_utc(record.sync_as_of),
+                "WHOOP current weight (synced as of)",
                 _display_number(record.weight_kilogram),
                 "kg",
+                EvidenceTimeSemantics.SYNC_AS_OF,
             )
             for record in self._session.scalars(statement)
             if record.weight_kilogram is not None
@@ -318,9 +344,23 @@ def _label_evidence(
                     metric=item.metric,
                     value=item.value,
                     unit=item.unit,
+                    time_semantics=item.time_semantics,
                 )
             )
     return tuple(labelled)
+
+
+def _limitations_for(intent: QuestionIntent) -> tuple[ContextLimitation, ...]:
+    if intent is not QuestionIntent.WEIGHT_TREND:
+        return ()
+    return (
+        ContextLimitation(
+            ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
+            "WHOOP provides a current body snapshot synced as of its timestamp, not "
+            "dated measurement history. Fewer than two dated measurements are "
+            "available, so a weight change cannot be established.",
+        ),
+    )
 
 
 def _display_hours(milliseconds: int | None) -> str:

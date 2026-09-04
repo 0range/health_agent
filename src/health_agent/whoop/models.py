@@ -212,6 +212,12 @@ class WhoopBodyCurrent(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source_values: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
+    @property
+    def sync_as_of(self) -> datetime:
+        """The time this current-endpoint snapshot was synchronized, not measured."""
+
+        return self.observed_at
+
 
 class WhoopCycle(Base):
     __tablename__ = "whoop_cycles"

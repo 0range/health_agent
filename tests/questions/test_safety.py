@@ -13,8 +13,13 @@ from health_agent.questions.safety import (
     "question",
     (
         "I have chest pain and cannot breathe.",
+        "I have trouble breathing and chest tightness.",
         "У меня боль в груди и мне трудно дышать.",
+        "Болит грудь.",
+        "Мне не хватает воздуха.",
         "I want to kill myself.",
+        "I feel like killing myself.",
+        "Я хочу умереть.",
         "Кажется, это признаки инсульта.",
     ),
 )
@@ -26,3 +31,21 @@ def test_urgent_guard_handles_english_and_russian_red_flags(question: str) -> No
 def test_urgent_guard_does_not_intercept_ordinary_questions() -> None:
     assert not has_urgent_red_flag("How did I sleep last week?")
     assert urgent_response("How did I sleep last week?") is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "What causes chest pain?",
+        "Is chest tightness a symptom of anxiety?",
+        "What causes shortness of breath?",
+        "Что вызывает боль в груди?",
+        "Какие причины одышки?",
+        "What are stroke symptoms?",
+    ),
+)
+def test_urgent_guard_does_not_intercept_generic_information_questions(
+    question: str,
+) -> None:
+    assert not has_urgent_red_flag(question)
+    assert urgent_response(question) is None
