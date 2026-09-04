@@ -48,6 +48,7 @@ from health_agent.whoop.auth_service import (
     validate_whoop_authorization_target,
 )
 from health_agent.whoop.client import WhoopClient
+from health_agent.whoop.dashboard import bootstrap_whoop_dashboard
 from health_agent.whoop.oauth import WhoopOAuth
 from health_agent.whoop.status import get_whoop_status
 from health_agent.whoop.sync import sync_whoop
@@ -215,6 +216,23 @@ def setup_dashboard() -> None:
                 f"card_id={result.card_id}",
                 f"url={result.dashboard_url}",
                 f"admin_email={result.admin_email}",
+            )
+        )
+    )
+
+
+@dashboard_app.command("setup-whoop")
+def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
+    """Provision the profile-isolated WHOOP overview dashboard."""
+    result = bootstrap_whoop_dashboard(Settings(), profile_id)
+    typer.echo(
+        " ".join(
+            (
+                "status=ready",
+                f"profile_id={profile_id}",
+                f"dashboard_id={result.dashboard_id}",
+                f"cards={len(result.card_ids)}",
+                f"url={result.dashboard_url}",
             )
         )
     )

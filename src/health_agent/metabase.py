@@ -527,7 +527,14 @@ def _ensure_card(
 
 
 def _ensure_dashboard_card(
-    client: MetabaseClient, dashboard_id: int, card_id: int
+    client: MetabaseClient,
+    dashboard_id: int,
+    card_id: int,
+    *,
+    row: int = 0,
+    col: int = 0,
+    size_x: int = 24,
+    size_y: int = 8,
 ) -> None:
     dashboard = client.request("GET", f"/api/dashboard/{dashboard_id}")
     if not isinstance(dashboard, dict):
@@ -546,10 +553,10 @@ def _ensure_dashboard_card(
                 {
                     "id": -1,
                     "card_id": card_id,
-                    "row": 0,
-                    "col": 0,
-                    "size_x": 24,
-                    "size_y": 8,
+                    "row": row,
+                    "col": col,
+                    "size_x": size_x,
+                    "size_y": size_y,
                     "parameter_mappings": [],
                     "visualization_settings": {},
                 },
