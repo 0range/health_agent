@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import func, select, text
+from sqlalchemy import Engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -136,3 +136,12 @@ def test_whoop_migration_matches_sqlalchemy_metadata(session: Session) -> None:
     config.attributes["connection"] = connection
 
     command.check(config)
+
+
+def test_whoop_migration_round_trip(engine: Engine) -> None:
+    config = Config("alembic.ini")
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "0004_chart_integrity")
+        command.upgrade(config, "head")
+        command.check(config)

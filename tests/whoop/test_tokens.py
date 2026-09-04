@@ -63,3 +63,15 @@ def test_symlink_token_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(TokenStoreError, match="regular file"):
         store.load("vitalii", "main")
+
+
+def test_symlink_profile_directory_is_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    real_store = TokenStore(outside)
+    real_store.save("vitalii", "main", make_token())
+    linked_root = tmp_path / "tokens"
+    linked_root.mkdir()
+    (linked_root / "vitalii").symlink_to(outside / "vitalii", target_is_directory=True)
+
+    with pytest.raises(TokenStoreError, match="directory"):
+        TokenStore(linked_root).load("vitalii", "main")

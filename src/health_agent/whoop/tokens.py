@@ -123,6 +123,14 @@ class TokenStore:
         target = self._path(profile_slug, account_name)
         if not target.exists():
             return None
+        for directory in (self.root, target.parent):
+            directory_stat = directory.lstat()
+            if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
+                directory_stat.st_mode
+            ):
+                raise TokenStoreError(
+                    "WHOOP token directory is not a regular directory"
+                )
         file_stat = target.lstat()
         if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
             raise TokenStoreError("WHOOP token path is not a regular file")
