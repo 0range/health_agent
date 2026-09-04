@@ -244,9 +244,11 @@ def list_profiles() -> None:
     """List local person profiles without health data."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
-        profiles = session.scalars(select(Profile).order_by(Profile.created_at)).all()
-    for profile in profiles:
-        typer.echo(f"profile_id={profile.id} name={profile.name}")
+        profiles = session.execute(
+            select(Profile.id, Profile.name).order_by(Profile.created_at)
+        ).all()
+    for profile_id, name in profiles:
+        typer.echo(f"profile_id={profile_id} name={name}")
 
 
 @app.command("import-file")
@@ -300,7 +302,11 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
         )
         rows = session.execute(
             select(
-                LabObservation,
+                LabObservation.id,
+                LabObservation.source_name,
+                LabObservation.source_value,
+                LabObservation.source_unit,
+                LabObservation.page_number,
                 filename,
                 Document.id,
                 Document.collected_date,
@@ -311,15 +317,25 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
             .where(Document.profile_id == profile_id)
             .order_by(LabObservation.created_at, LabObservation.id)
         ).all()
-    for observation, filename, document_id, collected_date, issued_date in rows:
+    for (
+        observation_id,
+        source_name,
+        source_value,
+        source_unit,
+        page_number,
+        filename,
+        document_id,
+        collected_date,
+        issued_date,
+    ) in rows:
         typer.echo(
             " ".join(
                 (
-                    f"observation_id={observation.id}",
-                    f"source_name={observation.source_name}",
-                    f"source_value={observation.source_value}",
-                    f"source_unit={observation.source_unit or ''}",
-                    f"page={observation.page_number}",
+                    f"observation_id={observation_id}",
+                    f"source_name={source_name}",
+                    f"source_value={source_value}",
+                    f"source_unit={source_unit or ''}",
+                    f"page={page_number}",
                     f"filename={filename}",
                     f"document_id={document_id}",
                     f"collected_date={collected_date or ''}",
