@@ -1,5 +1,6 @@
 from datetime import date
 from pathlib import Path
+from typing import Annotated
 from uuid import UUID
 
 import typer
@@ -7,6 +8,16 @@ from sqlalchemy import select
 
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
+from health_agent.gmail.api import GoogleGmailGateway
+from health_agent.gmail.config import GmailAccount, GmailProfile
+from health_agent.gmail.oauth import GmailOAuth
+from health_agent.gmail.service import GmailAccountMismatch, GmailService
+from health_agent.gmail.stores import (
+    LocalGmailProfileStore,
+    LocalGmailStateStore,
+    LocalGmailTokenStore,
+)
+from health_agent.gmail.vault_importer import VaultAttachmentImporter
 from health_agent.importer import (
     approve_observation,
     import_document,
@@ -26,8 +37,10 @@ from health_agent.vault import FileVault
 app = typer.Typer(help="Personal Health Agent")
 review_app = typer.Typer(help="Review imported laboratory candidates.")
 dashboard_app = typer.Typer(help="Manage the local Metabase dashboards.")
+gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
+app.add_typer(gmail_app, name="gmail")
 
 
 @app.callback()
@@ -143,6 +156,171 @@ def setup_dashboard() -> None:
             )
         )
     )
+
+
+def _gmail_stores(
+    settings: Settings,
+) -> tuple[LocalGmailProfileStore, LocalGmailTokenStore, LocalGmailStateStore]:
+    return (
+        LocalGmailProfileStore(settings.gmail_root),
+        LocalGmailTokenStore(settings.gmail_root),
+        LocalGmailStateStore(settings.gmail_root),
+    )
+
+
+@gmail_app.command("configure")
+def configure_gmail(
+    profile_id: UUID,
+    account_id: str,
+    lookback_days: int = 7,
+    trusted_sender: Annotated[list[str] | None, typer.Option()] = None,
+) -> None:
+    """Add or update one Gmail account slot for a health profile."""
+    settings = Settings()
+    profiles, _, _ = _gmail_stores(settings)
+    profile = (
+        profiles.load(str(profile_id))
+        if profiles.exists(str(profile_id))
+        else GmailProfile.empty(profile_id)
+    )
+    try:
+        current = profile.account(account_id)
+    except KeyError:
+        current = None
+    account = GmailAccount.create(
+        account_id,
+        initial_lookback_days=lookback_days,
+        trusted_senders=(
+            trusted_sender
+            if trusted_sender is not None
+            else (() if current is None else current.trusted_senders)
+        ),
+    )
+    if current is not None and current.email is not None:
+        account = account.with_email(current.email)
+    profiles.save(profile.upsert_account(account))
+    typer.echo(
+        f"status=configured profile={profile.profile_id} account={account.account_id} "
+        f"lookback_days={account.initial_lookback_days}"
+    )
+
+
+@gmail_app.command("auth")
+def authorize_gmail(profile_id: UUID, account_id: str) -> None:
+    """Authorize one Gmail account through a local Desktop OAuth callback."""
+    settings = Settings()
+    profiles, tokens, _ = _gmail_stores(settings)
+    profile = profiles.load(str(profile_id))
+    account = profile.account(account_id)
+    credentials = GmailOAuth(settings.google_oauth_client_secrets, tokens).authorize(
+        profile.profile_id, account.account_id, force=True
+    )
+    mailbox = GoogleGmailGateway.from_credentials(credentials).get_profile()
+    if account.email is not None and account.email != mailbox.email:
+        tokens.clear(profile.profile_id, account.account_id)
+        raise GmailAccountMismatch(
+            f"Gmail account slot {account.account_id!r} is already bound"
+        )
+    profiles.save(profile.upsert_account(account.with_email(mailbox.email)))
+    typer.echo(
+        f"status=authorized profile={profile.profile_id} "
+        f"account={account.account_id} email={mailbox.email}"
+    )
+
+
+@gmail_app.command("status")
+def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
+    """Show safe local Gmail connection and cursor status."""
+    settings = Settings()
+    profiles, tokens, state = _gmail_stores(settings)
+    profile = profiles.load(str(profile_id))
+    accounts = _selected_gmail_accounts(profile, account_id)
+    for account in accounts:
+        messages, imported, ambiguous = state.counts(
+            profile.profile_id, account.account_id
+        )
+        typer.echo(
+            " ".join(
+                (
+                    "status=configured",
+                    f"profile={profile.profile_id}",
+                    f"account={account.account_id}",
+                    f"authorized={'yes' if tokens.exists(profile.profile_id, account.account_id) else 'no'}",
+                    f"email={account.email or 'unknown'}",
+                    f"cursor={'ready' if state.get_cursor(profile.profile_id, account.account_id) else 'none'}",
+                    f"messages={messages}",
+                    f"imported={imported}",
+                    f"ambiguous={ambiguous}",
+                )
+            )
+        )
+
+
+@gmail_app.command("sync")
+def sync_gmail(
+    profile_id: UUID, account_id: str | None = None, full: bool = False
+) -> None:
+    """Synchronize one or all configured Gmail accounts for a profile."""
+    settings = Settings()
+    profiles, tokens, state = _gmail_stores(settings)
+    profile = profiles.load(str(profile_id))
+    accounts = _selected_gmail_accounts(profile, account_id)
+    failed = False
+    for account in accounts:
+        if not tokens.exists(profile.profile_id, account.account_id):
+            failed = True
+            typer.echo(
+                f"status=failed profile={profile.profile_id} account={account.account_id} "
+                "safe_error=oauth_required"
+            )
+            continue
+        try:
+            credentials = GmailOAuth(
+                settings.google_oauth_client_secrets, tokens
+            ).authorize(profile.profile_id, account.account_id)
+            report = GmailService(
+                profile.profile_id,
+                account,
+                GoogleGmailGateway.from_credentials(credentials),
+                state,
+                VaultAttachmentImporter(
+                    profile.profile_id,
+                    account.account_id,
+                    settings.vault_root,
+                    settings.temporary_root,
+                ),
+            ).sync(full=full)
+        except Exception as error:  # noqa: BLE001 - isolate configured accounts
+            failed = True
+            typer.echo(
+                f"status=failed profile={profile.profile_id} account={account.account_id} "
+                f"safe_error={type(error).__name__}"
+            )
+            continue
+        typer.echo(
+            " ".join(
+                (
+                    "status=synced",
+                    f"profile={report.profile_id}",
+                    f"account={report.account_id}",
+                    f"mode={report.mode}",
+                    f"messages={report.messages_seen}",
+                    f"imported={report.attachments_imported}",
+                    f"ambiguous={report.ambiguous}",
+                    f"ignored={report.ignored}",
+                    f"unchanged={report.unchanged}",
+                    f"removed={report.removed}",
+                )
+            )
+        )
+    if failed:
+        raise typer.Exit(code=1)
+
+
+def _selected_gmail_accounts(
+    profile: GmailProfile, account_id: str | None
+) -> tuple[GmailAccount, ...]:
+    return profile.accounts if account_id is None else (profile.account(account_id),)
 
 
 def main() -> None:

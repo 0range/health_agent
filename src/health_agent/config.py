@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="health_agent", validation_alias="POSTGRES_PASSWORD")
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     vault_root: Path = Field(default=Path("data/vault"), validation_alias="VAULT_ROOT")
+    gmail_root: Path = Field(
+        default=Path("data/google/gmail"), validation_alias="GMAIL_ROOT"
+    )
+    google_oauth_client_secrets: Path = Field(
+        default=Path("data/secrets/google-oauth-client.json"),
+        validation_alias="GOOGLE_OAUTH_CLIENT_SECRETS",
+    )
+    temporary_root: Path = Field(
+        default=Path("data/tmp"), validation_alias="TEMPORARY_ROOT"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )

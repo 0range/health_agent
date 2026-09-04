@@ -8,8 +8,9 @@
 сохраняет оригинал и происхождение данных, отправляет найденные показатели на
 проверку и показывает в Metabase только подтвержденные значения.
 
-Google Drive, Gmail, WHOOP и Telegram входят в следующие срезы; README не выдает
-их за уже работающие интеграции.
+Gmail-коннектор уже реализован и проверен на mocked API; для живой почты ему
+нужен один Desktop OAuth client и однократная авторизация аккаунта. Google Drive,
+WHOOP и Telegram собираются отдельными параллельными срезами.
 
 ## Три команды
 
@@ -45,3 +46,19 @@ Google Drive, Gmail, WHOOP и Telegram входят в следующие сре
 Подробности: [дизайн первой версии](docs/superpowers/specs/2026-09-04-personal-health-agent-v1-design.md),
 [план реализации](docs/superpowers/plans/2026-09-04-health-agent-v1-roadmap.md) и
 [бэклог данных](docs/superpowers/specs/2026-09-04-health-data-backlog-design.md).
+
+## Gmail
+
+У одного профиля может быть несколько почтовых аккаунтов. Первый запуск смотрит
+последние семь дней, дальше использует Gmail history cursor; письма и вложения не
+меняются. Неоднозначные вложения остаются во внутреннем статусе и не требуют
+подтверждения в Telegram.
+
+```bash
+uv run health-agent gmail configure PROFILE_UUID personal
+uv run health-agent gmail auth PROFILE_UUID personal
+uv run health-agent gmail sync PROFILE_UUID personal
+```
+
+Точная OAuth-настройка и правила классификации описаны в
+[инструкции Gmail-коннектора](docs/integrations/gmail.md).
