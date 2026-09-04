@@ -861,7 +861,14 @@ def health_question_status(
     profile_id: UUID = QUESTION_PROFILE_OPTION,
 ) -> None:
     """Show safe readiness and source counts without printing health evidence."""
-    status = question_status(Settings(), profile_id)
+    try:
+        status = question_status(Settings(), profile_id)
+    except Exception:  # noqa: BLE001 -- configuration details must not cross the CLI
+        typer.echo(
+            f"status=unavailable profile_id={profile_id} error=question_unavailable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
     if not status.available:
         typer.echo(
             f"status=unavailable profile_id={profile_id} "
@@ -873,7 +880,7 @@ def health_question_status(
         f"{source.value}={status.source_counts.get(source, 0)}"
         for source in EvidenceSource
     )
-    typer.echo(f"status=ready profile_id={profile_id} {counts}")
+    typer.echo(f"status=ready readiness=local profile_id={profile_id} {counts}")
 
 
 @telegram_app.command("configure-token")
@@ -899,6 +906,7 @@ def run_telegram() -> None:
     """Run the bound private long-poller using only verified local credentials."""
     try:
         runtime = build_telegram_question_runtime(Settings())
+        runtime.poller.validate_startup()
     except Exception:  # noqa: BLE001 -- never expose local credential/configuration data
         typer.echo("status=blocked error=telegram_runtime_unavailable", err=True)
         raise typer.Exit(code=1) from None
@@ -907,6 +915,9 @@ def run_telegram() -> None:
         runtime.poller.run_forever()
     except KeyboardInterrupt:
         typer.echo("status=stopped")
+    except Exception:  # noqa: BLE001 -- poller/state details may contain private paths
+        typer.echo("status=blocked error=telegram_runtime_failed", err=True)
+        raise typer.Exit(code=1) from None
 
 
 @telegram_app.command("bind")

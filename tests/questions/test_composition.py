@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import stat
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
 from health_agent.config import Settings
+from health_agent.importer import ImportReport
 from health_agent.questions.composition import (
     ATTACHMENT_NEEDS_ATTENTION_TEXT,
     SYNC_INSTRUCTIONS,
@@ -13,6 +18,7 @@ from health_agent.questions.composition import (
     QuestionStatus,
     ReadOnlyQuestionCommands,
     TelegramHealthQuestionService,
+    TelegramMedicalInbox,
     build_telegram_question_runtime,
 )
 from health_agent.questions.models import EvidenceSource
@@ -24,6 +30,7 @@ from health_agent.telegram.types import (
     TelegramCommand,
     VerifiedBotCredential,
 )
+from health_agent.vault import FileVault
 
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
 OTHER_PROFILE_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -67,7 +74,10 @@ def test_commands_are_read_only_and_sync_explicitly_directs_to_existing_cli() ->
     assert calls == [PROFILE_ID]
     assert "lab=2" in status
     assert "health-agent gmail sync" in sync
-    assert sync == SYNC_INSTRUCTIONS
+    assert sync.startswith(SYNC_INSTRUCTIONS)
+    assert f"health-agent gmail sync {PROFILE_ID}" in sync
+    assert f"health-agent whoop sync --profile-id {PROFILE_ID}" in sync
+    assert "gmail sync --profile-id" not in sync
 
 
 def test_default_attachment_inbox_is_truthful_needs_attention() -> None:
@@ -79,6 +89,124 @@ def test_default_attachment_inbox_is_truthful_needs_attention() -> None:
     assert receipt.size_bytes == len(b"firstsecond")
     assert receipt.reply_text == ATTACHMENT_NEEDS_ATTENTION_TEXT
     assert "not imported" in receipt.reply_text
+
+
+def test_telegram_pdf_inbox_imports_with_profile_provenance_and_is_replay_safe(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+    temporary_root = tmp_path / "temporary"
+    vault = FileVault(tmp_path / "vault")
+
+    def importer(*args: object, **kwargs: object) -> ImportReport:
+        source = args[2]
+        assert isinstance(source, Path)
+        assert source.read_bytes() == b"pdf bytes"
+        assert stat.S_IMODE(source.stat().st_mode) == 0o600
+        calls.append(dict(kwargs))
+        return ImportReport(
+            "duplicate" if len(calls) == 2 else "imported",
+            "processed",
+            PROFILE_ID,
+            0,
+            0,
+        )
+
+    @contextmanager
+    def sessions(_engine: object):
+        yield object()
+
+    inbox = TelegramMedicalInbox(
+        object(),  # type: ignore[arg-type]
+        vault,
+        temporary_root,
+        importer=importer,  # type: ignore[arg-type]
+        session_scope_factory=sessions,  # type: ignore[arg-type]
+    )
+
+    first = inbox.ingest(_attachment(PROFILE_ID), [b"pdf ", b"bytes"])
+    second = inbox.ingest(_attachment(PROFILE_ID), [b"pdf bytes"])
+
+    assert first.status == "imported"
+    assert second.status == "duplicate"
+    assert first.sha256 == hashlib.sha256(b"pdf bytes").hexdigest()
+    assert first.size_bytes == len(b"pdf bytes")
+    assert all(call["profile_id"] == PROFILE_ID for call in calls)
+    assert all(call["source_provider"] == "telegram" for call in calls)
+    assert all(
+        call["source_external_id"] == _attachment(PROFILE_ID).source_external_id
+        for call in calls
+    )
+    assert list(temporary_root.glob("*")) == []
+
+
+def test_telegram_inbox_fully_consumes_non_pdf_without_importing(tmp_path: Path) -> None:
+    called = False
+
+    def importer(*_args: object, **_kwargs: object) -> ImportReport:
+        nonlocal called
+        called = True
+        raise AssertionError("non-PDF must not reach importer")
+
+    @contextmanager
+    def sessions(_engine: object):
+        yield object()
+
+    provenance = _attachment(PROFILE_ID)
+    non_pdf = replace(provenance, validated_media_type="image/jpeg")
+    inbox = TelegramMedicalInbox(
+        object(),  # type: ignore[arg-type]
+        FileVault(tmp_path / "vault"),
+        tmp_path / "temporary",
+        importer=importer,  # type: ignore[arg-type]
+        session_scope_factory=sessions,  # type: ignore[arg-type]
+    )
+
+    receipt = inbox.ingest(non_pdf, [b"not", b" a PDF"])
+
+    assert not called
+    assert receipt.status == "needs_attention"
+    assert receipt.sha256 == hashlib.sha256(b"not a PDF").hexdigest()
+    assert "not imported" in receipt.reply_text
+    assert list((tmp_path / "temporary").glob("*")) == []
+
+
+def test_telegram_inbox_rejects_symlinked_temporary_root(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    temporary = tmp_path / "temporary"
+    temporary.symlink_to(target, target_is_directory=True)
+    inbox = TelegramMedicalInbox(
+        object(),  # type: ignore[arg-type]
+        FileVault(tmp_path / "vault"),
+        temporary,
+    )
+
+    try:
+        inbox.ingest(_attachment(PROFILE_ID), [b"pdf bytes"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("symlinked temporary root was accepted")
+
+    assert list(target.iterdir()) == []
+
+
+def test_telegram_inbox_removes_temporary_bytes_on_invalid_stream(tmp_path: Path) -> None:
+    inbox = TelegramMedicalInbox(
+        object(),  # type: ignore[arg-type]
+        FileVault(tmp_path / "vault"),
+        tmp_path / "temporary",
+    )
+
+    try:
+        inbox.ingest(_attachment(PROFILE_ID), [b"pdf bytes", "invalid"])  # type: ignore[list-item]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("invalid attachment stream was accepted")
+
+    assert list((tmp_path / "temporary").glob("*")) == []
 
 
 def test_runtime_composition_verifies_local_credential_without_printing_or_network(
@@ -95,8 +223,12 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
         def load_verified(self) -> VerifiedBotCredential:
             return VerifiedBotCredential(token, 99, "safe_bot")
 
+    registrations: list[tuple[int, str | None]] = []
+
     class State:
-        pass
+
+        def register_bot(self, bot_id: int, username: str | None) -> None:
+            registrations.append((bot_id, username))
 
     gateway = SimpleNamespace()
     poller = SimpleNamespace(run_forever=lambda: None)
@@ -125,12 +257,14 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
         messenger_factory=lambda *_: SimpleNamespace(),  # type: ignore[arg-type]
         update_service_factory=update_factory,  # type: ignore[arg-type]
         poller_factory=poller_factory,  # type: ignore[arg-type]
+        medical_inbox=NeedsAttentionMedicalInbox(),
         status_reader=lambda _: QuestionStatus(True, {}),
     )
 
     assert runtime.poller is poller
     assert captured["poller_args"][:2] == (99, gateway)
     assert captured["poller_args"][-1] is captured["updates"]
+    assert registrations == [(99, "safe_bot")]
     assert token not in repr(captured)
 
 

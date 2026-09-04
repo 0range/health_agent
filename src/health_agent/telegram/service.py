@@ -448,6 +448,19 @@ class TelegramLongPoller:
         self.sleeper = sleeper
         self._identity_verified = False
 
+    def validate_startup(self) -> None:
+        """Verify the local credential namespace before reporting a running poller."""
+
+        try:
+            if _gateway_bot_id(self.gateway.get_me()) != self.bot_id:
+                raise TelegramAPIError("bot_identity_mismatch")
+            if self.gateway.get_webhook_url():
+                raise TelegramWebhookConfigured()
+            self._identity_verified = True
+        except TelegramAPIError as error:
+            self.state.record_poll(self.bot_id, error.safe_error_code)
+            raise
+
     def poll_once(self) -> PollReport:
         try:
             if not self._identity_verified:

@@ -75,10 +75,28 @@ def test_question_status_shows_only_counts_and_safe_error_codes(monkeypatch) -> 
     assert "Ferritin" not in result.stdout
 
 
+def test_question_status_does_not_report_a_nonexistent_profile_as_ready(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "question_status",
+        lambda _, __: QuestionStatus(False, {}, "context_unavailable"),
+    )
+
+    result = CliRunner().invoke(app, ["question", "status", "--profile-id", PROFILE_ID])
+
+    assert result.exit_code == 1
+    assert "status=ready" not in result.output
+    assert "status=unavailable" in result.output
+    assert "error=context_unavailable" in result.output
+
+
 def test_telegram_run_handles_interrupt_and_never_prints_credential(monkeypatch) -> None:
     token = "123:telegram-secret"
 
     class Poller:
+        def validate_startup(self) -> None:
+            return None
+
         def run_forever(self) -> None:
             raise KeyboardInterrupt
 
@@ -93,6 +111,30 @@ def test_telegram_run_handles_interrupt_and_never_prints_credential(monkeypatch)
     assert result.exit_code == 0
     assert result.stdout == "status=running\nstatus=stopped\n"
     assert token not in result.output
+
+
+def test_telegram_run_reports_only_a_safe_code_for_runtime_error(monkeypatch) -> None:
+    secret = "telegram-private-path-or-token"
+
+    class Poller:
+        def validate_startup(self) -> None:
+            return None
+
+        def run_forever(self) -> None:
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        cli_module,
+        "build_telegram_question_runtime",
+        lambda _: SimpleNamespace(poller=Poller()),
+    )
+
+    result = CliRunner().invoke(app, ["telegram", "run"])
+
+    assert result.exit_code == 1
+    assert result.stdout == "status=running\n"
+    assert "status=blocked error=telegram_runtime_failed" in result.output
+    assert secret not in result.output
 
 
 def test_question_result_error_exits_without_exposing_request(monkeypatch) -> None:

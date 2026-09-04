@@ -16,14 +16,25 @@
   boundary, including credential store, state, gateway, responder/application,
   messenger, update service, and poller.
 
-## Attachment limitation
+## Review corrections
 
-There is no existing Telegram-specific atomic medical inbox implementation in
-this repository. The production default therefore consumes the already staged,
-signature-validated stream and records `needs_attention`; its reply explicitly
-states that the attachment was **not imported**. A deployment that supplies a
-real `MedicalInbox` receives it unchanged through
-`build_telegram_question_runtime(..., medical_inbox=...)`.
+- `telegram run` now idempotently registers the locally verified bot namespace
+  before constructing the poller and validates bot identity/webhook state before
+  it prints `status=running`.
+- The default Telegram inbox now writes only a private transient copy of the
+  fully staged attachment, rejects symlinked temporary roots, and imports
+  validated PDFs through `FileVault` and `import_document` with the bound
+  `profile_id` and Telegram `source_external_id`. It removes transient bytes on
+  every success or failure path. Replays retain importer provenance and return a
+  truthful duplicate receipt; validated non-PDFs fully consume/hash then return
+  `needs_attention` without claiming an import.
+- `/sync` now names the bound profile and uses the actual commands:
+  `health-agent gmail sync PROFILE_UUID` and
+  `health-agent whoop sync --profile-id PROFILE_UUID`.
+- Database-backed question context rejects unknown profiles. Status checks the
+  same local responder construction used by `ask`, and both status setup and
+  post-start poller failures emit stable, secret-free CLI codes. Its
+  `readiness=local` field deliberately does not claim a remote OpenAI probe.
 
 ## Safety behavior
 
@@ -38,18 +49,17 @@ real `MedicalInbox` receives it unchanged through
 Executed on 2026-09-04:
 
 ```text
-uv run pytest tests/questions/test_composition.py tests/questions/test_cli.py \
-  tests/questions/test_service.py tests/questions/test_openai.py \
-  tests/questions/test_config.py tests/telegram/test_service.py -q
-54 passed
+uv run pytest tests/questions/test_composition.py tests/questions/test_cli.py -q
+15 passed
 
 uv run ruff check src/health_agent/questions/composition.py \
-  src/health_agent/cli.py tests/questions/test_composition.py \
-  tests/questions/test_cli.py
+  src/health_agent/cli.py src/health_agent/telegram/service.py \
+  tests/questions/test_composition.py tests/questions/test_cli.py
 All checks passed!
 
-uv run mypy src/health_agent/questions/composition.py src/health_agent/cli.py
-Success: no issues found in 2 source files
+uv run mypy src/health_agent/questions/composition.py src/health_agent/cli.py \
+  src/health_agent/telegram/service.py
+Success: no issues found in 3 source files
 ```
 
 `health-agent question --help` and `health-agent telegram --help` also expose
