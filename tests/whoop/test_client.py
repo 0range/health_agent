@@ -12,9 +12,11 @@ from health_agent.whoop.client import (
     CYCLE_PATH,
     PROFILE_PATH,
     WhoopApiError,
+    WhoopAuthorizationRequired,
     WhoopClient,
+    WhoopRateLimitDeferred,
 )
-from health_agent.whoop.oauth import WhoopOAuth
+from health_agent.whoop.oauth import WHOOP_SCOPES, WhoopOAuth
 from health_agent.whoop.tokens import TokenStore, WhoopToken
 
 
@@ -34,7 +36,7 @@ def make_client(
             access_token="old-access",
             refresh_token="old-refresh",
             expires_at=datetime.now(UTC) + timedelta(seconds=-1 if expired else 3600),
-            scopes=("offline", "read:profile"),
+            scopes=WHOOP_SCOPES,
         ),
     )
     oauth = WhoopOAuth(
@@ -49,7 +51,7 @@ def make_client(
                         "access_token": "new-access",
                         "refresh_token": "new-refresh",
                         "expires_in": 3600,
-                        "scope": "offline read:profile",
+                        "scope": " ".join(WHOOP_SCOPES),
                     },
                 )
             )
@@ -113,13 +115,32 @@ def test_429_uses_documented_reset_header_before_retry(tmp_path: Path) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            return httpx.Response(429, headers={"X-RateLimit-Reset": "3600"})
+            return httpx.Response(429, headers={"X-RateLimit-Reset": "30"})
         return httpx.Response(200, json={"user_id": 1})
 
     client, _ = make_client(tmp_path, httpx.MockTransport(handler), sleeper=sleeps)
 
     assert client.get_object(PROFILE_PATH) == {"user_id": 1}
-    assert sleeps == [3600.0]
+    assert sleeps == [30.0]
+
+
+def test_long_rate_limit_is_deferred_without_sleeping(tmp_path: Path) -> None:
+    sleeps: list[float] = []
+    now = datetime(2026, 9, 4, 10, tzinfo=UTC)
+    client, _ = make_client(
+        tmp_path,
+        httpx.MockTransport(
+            lambda request: httpx.Response(429, headers={"X-RateLimit-Reset": "3600"})
+        ),
+        sleeper=sleeps,
+    )
+    client._clock = lambda: now
+
+    with pytest.raises(WhoopRateLimitDeferred) as caught:
+        client.get_object(PROFILE_PATH)
+
+    assert caught.value.retry_at == datetime(2026, 9, 4, 11, tzinfo=UTC)
+    assert sleeps == []
 
 
 def test_401_refreshes_rotated_token_and_retries_once(tmp_path: Path) -> None:
@@ -131,9 +152,7 @@ def test_401_refreshes_rotated_token_and_retries_once(tmp_path: Path) -> None:
             return httpx.Response(401)
         return httpx.Response(200, json={"user_id": 1})
 
-    client, store = make_client(
-        tmp_path, httpx.MockTransport(handler), max_attempts=1
-    )
+    client, store = make_client(tmp_path, httpx.MockTransport(handler), max_attempts=1)
 
     assert client.get_object(PROFILE_PATH) == {"user_id": 1}
     assert authorizations == ["Bearer old-access", "Bearer new-access"]
@@ -152,6 +171,93 @@ def test_expired_token_refreshes_before_api_request(tmp_path: Path) -> None:
     client.get_object(PROFILE_PATH)
 
     assert authorizations == ["Bearer new-access"]
+
+
+def test_refresh_with_reduced_scopes_requires_reauthorization_and_is_not_saved(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = WhoopToken(
+        "expired-access",
+        "old-refresh",
+        datetime.now(UTC) - timedelta(seconds=1),
+        WHOOP_SCOPES,
+    )
+    store.save("vitalii", "main", previous)
+    oauth = WhoopOAuth(
+        "client-id",
+        "client-secret",
+        "http://127.0.0.1:8765/callback",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "access_token": "reduced-access",
+                        "refresh_token": "reduced-refresh",
+                        "expires_in": 3600,
+                        "scope": "offline read:profile",
+                    },
+                )
+            )
+        ),
+    )
+    client = WhoopClient(
+        oauth,
+        store,
+        "vitalii",
+        "main",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("API request was not expected")
+            )
+        ),
+    )
+
+    with pytest.raises(WhoopAuthorizationRequired, match="missing required scopes"):
+        client.get_object(PROFILE_PATH)
+
+    assert store.load("vitalii", "main") == previous
+
+
+def test_existing_token_with_reduced_scopes_requires_reauthorization(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    store.save(
+        "vitalii",
+        "main",
+        WhoopToken(
+            "access",
+            "refresh",
+            datetime.now(UTC) + timedelta(hours=1),
+            ("offline", "read:profile"),
+        ),
+    )
+    oauth = WhoopOAuth(
+        "client-id",
+        "client-secret",
+        "http://127.0.0.1:8765/callback",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("OAuth request was not expected")
+            )
+        ),
+    )
+    client = WhoopClient(
+        oauth,
+        store,
+        "vitalii",
+        "main",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("API request was not expected")
+            )
+        ),
+    )
+
+    with pytest.raises(WhoopAuthorizationRequired, match="missing required scopes"):
+        client.get_object(PROFILE_PATH)
 
 
 def test_ordinary_client_error_is_not_retried_or_leaked(tmp_path: Path) -> None:
@@ -180,7 +286,7 @@ def test_concurrent_clients_rotate_one_refresh_token_only_once(tmp_path: Path) -
             access_token="expired-access",
             refresh_token="single-use-refresh",
             expires_at=datetime.now(UTC) - timedelta(seconds=1),
-            scopes=("offline", "read:profile"),
+            scopes=WHOOP_SCOPES,
         ),
     )
     refresh_calls = 0
@@ -196,7 +302,7 @@ def test_concurrent_clients_rotate_one_refresh_token_only_once(tmp_path: Path) -
                 "access_token": "rotated-access",
                 "refresh_token": "rotated-refresh",
                 "expires_in": 3600,
-                "scope": "offline read:profile",
+                "scope": " ".join(WHOOP_SCOPES),
             },
         )
 
@@ -221,7 +327,9 @@ def test_concurrent_clients_rotate_one_refresh_token_only_once(tmp_path: Path) -
     ]
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda client: client.get_object(PROFILE_PATH), clients))
+        results = list(
+            executor.map(lambda client: client.get_object(PROFILE_PATH), clients)
+        )
 
     assert results == [{"user_id": 1}, {"user_id": 1}]
     assert refresh_calls == 1

@@ -114,3 +114,17 @@ def test_fractional_recovery_value_and_full_source_are_preserved() -> None:
 def test_missing_identity_is_rejected() -> None:
     with pytest.raises(WhoopNormalizationError, match="id"):
         normalize_whoop("workout", {"start": "2026-09-01T00:00:00Z"})
+
+
+@pytest.mark.parametrize(
+    ("resource_kind", "payload"),
+    (
+        ("profile", {"user_id": "not-an-integer"}),
+        ("recovery", {"cycle_id": "not-an-integer", "user_id": 10129}),
+    ),
+)
+def test_invalid_numeric_identity_is_safe_normalization_error(
+    resource_kind: str, payload: dict[str, object]
+) -> None:
+    with pytest.raises(WhoopNormalizationError, match="invalid"):
+        normalize_whoop(resource_kind, payload)

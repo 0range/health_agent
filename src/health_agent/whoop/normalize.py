@@ -58,12 +58,12 @@ def normalize_whoop(
 def _normalize_profile(
     payload: dict[str, Any],
 ) -> tuple[str, datetime | None, dict[str, Any]]:
-    user_id = _required_id(payload, "user_id")
+    user_id = _required_integer(payload, "user_id")
     return (
-        user_id,
+        str(user_id),
         None,
         {
-            "external_user_id": int(user_id),
+            "external_user_id": user_id,
             "email": _optional_string(payload, "email"),
             "first_name": _optional_string(payload, "first_name"),
             "last_name": _optional_string(payload, "last_name"),
@@ -112,13 +112,14 @@ def _normalize_cycle(
 def _normalize_recovery(
     payload: dict[str, Any],
 ) -> tuple[str, datetime | None, dict[str, Any]]:
-    external_id = _required_id(payload, "cycle_id")
+    cycle_id = _required_integer(payload, "cycle_id")
+    external_id = str(cycle_id)
     score = _score(payload)
     return (
         external_id,
         _datetime(payload.get("updated_at")),
         {
-            "cycle_id": int(external_id),
+            "cycle_id": cycle_id,
             "sleep_id": _optional_string(payload, "sleep_id"),
             "external_user_id": _required_integer(payload, "user_id"),
             "score_state": _optional_string(payload, "score_state"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -18,8 +19,9 @@ from health_agent.whoop.client import (
     WORKOUT_PATH,
     WhoopApiError,
     WhoopAuthorizationRequired,
+    WhoopRateLimitDeferred,
 )
-from health_agent.whoop.models import WhoopSyncRun
+from health_agent.whoop.models import WhoopConnection, WhoopSyncRun
 from health_agent.whoop.normalize import WhoopNormalizationError, normalize_whoop
 from health_agent.whoop.repository import (
     StoredRecord,
@@ -32,6 +34,10 @@ INCREMENTAL_OVERLAP = timedelta(days=7)
 
 
 class WhoopDataClient(Protocol):
+    def operation(self) -> AbstractContextManager[None]: ...
+
+    def recover_token(self, committed_generation: UUID | None) -> None: ...
+
     def get_object(self, path: str) -> dict[str, Any]: ...
 
     def iter_collection_pages(
@@ -53,6 +59,7 @@ class WhoopSyncReport:
     normalized_updated: int
     unchanged: int
     safe_error_code: str | None = None
+    retry_at: datetime | None = None
 
 
 def sync_whoop(
@@ -68,7 +75,52 @@ def sync_whoop(
     sync_time = now or datetime.now(UTC)
     if sync_time.tzinfo is None:
         raise ValueError("WHOOP sync time must be timezone-aware")
-    connection = get_connection(session, profile_id, account_name, for_update=True)
+    try:
+        with client.operation():
+            connection = get_connection(
+                session, profile_id, account_name, for_update=True
+            )
+            return _sync_whoop_locked(
+                session,
+                profile_id,
+                connection,
+                client,
+                full=full,
+                sync_time=sync_time,
+            )
+    except WhoopAuthorizationRequired:
+        connection = get_connection(session, profile_id, account_name, for_update=True)
+        requested_from = (
+            None
+            if full or connection.last_success_at is None
+            else connection.last_success_at - INCREMENTAL_OVERLAP
+        )
+        mode = "backfill" if requested_from is None else "incremental"
+        connection.last_attempt_at = sync_time
+        run = WhoopSyncRun(
+            profile_id=profile_id,
+            connection_id=connection.id,
+            mode=mode,
+            status="running",
+            requested_from=requested_from,
+            started_at=sync_time,
+        )
+        session.add(run)
+        session.flush()
+        return _fail_sync(
+            run, connection, mode, requested_from, "reauth_required", sync_time
+        )
+
+
+def _sync_whoop_locked(
+    session: Session,
+    profile_id: UUID,
+    connection: WhoopConnection,
+    client: WhoopDataClient,
+    *,
+    full: bool,
+    sync_time: datetime,
+) -> WhoopSyncReport:
     if connection.auth_status != "connected":
         raise WhoopRepositoryError("WHOOP account is not ready to synchronize")
     requested_from = (
@@ -91,6 +143,7 @@ def sync_whoop(
     counts = StoredRecord()
 
     try:
+        client.recover_token(connection.token_generation)
         with session.begin_nested():
             profile_payload = client.get_object(PROFILE_PATH)
             profile_record = normalize_whoop("profile", profile_payload)
@@ -147,6 +200,10 @@ def sync_whoop(
         return _fail_sync(
             run, connection, mode, requested_from, "reauth_required", sync_time
         )
+    except WhoopRateLimitDeferred as error:
+        return _defer_sync(
+            run, connection, mode, requested_from, error.retry_at, sync_time
+        )
     except (
         WhoopApiError,
         WhoopNormalizationError,
@@ -158,6 +215,7 @@ def sync_whoop(
         )
 
     connection.last_success_at = sync_time
+    connection.retry_at = None
     connection.last_error_code = None
     connection.auth_status = "connected"
     run.status = "succeeded"
@@ -186,6 +244,7 @@ def _fail_sync(
     run.safe_error_code = error_code
     run.completed_at = completed_at
     connection.last_error_code = error_code
+    connection.retry_at = None
     if error_code == "reauth_required":
         connection.auth_status = "reauth_required"
     return WhoopSyncReport(
@@ -197,6 +256,33 @@ def _fail_sync(
         normalized_updated=0,
         unchanged=0,
         safe_error_code=error_code,
+    )
+
+
+def _defer_sync(
+    run: WhoopSyncRun,
+    connection: Any,
+    mode: str,
+    requested_from: datetime | None,
+    retry_at: datetime,
+    completed_at: datetime,
+) -> WhoopSyncReport:
+    run.status = "deferred"
+    run.safe_error_code = "rate_limited"
+    run.retry_at = retry_at
+    run.completed_at = completed_at
+    connection.last_error_code = "rate_limited"
+    connection.retry_at = retry_at
+    return WhoopSyncReport(
+        status="deferred",
+        mode=mode,
+        requested_from=requested_from,
+        raw_created=0,
+        normalized_created=0,
+        normalized_updated=0,
+        unchanged=0,
+        safe_error_code="rate_limited",
+        retry_at=retry_at,
     )
 
 

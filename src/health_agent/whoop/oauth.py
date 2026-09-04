@@ -26,6 +26,10 @@ class WhoopOAuthError(RuntimeError):
     """Safe OAuth failure without a response body or credential value."""
 
 
+class WhoopOAuthScopesError(WhoopOAuthError):
+    """A refreshed grant no longer contains every required WHOOP scope."""
+
+
 class WhoopOAuth:
     def __init__(
         self,
@@ -86,7 +90,7 @@ class WhoopOAuth:
         )
 
     def refresh(self, refresh_token: str) -> WhoopToken:
-        return self._request_token(
+        token = self._request_token(
             {
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -95,6 +99,9 @@ class WhoopOAuth:
                 "scope": "offline",
             }
         )
+        if set(WHOOP_SCOPES).difference(token.scopes):
+            raise WhoopOAuthScopesError("WHOOP refresh did not grant required scopes")
+        return token
 
     def _request_token(self, data: dict[str, str]) -> WhoopToken:
         try:

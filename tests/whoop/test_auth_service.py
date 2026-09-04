@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Thread
 from time import sleep
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
@@ -141,16 +142,28 @@ def test_publish_restores_good_token_when_database_commit_fails(
         "health_agent.whoop.auth_service.validate_registration_target",
         lambda session, profile_id, account: events.append("validated"),
     )
+
+    def register(*args: object) -> SimpleNamespace:
+        events.append("registered")
+        return SimpleNamespace()
+
     monkeypatch.setattr(
-        "health_agent.whoop.auth_service.register_authorized_connection",
-        lambda *args: events.append("registered"),
+        "health_agent.whoop.auth_service.register_authorized_connection", register
     )
+    monkeypatch.setattr(
+        "health_agent.whoop.auth_service._committed_token_generation",
+        lambda *args: None,
+    )
+    session_calls = 0
 
     @contextmanager
     def failing_session() -> Iterator[object]:
+        nonlocal session_calls
+        session_calls += 1
         yield object()
-        events.append("commit")
-        raise RuntimeError("database commit failed")
+        if session_calls == 2:
+            events.append("commit")
+            raise RuntimeError("database commit failed")
 
     with pytest.raises(RuntimeError, match="database commit"):
         publish_whoop_authorization(
@@ -175,6 +188,10 @@ def test_invalid_local_target_fails_before_oauth_can_start(
         lambda session, profile_id, account: (_ for _ in ()).throw(
             WhoopRepositoryError("Health profile does not exist")
         ),
+    )
+    monkeypatch.setattr(
+        "health_agent.whoop.auth_service._committed_token_generation",
+        lambda *args: None,
     )
 
     with pytest.raises(WhoopRepositoryError, match="does not exist"):

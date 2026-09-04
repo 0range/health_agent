@@ -14,7 +14,8 @@
 - Scopes: `offline read:profile read:body_measurement read:cycles read:recovery read:sleep read:workout`.
 - Один профиль может иметь несколько WHOOP-аккаунтов; токены, raw и normalized данные всегда изолированы по `profile_id` и `connection_id`.
 - Access token, refresh token и client secret не попадают в PostgreSQL, Git, stdout, исключения или тестовые fixtures.
-- Token directory имеет mode `0700`, token file — `0600`; запись атомарная.
+- Token directory имеет mode `0700`, token/journal files — `0600`; запись
+  атомарная, а DB-coordinated journal восстанавливает прерванную публикацию.
 - Backfill идёт до пустого `next_token`; incremental повторно захватывает последние семь дней и остаётся идемпотентным.
 - `429` уважает `X-RateLimit-Reset`, а `429`/`5xx`/transport errors повторяются с ограниченным backoff.
 - Вес WHOOP — только текущий снимок на время получения, не историческое взвешивание.
@@ -104,8 +105,8 @@
 **Interfaces:**
 - Produces: `health-agent whoop auth|status|sync --profile-id <uuid> --account <name>`.
 
-- [x] `auth` validates the local target, opens the official page, verifies scopes/user, and atomically publishes token plus database registration.
-- [x] `status` validates the local token and prints connection/freshness/counts without personal fields or secrets.
+- [x] `auth` validates the local target, opens the official page, verifies scopes/user, and durably coordinates token publication with database `token_generation`.
+- [x] `status` recovers interrupted publication, validates expiry/required scopes, and prints connection/freshness/counts without personal fields or secrets.
 - [x] `sync` selects one profile/account and supports `--full`; default is incremental.
 - [x] Clearly state that mocked tests do not mean a live WHOOP account is authorized.
 - [x] Run CLI tests and commit.

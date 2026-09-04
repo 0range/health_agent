@@ -232,6 +232,7 @@ def whoop_status(
     last_success = (
         status.last_success_at.isoformat() if status.last_success_at else "never"
     )
+    retry_at = status.retry_at.isoformat() if status.retry_at else "none"
     typer.echo(
         " ".join(
             (
@@ -239,6 +240,7 @@ def whoop_status(
                 f"auth={status.auth_status}",
                 f"token={status.token_status}",
                 f"last_success={last_success}",
+                f"retry_at={retry_at}",
                 f"error={status.last_error_code or 'none'}",
                 f"weight_available={str(status.weight_available).lower()}",
                 f"cycles={status.cycle_count}",
@@ -261,14 +263,22 @@ def whoop_sync(
     """Backfill or incrementally synchronize one WHOOP account."""
     settings = Settings()
     oauth = _whoop_oauth(settings)
+    token_store = TokenStore(settings.whoop_token_root)
     client = WhoopClient(
         oauth,
-        TokenStore(settings.whoop_token_root),
+        token_store,
         str(profile_id),
         account,
     )
     with session_scope(build_engine(settings)) as session:
-        report = sync_whoop(session, profile_id, account, client, full=full)
+        report = sync_whoop(
+            session,
+            profile_id,
+            account,
+            client,
+            full=full,
+        )
+    retry_at = report.retry_at.isoformat() if report.retry_at else "none"
     typer.echo(
         " ".join(
             (
@@ -279,10 +289,11 @@ def whoop_sync(
                 f"updated={report.normalized_updated}",
                 f"unchanged={report.unchanged}",
                 f"error={report.safe_error_code or 'none'}",
+                f"retry_at={retry_at}",
             )
         )
     )
-    if report.status != "succeeded":
+    if report.status not in {"succeeded", "deferred"}:
         raise typer.Exit(code=1)
 
 
@@ -302,12 +313,12 @@ def _medical_date(option_name: str, value: str | None) -> date | None:
 
 
 def _whoop_oauth(settings: Settings) -> WhoopOAuth:
-    if settings.whoop_client_id is None or settings.whoop_client_secret is None:
-        raise typer.BadParameter(
-            "set WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET before connecting WHOOP"
-        )
+    try:
+        client_id, client_secret = settings.load_whoop_client_credentials()
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
     return WhoopOAuth(
-        settings.whoop_client_id,
-        settings.whoop_client_secret.get_secret_value(),
+        client_id,
+        client_secret.get_secret_value(),
         settings.whoop_redirect_uri,
     )

@@ -48,9 +48,7 @@ def _raw_fk(table: str) -> sa.ForeignKeyConstraint:
     )
 
 
-def _normalized_identity(
-    table: str, resource_kind: str
-) -> tuple[sa.SchemaItem, ...]:
+def _normalized_identity(table: str, resource_kind: str) -> tuple[sa.SchemaItem, ...]:
     return (
         _connection_fk(table),
         _raw_fk(table),
@@ -78,8 +76,10 @@ def upgrade() -> None:
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
         ),
+        sa.Column("token_generation", sa.Uuid(), nullable=True),
         sa.Column("last_attempt_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_success_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error_code", sa.String(length=100), nullable=True),
         sa.Column(
             "created_at",
@@ -118,6 +118,7 @@ def upgrade() -> None:
         sa.Column("mode", sa.String(length=32), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("requested_from", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("raw_created", sa.Integer(), nullable=False),
@@ -241,9 +242,7 @@ def _history_columns() -> list[sa.Column[object]]:
     ]
 
 
-def _history_constraints(
-    table: str, resource_kind: str
-) -> tuple[sa.SchemaItem, ...]:
+def _history_constraints(table: str, resource_kind: str) -> tuple[sa.SchemaItem, ...]:
     return (
         *_normalized_identity(table, resource_kind),
         sa.PrimaryKeyConstraint("id"),
@@ -423,7 +422,7 @@ def _create_views() -> None:
     op.execute(
         "CREATE VIEW whoop_source_status AS "
         "SELECT c.profile_id, c.id AS connection_id, c.account_name, c.auth_status, "
-        "c.last_attempt_at, c.last_success_at, c.last_error_code, "
+        "c.last_attempt_at, c.last_success_at, c.retry_at, c.last_error_code, "
         "(SELECT count(*) FROM whoop_cycles x WHERE x.profile_id = c.profile_id "
         "AND x.connection_id = c.id) AS cycle_count, "
         "(SELECT count(*) FROM whoop_recoveries x WHERE x.profile_id = c.profile_id "

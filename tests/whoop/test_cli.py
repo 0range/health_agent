@@ -46,6 +46,7 @@ def test_status_prints_only_safe_freshness_and_counts(monkeypatch: Any) -> None:
             "ready",
             datetime(2026, 9, 4, tzinfo=UTC),
             None,
+            None,
             True,
             100,
             99,

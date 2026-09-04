@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 import httpx
 
-from health_agent.whoop.oauth import WhoopOAuth, WhoopOAuthError
+from health_agent.whoop.oauth import (
+    WHOOP_SCOPES,
+    WhoopOAuth,
+    WhoopOAuthError,
+    WhoopOAuthScopesError,
+)
 from health_agent.whoop.tokens import TokenStore, TokenStoreError, WhoopToken
 
 API_BASE_URL = "https://api.prod.whoop.com/developer"
@@ -28,6 +35,14 @@ class WhoopAuthorizationRequired(WhoopApiError):
     """The account must repeat the human OAuth step."""
 
 
+class WhoopRateLimitDeferred(WhoopApiError):
+    """WHOOP asked the caller to resume after a future instant."""
+
+    def __init__(self, retry_at: datetime) -> None:
+        super().__init__("WHOOP synchronization is deferred by rate limiting")
+        self.retry_at = retry_at
+
+
 def _iso8601(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("WHOOP date bounds must be timezone-aware")
@@ -46,7 +61,9 @@ class WhoopClient:
         *,
         http_client: httpx.Client | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        clock: Callable[[], datetime] | None = None,
         max_attempts: int = 4,
+        max_inline_wait_seconds: float = 60,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -56,7 +73,30 @@ class WhoopClient:
         self._account_name = account_name
         self._http = http_client or httpx.Client(timeout=30)
         self._sleep = sleeper
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._max_attempts = max_attempts
+        self._max_inline_wait_seconds = max_inline_wait_seconds
+
+    @contextmanager
+    def operation(self) -> Iterator[None]:
+        """Take the global outer account lock before database or token locks."""
+        try:
+            with self._tokens.operation(self._profile_slug, self._account_name):
+                yield
+        except TokenStoreError as error:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization storage is unavailable"
+            ) from error
+
+    def recover_token(self, committed_generation: UUID | None) -> None:
+        try:
+            self._tokens.recover(
+                self._profile_slug, self._account_name, committed_generation
+            )
+        except TokenStoreError as error:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization must be renewed"
+            ) from error
 
     def get_object(self, path: str) -> dict[str, Any]:
         payload = self._request(path, {})
@@ -110,25 +150,47 @@ class WhoopClient:
             params["nextToken"] = raw_next_token
 
     def _load_token(self) -> WhoopToken:
-        token = self._tokens.load(self._profile_slug, self._account_name)
+        try:
+            token = self._tokens.load(self._profile_slug, self._account_name)
+        except TokenStoreError as error:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization must be renewed"
+            ) from error
         if token is None:
             raise WhoopAuthorizationRequired("WHOOP account is not authorized")
         if token.expired:
             return self._refresh_token(token.refresh_token)
-        return token
+        return self._validate_scopes(token)
 
     def _refresh_token(self, stale_refresh_token: str) -> WhoopToken:
+        def refresh_with_required_scopes(refresh_token: str) -> WhoopToken:
+            return self._validate_scopes(self._oauth.refresh(refresh_token))
+
         try:
-            return self._tokens.rotate(
-                self._profile_slug,
-                self._account_name,
-                stale_refresh_token,
-                self._oauth.refresh,
+            return self._validate_scopes(
+                self._tokens.rotate(
+                    self._profile_slug,
+                    self._account_name,
+                    stale_refresh_token,
+                    refresh_with_required_scopes,
+                )
             )
+        except WhoopOAuthScopesError as error:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization is missing required scopes"
+            ) from error
         except (TokenStoreError, WhoopOAuthError) as error:
             raise WhoopAuthorizationRequired(
                 "WHOOP authorization must be renewed"
             ) from error
+
+    @staticmethod
+    def _validate_scopes(token: WhoopToken) -> WhoopToken:
+        if set(WHOOP_SCOPES).difference(token.scopes):
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization is missing required scopes"
+            )
+        return token
 
     def _request(self, path: str, params: dict[str, str | int]) -> Any:
         token = self._load_token()
@@ -157,10 +219,18 @@ class WhoopClient:
                 refreshed_after_unauthorized = True
                 continue
             if response.status_code == 429 or response.status_code >= 500:
+                delay = self._retry_delay(response, transient_attempt)
+                if (
+                    response.status_code == 429
+                    and delay > self._max_inline_wait_seconds
+                ):
+                    raise WhoopRateLimitDeferred(
+                        self._clock() + timedelta(seconds=delay)
+                    )
                 transient_attempt += 1
                 if transient_attempt == self._max_attempts:
                     break
-                self._sleep(self._retry_delay(response, transient_attempt - 1))
+                self._sleep(delay)
                 continue
             if not 200 <= response.status_code < 300:
                 if response.status_code == 401:

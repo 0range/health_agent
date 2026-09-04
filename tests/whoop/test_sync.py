@@ -1,26 +1,43 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
+from time import sleep
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+import httpx
+import pytest
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from health_agent.db import session_scope
 from health_agent.models import DEFAULT_PROFILE_ID, Profile
-from health_agent.whoop.client import RECOVERY_PATH
+from health_agent.whoop.auth_service import (
+    AuthorizedWhoopAccount,
+    publish_whoop_authorization,
+)
+from health_agent.whoop.client import (
+    PROFILE_PATH,
+    RECOVERY_PATH,
+    WhoopAuthorizationRequired,
+    WhoopClient,
+    WhoopRateLimitDeferred,
+)
 from health_agent.whoop.models import (
     WhoopConnection,
     WhoopRawRecord,
     WhoopRecovery,
     WhoopSyncRun,
 )
+from health_agent.whoop.oauth import WHOOP_SCOPES, WhoopOAuth
 from health_agent.whoop.repository import register_authorized_connection
 from health_agent.whoop.status import get_whoop_status
 from health_agent.whoop.sync import WhoopSyncReport, sync_whoop
-from health_agent.whoop.tokens import TokenStore, WhoopToken
+from health_agent.whoop.tokens import TokenStore, TokenStoreError, WhoopToken
 
 
 class FakeWhoopClient:
@@ -30,6 +47,13 @@ class FakeWhoopClient:
         self.recovery_score = recovery_score
         self.fail_path = fail_path
         self.starts: list[datetime | None] = []
+
+    @contextmanager
+    def operation(self) -> Iterator[None]:
+        yield
+
+    def recover_token(self, committed_generation: UUID | None) -> None:
+        return
 
     def get_object(self, path: str) -> dict[str, Any]:
         if path.endswith("profile/basic"):
@@ -237,7 +261,7 @@ def test_status_is_safe_and_scoped_to_selected_profile(
             "access",
             "refresh",
             datetime.now(UTC) + timedelta(hours=1),
-            ("offline",),
+            WHOOP_SCOPES,
         ),
     )
 
@@ -287,6 +311,248 @@ def test_status_reports_unreadable_token_without_exposing_contents(
     )
 
     assert status.token_status == "unreadable"
+    assert status.auth_status == "reauth_required"
+
+
+def test_status_reports_insufficient_scopes(session: Session, tmp_path: Path) -> None:
+    connect(session)
+    tokens = TokenStore(tmp_path / "tokens")
+    tokens.save(
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        WhoopToken(
+            "access",
+            "refresh",
+            datetime.now(UTC) + timedelta(hours=1),
+            ("offline",),
+        ),
+    )
+
+    status = get_whoop_status(
+        session, tokens, DEFAULT_PROFILE_ID, str(DEFAULT_PROFILE_ID), "main"
+    )
+
+    assert status.token_status == "insufficient_scopes"
+    assert status.auth_status == "reauth_required"
+
+
+def test_corrupt_initial_token_records_safe_reauth_audit(
+    session: Session, tmp_path: Path
+) -> None:
+    connect(session)
+    tokens = TokenStore(tmp_path / "tokens")
+    token_path = tokens.save(
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        WhoopToken(
+            "access-secret",
+            "refresh-secret",
+            datetime.now(UTC) + timedelta(hours=1),
+            WHOOP_SCOPES,
+        ),
+    )
+    token_path.write_text("corrupt-access-secret", encoding="utf-8")
+    oauth = WhoopOAuth(
+        "client-id",
+        "client-secret",
+        "http://127.0.0.1:8765/callback",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("OAuth request was not expected")
+            )
+        ),
+    )
+    client = WhoopClient(
+        oauth,
+        tokens,
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("API request was not expected")
+            )
+        ),
+    )
+
+    report = sync_whoop(
+        session,
+        DEFAULT_PROFILE_ID,
+        "main",
+        client,
+        full=True,
+    )
+
+    assert report.status == "failed"
+    assert report.safe_error_code == "reauth_required"
+    assert session.scalar(select(WhoopSyncRun.status)) == "failed"
+
+
+def test_operation_lock_failure_records_safe_reauth_audit(session: Session) -> None:
+    connect(session)
+
+    class UnavailableTokenStorageClient(FakeWhoopClient):
+        @contextmanager
+        def operation(self) -> Iterator[None]:
+            raise WhoopAuthorizationRequired(
+                "WHOOP authorization storage is unavailable"
+            )
+            yield  # pragma: no cover - required for the contextmanager protocol
+
+    report = sync_whoop(
+        session,
+        DEFAULT_PROFILE_ID,
+        "main",
+        UnavailableTokenStorageClient(),
+        full=True,
+    )
+
+    assert report.status == "failed"
+    assert report.safe_error_code == "reauth_required"
+    assert session.scalar(select(WhoopSyncRun.status)) == "failed"
+
+
+def test_status_survives_operation_lock_failure(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connect(session)
+    tokens = TokenStore(tmp_path / "tokens")
+
+    def fail_directory(path: Path) -> None:
+        raise TokenStoreError("synthetic unavailable token storage")
+
+    monkeypatch.setattr(tokens, "_secure_directory", fail_directory)
+
+    status = get_whoop_status(
+        session, tokens, DEFAULT_PROFILE_ID, str(DEFAULT_PROFILE_ID), "main"
+    )
+
+    assert status.token_status == "unreadable"
+    assert status.auth_status == "reauth_required"
+
+
+def test_invalid_profile_identity_records_safe_failed_audit(session: Session) -> None:
+    connect(session)
+
+    class InvalidIdentityClient(FakeWhoopClient):
+        def get_object(self, path: str) -> dict[str, Any]:
+            if path == PROFILE_PATH:
+                return {"user_id": "not-an-integer"}
+            return super().get_object(path)
+
+    report = sync_whoop(
+        session, DEFAULT_PROFILE_ID, "main", InvalidIdentityClient(), full=True
+    )
+
+    assert report.status == "failed"
+    assert report.safe_error_code == "sync_failed"
+    assert session.scalar(select(WhoopSyncRun.status)) == "failed"
+
+
+def test_long_rate_limit_records_deferred_retry_at(session: Session) -> None:
+    connect(session)
+    retry_at = datetime(2026, 9, 5, 12, tzinfo=UTC)
+
+    class DeferredClient(FakeWhoopClient):
+        def get_object(self, path: str) -> dict[str, Any]:
+            raise WhoopRateLimitDeferred(retry_at)
+
+    report = sync_whoop(
+        session, DEFAULT_PROFILE_ID, "main", DeferredClient(), full=True
+    )
+    connection = session.scalar(select(WhoopConnection))
+    run = session.scalar(select(WhoopSyncRun))
+
+    assert report.status == "deferred"
+    assert report.retry_at == retry_at
+    assert connection is not None and connection.retry_at == retry_at
+    assert run is not None and run.status == "deferred" and run.retry_at == retry_at
+
+
+def test_concurrent_sync_and_reauthorization_do_not_deadlock(
+    clean_database: Engine, tmp_path: Path
+) -> None:
+    with session_scope(clean_database) as session:
+        connect(session)
+    tokens = TokenStore(tmp_path / "tokens")
+    tokens.save(
+        str(DEFAULT_PROFILE_ID),
+        "main",
+        WhoopToken(
+            "old-access",
+            "old-refresh",
+            datetime.now(UTC) + timedelta(hours=1),
+            WHOOP_SCOPES,
+        ),
+    )
+    sync_started = Event()
+    release_sync = Event()
+    errors: list[BaseException] = []
+
+    class BlockingClient(FakeWhoopClient):
+        @contextmanager
+        def operation(self) -> Iterator[None]:
+            with tokens.operation(str(DEFAULT_PROFILE_ID), "main"):
+                yield
+
+        def recover_token(self, committed_generation: UUID | None) -> None:
+            tokens.recover(str(DEFAULT_PROFILE_ID), "main", committed_generation)
+
+        def get_object(self, path: str) -> dict[str, Any]:
+            if path == PROFILE_PATH:
+                sync_started.set()
+                if not release_sync.wait(timeout=3):
+                    raise RuntimeError("test sync release timed out")
+            return super().get_object(path)
+
+    def run_sync() -> None:
+        try:
+            with session_scope(clean_database) as session:
+                sync_whoop(
+                    session,
+                    DEFAULT_PROFILE_ID,
+                    "main",
+                    BlockingClient(),
+                    full=True,
+                )
+        except Exception as error:  # noqa: BLE001 - assert thread failures in parent
+            errors.append(error)
+
+    def run_auth() -> None:
+        try:
+            publish_whoop_authorization(
+                lambda: session_scope(clean_database),
+                tokens,
+                DEFAULT_PROFILE_ID,
+                str(DEFAULT_PROFILE_ID),
+                "main",
+                AuthorizedWhoopAccount(
+                    10129,
+                    WHOOP_SCOPES,
+                    WhoopToken(
+                        "new-access",
+                        "new-refresh",
+                        datetime.now(UTC) + timedelta(hours=1),
+                        WHOOP_SCOPES,
+                    ),
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - assert thread failures in parent
+            errors.append(error)
+
+    sync_thread = Thread(target=run_sync)
+    auth_thread = Thread(target=run_auth)
+    sync_thread.start()
+    assert sync_started.wait(timeout=3)
+    auth_thread.start()
+    sleep(0.05)
+    release_sync.set()
+    sync_thread.join(timeout=5)
+    auth_thread.join(timeout=5)
+
+    assert not sync_thread.is_alive()
+    assert not auth_thread.is_alive()
+    assert errors == []
+    assert tokens.load(str(DEFAULT_PROFILE_ID), "main").access_token == "new-access"  # type: ignore[union-attr]
 
 
 def _summary(report: WhoopSyncReport) -> tuple[str, int, int, int, int]:

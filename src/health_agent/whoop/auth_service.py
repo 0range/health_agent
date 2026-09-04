@@ -11,9 +11,11 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from health_agent.whoop.client import API_BASE_URL, PROFILE_PATH, WhoopApiError
+from health_agent.whoop.models import WhoopConnection
 from health_agent.whoop.oauth import WHOOP_SCOPES, WhoopOAuth, WhoopOAuthError
 from health_agent.whoop.repository import (
     register_authorized_connection,
@@ -89,7 +91,13 @@ def validate_whoop_authorization_target(
 ) -> None:
     """Fail before opening a browser if the local profile/account is invalid."""
     token_store.validate_target(profile_key, account_name)
-    validate_registration_target(session, profile_id, account_name)
+    with token_store.operation(profile_key, account_name):
+        token_store.recover(
+            profile_key,
+            account_name,
+            _committed_token_generation(session, profile_id, account_name),
+        )
+        validate_registration_target(session, profile_id, account_name)
 
 
 def publish_whoop_authorization(
@@ -103,20 +111,39 @@ def publish_whoop_authorization(
     """Atomically expose a verified token and its matching database connection."""
     if set(WHOOP_SCOPES).difference(authorized.granted_scopes):
         raise WhoopOAuthError("WHOOP did not grant every required read scope")
-    with token_store.replacement(
-        profile_key, account_name, authorized.token
-    ) as replacement, session_context() as session:
-        validate_whoop_authorization_target(
-            session, token_store, profile_id, profile_key, account_name
+    with token_store.operation(profile_key, account_name):
+        with session_context() as recovery_session:
+            token_store.recover(
+                profile_key,
+                account_name,
+                _committed_token_generation(recovery_session, profile_id, account_name),
+            )
+        with token_store.replacement(
+            profile_key, account_name, authorized.token
+        ) as replacement:
+            with session_context() as session:
+                validate_registration_target(session, profile_id, account_name)
+                connection = register_authorized_connection(
+                    session,
+                    profile_id,
+                    account_name,
+                    authorized.external_user_id,
+                    authorized.granted_scopes,
+                )
+                connection.token_generation = replacement.generation
+                replacement.publish()
+            replacement.commit()
+
+
+def _committed_token_generation(
+    session: Session, profile_id: UUID, account_name: str
+) -> UUID | None:
+    return session.scalar(
+        select(WhoopConnection.token_generation).where(
+            WhoopConnection.profile_id == profile_id,
+            WhoopConnection.account_name == account_name,
         )
-        register_authorized_connection(
-            session,
-            profile_id,
-            account_name,
-            authorized.external_user_id,
-            authorized.granted_scopes,
-        )
-        replacement.publish()
+    )
 
 
 def open_and_wait_for_whoop_authorization(

@@ -99,8 +99,10 @@ class WhoopConnection(Base):
     external_user_id: Mapped[int | None] = mapped_column(BigInteger)
     auth_status: Mapped[str] = mapped_column(String(32), default="connected")
     granted_scopes: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    token_generation: Mapped[UUID | None]
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -125,6 +127,7 @@ class WhoopSyncRun(Base):
     mode: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), default="running")
     requested_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_created: Mapped[int] = mapped_column(default=0)

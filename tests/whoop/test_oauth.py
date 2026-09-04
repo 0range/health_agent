@@ -11,6 +11,7 @@ from health_agent.whoop.oauth import (
     WHOOP_SCOPES,
     WhoopOAuth,
     WhoopOAuthError,
+    WhoopOAuthScopesError,
 )
 
 
@@ -51,7 +52,7 @@ def test_exchange_and_refresh_use_official_forms_and_rotated_refresh_token() -> 
                 "access_token": "access-two",
                 "refresh_token": "refresh-two",
                 "expires_in": 3600,
-                "scope": "offline read:sleep",
+                "scope": " ".join(WHOOP_SCOPES),
                 "token_type": "bearer",
             },
         )
@@ -99,3 +100,27 @@ def test_token_error_does_not_expose_response_or_credentials() -> None:
     rendered = str(caught.value)
     assert "client-secret" not in rendered
     assert "authorization-code" not in rendered
+
+
+def test_refresh_rejects_a_grant_that_loses_required_scopes() -> None:
+    oauth = WhoopOAuth(
+        "client-id",
+        "client-secret",
+        "http://127.0.0.1:8765/callback",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "access_token": "access",
+                        "refresh_token": "refresh",
+                        "expires_in": 3600,
+                        "scope": "offline read:profile",
+                    },
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(WhoopOAuthScopesError, match="required scopes"):
+        oauth.refresh("old-refresh")

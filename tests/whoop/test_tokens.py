@@ -125,6 +125,101 @@ def test_replacement_is_not_published_until_requested(tmp_path: Path) -> None:
     assert store.load("vitalii", "main") == previous
 
 
+def test_committed_replacement_keeps_candidate_and_clears_journal(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    store.save("vitalii", "main", make_token("previous"))
+    candidate = make_token("candidate")
+
+    with store.replacement("vitalii", "main", candidate) as replacement:
+        replacement.publish()
+        replacement.commit()
+
+    assert store.load("vitalii", "main") == candidate
+    assert not (store.root / "vitalii" / "main.journal").exists()
+
+
+@pytest.mark.parametrize("database_committed", (False, True))
+def test_interrupted_replacement_recovers_from_database_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_committed: bool
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = make_token("previous")
+    candidate = make_token("candidate")
+    store.save("vitalii", "main", previous)
+    context = store.replacement("vitalii", "main", candidate)
+    replacement = context.__enter__()
+    replacement.publish()
+    monkeypatch.setattr(replacement, "rollback", lambda: None)
+    context.__exit__(None, None, None)
+    journal_path = store.root / "vitalii" / "main.journal"
+    assert stat.S_IMODE(journal_path.stat().st_mode) == 0o600
+
+    recovered = TokenStore(store.root)
+    recovered.recover(
+        "vitalii",
+        "main",
+        replacement.generation if database_committed else None,
+    )
+
+    assert recovered.load("vitalii", "main") == (
+        candidate if database_committed else previous
+    )
+
+
+def test_post_replace_fsync_failure_restores_previous_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = make_token("previous")
+    store.save("vitalii", "main", previous)
+    original_sync = store._sync_directory
+    sync_calls = 0
+
+    def fail_candidate_sync(path: Path) -> None:
+        nonlocal sync_calls
+        sync_calls += 1
+        if sync_calls == 2:
+            raise OSError("synthetic post-replace failure")
+        original_sync(path)
+
+    monkeypatch.setattr(store, "_sync_directory", fail_candidate_sync)
+
+    with (
+        pytest.raises(TokenStoreError, match="storage is unavailable"),
+        store.replacement("vitalii", "main", make_token("candidate")) as replacement,
+    ):
+        replacement.publish()
+
+    assert store.load("vitalii", "main") == previous
+
+
+def test_interrupted_standalone_save_recovers_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = make_token("previous")
+    candidate = make_token("candidate")
+    store.save("vitalii", "main", previous)
+    original_clear = store._clear_journal_unlocked
+    calls = 0
+
+    def fail_first_clear(profile: str, account: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TokenStoreError("synthetic interrupted save")
+        original_clear(profile, account)
+
+    monkeypatch.setattr(store, "_clear_journal_unlocked", fail_first_clear)
+    with pytest.raises(TokenStoreError, match="interrupted"):
+        store.save("vitalii", "main", candidate)
+    monkeypatch.setattr(store, "_clear_journal_unlocked", original_clear)
+
+    assert TokenStore(store.root).load("vitalii", "main") == candidate
+
+
 def test_refresh_rotation_is_serialized_across_processes(tmp_path: Path) -> None:
     store = TokenStore(tmp_path / "tokens")
     store.save(

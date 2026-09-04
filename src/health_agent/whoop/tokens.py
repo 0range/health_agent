@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 _SAFE_KEY = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 
@@ -65,8 +66,55 @@ class WhoopToken:
         return cls(access_token, refresh_token, expires_at, scopes, token_type)
 
 
+@dataclass(frozen=True, slots=True)
+class _TokenJournal:
+    mode: str
+    generation: str | None
+    previous: WhoopToken | None
+    candidate: WhoopToken
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "mode": self.mode,
+            "generation": self.generation,
+            "previous": self.previous.as_json() if self.previous else None,
+            "candidate": self.candidate.as_json(),
+        }
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> _TokenJournal:
+        try:
+            if value["version"] != 1 or value["mode"] not in {
+                "standalone",
+                "coordinated",
+            }:
+                raise ValueError
+            generation_value = value.get("generation")
+            generation = str(generation_value) if generation_value is not None else None
+            previous_value = value.get("previous")
+            previous = (
+                WhoopToken.from_json(previous_value)
+                if isinstance(previous_value, dict)
+                else None
+            )
+            candidate_value = value["candidate"]
+            if not isinstance(candidate_value, dict):
+                raise TypeError
+            candidate = WhoopToken.from_json(candidate_value)
+        except (KeyError, TypeError, ValueError) as error:
+            raise TokenStoreError("WHOOP token journal is invalid") from error
+        if (value["mode"] == "coordinated") != (generation is not None):
+            raise TokenStoreError("WHOOP token journal is invalid")
+        return cls(str(value["mode"]), generation, previous, candidate)
+
+
 class TokenStore:
-    """Atomic, per-profile WHOOP token files for a local installation."""
+    """Durable, per-profile WHOOP token files for a local installation.
+
+    All auth, sync, and status entry points acquire ``operation()`` before any
+    token-file or database lock. The inner token lock protects file revisions.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -84,6 +132,9 @@ class TokenStore:
         account = self._validate_key(account_name, "account")
         return self.root / profile / f"{account}.json"
 
+    def _journal_path(self, profile_slug: str, account_name: str) -> Path:
+        return self._path(profile_slug, account_name).with_suffix(".journal")
+
     def validate_target(self, profile_slug: str, account_name: str) -> Path:
         """Validate a token identity before starting an irreversible OAuth flow."""
         return self._path(profile_slug, account_name)
@@ -95,48 +146,83 @@ class TokenStore:
             raise TokenStoreError("WHOOP token directory is not a regular directory")
         path.chmod(0o700)
 
-    def _save_unlocked(
-        self, profile_slug: str, account_name: str, token: WhoopToken
-    ) -> Path:
-        target = self._path(profile_slug, account_name)
+    @staticmethod
+    def _sync_directory(path: Path) -> None:
+        directory_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _atomic_json_write(self, target: Path, value: dict[str, Any]) -> None:
         self._secure_directory(self.root)
         self._secure_directory(target.parent)
         if target.exists() and (target.is_symlink() or not target.is_file()):
             raise TokenStoreError("WHOOP token path is not a regular file")
-
-        encoded = json.dumps(token.as_json(), sort_keys=True).encode("utf-8")
+        encoded = json.dumps(value, sort_keys=True).encode("utf-8")
         temporary_name: str | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 dir=target.parent, delete=False
             ) as temporary:
                 temporary_name = temporary.name
-                os.chmod(temporary.fileno(), 0o600)
+                os.fchmod(temporary.fileno(), 0o600)
                 temporary.write(encoded)
                 temporary.flush()
                 os.fsync(temporary.fileno())
             os.replace(temporary_name, target)
             temporary_name = None
-            target.chmod(0o600)
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            self._sync_directory(target.parent)
+        except OSError as error:
+            raise TokenStoreError("WHOOP token storage is unavailable") from error
         finally:
             if temporary_name is not None:
                 Path(temporary_name).unlink(missing_ok=True)
+
+    def _save_token_unlocked(
+        self, profile: str, account: str, token: WhoopToken
+    ) -> Path:
+        target = self._path(profile, account)
+        self._atomic_json_write(target, token.as_json())
         return target
 
+    def _write_journal_unlocked(
+        self, profile: str, account: str, journal: _TokenJournal
+    ) -> None:
+        self._atomic_json_write(self._journal_path(profile, account), journal.as_json())
+
+    def _read_journal_unlocked(
+        self, profile: str, account: str
+    ) -> _TokenJournal | None:
+        path = self._journal_path(profile, account)
+        if not path.exists():
+            return None
+        payload = self._read_json_file(path, "WHOOP token journal")
+        return _TokenJournal.from_json(payload)
+
+    def _clear_journal_unlocked(self, profile: str, account: str) -> None:
+        path = self._journal_path(profile, account)
+        if not path.exists():
+            return
+        try:
+            path.unlink()
+            self._sync_directory(path.parent)
+        except OSError as error:
+            raise TokenStoreError("WHOOP token journal cannot be cleared") from error
+
     @contextmanager
-    def _locked(
-        self, profile_slug: str, account_name: str, *, exclusive: bool
+    def _file_lock(
+        self,
+        profile_slug: str,
+        account_name: str,
+        *,
+        suffix: str,
+        exclusive: bool,
     ) -> Iterator[None]:
-        """Lock one account across threads and processes without unlinking the lock."""
         target = self._path(profile_slug, account_name)
         self._secure_directory(self.root)
         self._secure_directory(target.parent)
-        lock_path = target.with_suffix(".lock")
+        lock_path = target.with_suffix(suffix)
         flags = os.O_CREAT | os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -154,9 +240,41 @@ class TokenStore:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
+    @contextmanager
+    def operation(self, profile_slug: str, account_name: str) -> Iterator[None]:
+        """Acquire the outermost per-account lock required by every public flow."""
+        with self._file_lock(
+            profile_slug,
+            account_name,
+            suffix=".operation.lock",
+            exclusive=True,
+        ):
+            yield
+
+    @contextmanager
+    def _locked(
+        self, profile_slug: str, account_name: str, *, exclusive: bool
+    ) -> Iterator[None]:
+        with self._file_lock(
+            profile_slug, account_name, suffix=".lock", exclusive=exclusive
+        ):
+            yield
+
+    def _save_with_journal_unlocked(
+        self, profile: str, account: str, token: WhoopToken
+    ) -> Path:
+        self._recover_unlocked(profile, account, committed_generation=None)
+        previous = self._load_token_unlocked(profile, account)
+        self._write_journal_unlocked(
+            profile, account, _TokenJournal("standalone", None, previous, token)
+        )
+        target = self._save_token_unlocked(profile, account, token)
+        self._clear_journal_unlocked(profile, account)
+        return target
+
     def save(self, profile_slug: str, account_name: str, token: WhoopToken) -> Path:
         with self._locked(profile_slug, account_name, exclusive=True):
-            return self._save_unlocked(profile_slug, account_name, token)
+            return self._save_with_journal_unlocked(profile_slug, account_name, token)
 
     def rotate(
         self,
@@ -167,13 +285,16 @@ class TokenStore:
     ) -> WhoopToken:
         """Rotate once even when multiple processes observe the same stale token."""
         with self._locked(profile_slug, account_name, exclusive=True):
-            current = self._load_unlocked(profile_slug, account_name)
+            self._recover_unlocked(
+                profile_slug, account_name, committed_generation=None
+            )
+            current = self._load_token_unlocked(profile_slug, account_name)
             if current is None:
                 raise TokenStoreError("WHOOP account is not authorized")
             if current.refresh_token != stale_refresh_token and not current.expired:
                 return current
             refreshed = refresher(current.refresh_token)
-            self._save_unlocked(profile_slug, account_name, refreshed)
+            self._save_with_journal_unlocked(profile_slug, account_name, refreshed)
             return refreshed
 
     @contextmanager
@@ -183,24 +304,78 @@ class TokenStore:
         account_name: str,
         token: WhoopToken,
     ) -> Iterator[TokenReplacement]:
-        """Stage a token, publishing only when its database transaction is ready."""
+        """Create a DB-coordinated replacement journal under the token lock."""
         with self._locked(profile_slug, account_name, exclusive=True):
-            previous = self._load_unlocked(profile_slug, account_name)
+            self._recover_unlocked(
+                profile_slug, account_name, committed_generation=None
+            )
+            previous = self._load_token_unlocked(profile_slug, account_name)
+            generation = uuid4()
+            self._write_journal_unlocked(
+                profile_slug,
+                account_name,
+                _TokenJournal("coordinated", str(generation), previous, token),
+            )
             replacement = TokenReplacement(
-                self, profile_slug, account_name, previous, token
+                self, profile_slug, account_name, generation, token
             )
             try:
                 yield replacement
-            except BaseException:
-                replacement.rollback()
-                raise
+            finally:
+                if not replacement.committed:
+                    replacement.rollback()
 
-    def _load_unlocked(
-        self, profile_slug: str, account_name: str
-    ) -> WhoopToken | None:
-        target = self._path(profile_slug, account_name)
+    def recover(
+        self,
+        profile_slug: str,
+        account_name: str,
+        committed_generation: UUID | None,
+    ) -> None:
+        """Reconcile an interrupted replacement against committed database state."""
+        with self._locked(profile_slug, account_name, exclusive=True):
+            self._recover_unlocked(
+                profile_slug,
+                account_name,
+                committed_generation=(
+                    str(committed_generation) if committed_generation else None
+                ),
+                allow_coordinated=True,
+            )
+
+    def _recover_unlocked(
+        self,
+        profile: str,
+        account: str,
+        committed_generation: str | None,
+        *,
+        allow_coordinated: bool = False,
+    ) -> None:
+        journal = self._read_journal_unlocked(profile, account)
+        if journal is None:
+            return
+        if journal.mode == "coordinated" and not allow_coordinated:
+            raise TokenStoreError("WHOOP token requires database reconciliation")
+        keep_candidate = journal.mode == "standalone" or (
+            journal.generation == committed_generation
+        )
+        selected = journal.candidate if keep_candidate else journal.previous
+        if selected is None:
+            self._delete_token_unlocked(profile, account)
+        else:
+            self._save_token_unlocked(profile, account, selected)
+        self._clear_journal_unlocked(profile, account)
+
+    def _delete_token_unlocked(self, profile: str, account: str) -> None:
+        target = self._path(profile, account)
         if not target.exists():
-            return None
+            return
+        try:
+            target.unlink()
+            self._sync_directory(target.parent)
+        except OSError as error:
+            raise TokenStoreError("WHOOP token cannot be restored") from error
+
+    def _read_json_file(self, target: Path, label: str) -> dict[str, Any]:
         for directory in (self.root, target.parent):
             directory_stat = directory.lstat()
             if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
@@ -211,59 +386,81 @@ class TokenStore:
                 )
         file_stat = target.lstat()
         if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
-            raise TokenStoreError("WHOOP token path is not a regular file")
-        target.chmod(0o600)
+            raise TokenStoreError(f"{label} path is not a regular file")
         try:
+            target.chmod(0o600)
             payload = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise TokenStoreError("WHOOP token file cannot be read") from error
+            raise TokenStoreError(f"{label} cannot be read") from error
         if not isinstance(payload, dict):
-            raise TokenStoreError("WHOOP token file is invalid")
-        return WhoopToken.from_json(payload)
+            raise TokenStoreError(f"{label} is invalid")
+        return payload
+
+    def _load_token_unlocked(
+        self, profile_slug: str, account_name: str
+    ) -> WhoopToken | None:
+        target = self._path(profile_slug, account_name)
+        if not target.exists():
+            return None
+        return WhoopToken.from_json(self._read_json_file(target, "WHOOP token file"))
 
     def load(self, profile_slug: str, account_name: str) -> WhoopToken | None:
-        with self._locked(profile_slug, account_name, exclusive=False):
-            return self._load_unlocked(profile_slug, account_name)
+        with self._locked(profile_slug, account_name, exclusive=True):
+            self._recover_unlocked(
+                profile_slug, account_name, committed_generation=None
+            )
+            return self._load_token_unlocked(profile_slug, account_name)
 
 
 class TokenReplacement:
-    """A staged token replacement held under the account's exclusive file lock."""
+    """A durable replacement held under the account's exclusive token lock."""
 
     def __init__(
         self,
         store: TokenStore,
         profile_slug: str,
         account_name: str,
-        previous: WhoopToken | None,
+        generation: UUID,
         candidate: WhoopToken,
     ) -> None:
         self._store = store
         self._profile_slug = profile_slug
         self._account_name = account_name
-        self._previous = previous
+        self._generation = generation
         self._candidate = candidate
         self._published = False
+        self._committed = False
+
+    @property
+    def generation(self) -> UUID:
+        return self._generation
+
+    @property
+    def committed(self) -> bool:
+        return self._committed
 
     def publish(self) -> Path:
-        path = self._store._save_unlocked(
+        self._published = True
+        return self._store._save_token_unlocked(
             self._profile_slug, self._account_name, self._candidate
         )
-        self._published = True
-        return path
+
+    def commit(self) -> None:
+        if not self._published:
+            raise TokenStoreError("WHOOP token replacement was not published")
+        self._committed = True
+        self._store._clear_journal_unlocked(self._profile_slug, self._account_name)
 
     def rollback(self) -> None:
-        if not self._published:
+        journal = self._store._read_journal_unlocked(
+            self._profile_slug, self._account_name
+        )
+        if journal is None:
             return
-        if self._previous is not None:
-            self._store._save_unlocked(
-                self._profile_slug, self._account_name, self._previous
-            )
+        if journal.previous is None:
+            self._store._delete_token_unlocked(self._profile_slug, self._account_name)
         else:
-            target = self._store._path(self._profile_slug, self._account_name)
-            target.unlink(missing_ok=True)
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        self._published = False
+            self._store._save_token_unlocked(
+                self._profile_slug, self._account_name, journal.previous
+            )
+        self._store._clear_journal_unlocked(self._profile_slug, self._account_name)

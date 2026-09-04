@@ -299,6 +299,30 @@ def test_whoop_migration_matches_sqlalchemy_metadata(session: Session) -> None:
     command.check(config)
 
 
+def test_whoop_schema_has_final_pre_release_fingerprint(session: Session) -> None:
+    columns = {
+        (row.table_name, row.column_name)
+        for row in session.execute(
+            text(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE (table_name = 'whoop_connections' "
+                "AND column_name IN ('token_generation', 'retry_at')) "
+                "OR (table_name = 'whoop_sync_runs' AND column_name = 'retry_at') "
+                "OR (table_name = 'whoop_recoveries' "
+                "AND column_name IN ('resource_kind', 'source_values'))"
+            )
+        )
+    }
+
+    assert columns == {
+        ("whoop_connections", "token_generation"),
+        ("whoop_connections", "retry_at"),
+        ("whoop_sync_runs", "retry_at"),
+        ("whoop_recoveries", "resource_kind"),
+        ("whoop_recoveries", "source_values"),
+    }
+
+
 def test_whoop_migration_round_trip(clean_database: Engine) -> None:
     config = Config("alembic.ini")
     with clean_database.begin() as connection:
@@ -324,17 +348,21 @@ def test_whoop_downgrade_refuses_to_destroy_existing_data(
         )
 
     config = Config("alembic.ini")
-    with pytest.raises(
-        DBAPIError, match="Refusing to downgrade"
-    ), clean_database.begin() as connection:
+    with (
+        pytest.raises(DBAPIError, match="Refusing to downgrade"),
+        clean_database.begin() as connection,
+    ):
         config.attributes["connection"] = connection
         command.downgrade(config, "0004_chart_integrity")
 
     with clean_database.begin() as connection:
-        assert connection.scalar(
-            text("SELECT count(*) FROM whoop_connections WHERE id = :id"),
-            {"id": connection_id},
-        ) == 1
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM whoop_connections WHERE id = :id"),
+                {"id": connection_id},
+            )
+            == 1
+        )
         connection.execute(
             text("DELETE FROM whoop_connections WHERE id = :id"),
             {"id": connection_id},
