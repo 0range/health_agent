@@ -143,10 +143,30 @@ def test_discovery_failure_isolated_and_empty_registry_succeeds(tmp_path: Path) 
 
 
 def test_nonblocking_overlap_is_successful_skip(tmp_path: Path) -> None:
-    result = _runner(tmp_path, [], FakeExecutor(), FakeLock(False)).run()
+    rotation_calls: list[str] = []
+    runner = _runner(tmp_path, [], FakeExecutor(), FakeLock(False))
+    runner.before_jobs = lambda: rotation_calls.append("rotated")
+    result = runner.run()
     assert result == (
         AutomationResult("runner", "none", "none", "none", "skipped", "already_running"),
     )
+    assert rotation_calls == []
+
+
+def test_log_rotation_failure_is_safe_and_releases_global_lock(tmp_path: Path) -> None:
+    lock = FakeLock()
+    runner = _runner(tmp_path, [], FakeExecutor(), lock)
+
+    def fail_rotation() -> None:
+        raise OSError("private log pathname")
+
+    runner.before_jobs = fail_rotation
+    assert runner.run() == (
+        AutomationResult(
+            "runner", "none", "none", "none", "failed", "log_rotation_failed"
+        ),
+    )
+    assert lock.released
 
 
 def test_real_global_lock_excludes_second_owner(tmp_path: Path) -> None:

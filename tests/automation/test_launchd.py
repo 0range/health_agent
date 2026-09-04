@@ -97,6 +97,33 @@ def test_install_is_idempotent_and_stop_retains_files(tmp_path: Path) -> None:
     assert manager.status() == "unloaded"
 
 
+def test_install_reloads_a_loaded_job_when_rendered_configuration_changes(
+    tmp_path: Path,
+) -> None:
+    first_paths = _paths(tmp_path)
+    launchctl = FakeLaunchctl()
+    first = LaunchdManager(first_paths, launchctl=launchctl, platform="darwin", uid=501)
+    first.install()
+
+    second_env = tmp_path / "second.env"
+    second_env.write_text("SAFE=2\n", encoding="utf-8")
+    second_env.chmod(0o600)
+    second_paths = LaunchdPaths.resolve(
+        automation_root=first_paths.automation_root,
+        executable=first_paths.executable,
+        environment_file=second_env,
+        working_directory=first_paths.working_directory,
+        home=tmp_path / "home",
+    )
+    second = LaunchdManager(second_paths, launchctl=launchctl, platform="darwin", uid=501)
+    second.install()
+
+    assert [call[0] for call in launchctl.calls].count("bootstrap") == 2
+    assert [call[0] for call in launchctl.calls].count("bootout") == 1
+    installed = plistlib.loads(second_paths.installed_plist.read_bytes())
+    assert installed["ProgramArguments"][-1] == str(second_env)
+
+
 def test_remove_deletes_only_exact_managed_plists(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     launchctl = FakeLaunchctl()

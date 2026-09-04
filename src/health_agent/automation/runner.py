@@ -77,6 +77,7 @@ class AutomationRunner:
         lock: GlobalRunLock,
         *,
         clock: Callable[[], datetime] | None = None,
+        before_jobs: Callable[[], None] | None = None,
     ) -> None:
         self.settings = settings
         self.adapters = adapters
@@ -84,6 +85,7 @@ class AutomationRunner:
         self.state = state
         self.lock = lock
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.before_jobs = before_jobs
 
     def run(self, force_full: bool = False) -> tuple[AutomationResult, ...]:
         try:
@@ -93,6 +95,20 @@ class AutomationRunner:
         if not acquired:
             return (AutomationResult("runner", "none", "none", "none", "skipped", "already_running"),)
         try:
+            if self.before_jobs is not None:
+                try:
+                    self.before_jobs()
+                except Exception:  # noqa: BLE001 - local log details stay private
+                    return (
+                        AutomationResult(
+                            "runner",
+                            "none",
+                            "none",
+                            "none",
+                            "failed",
+                            "log_rotation_failed",
+                        ),
+                    )
             jobs, discovery_results = self._discover()
             results = list(discovery_results)
             for job in jobs:

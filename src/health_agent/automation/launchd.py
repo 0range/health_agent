@@ -78,7 +78,11 @@ class LaunchdPaths:
         require_private_file(expanded_env)
         resolved_env = expanded_env.resolve()
         resolved_working = working_directory.expanduser().resolve()
-        if not resolved_executable.is_file() or not resolved_executable.is_absolute():
+        if (
+            not resolved_executable.is_file()
+            or not resolved_executable.is_absolute()
+            or not os.access(resolved_executable, os.X_OK)
+        ):
             raise ValueError("executable_unavailable")
         if not resolved_working.is_dir() or not resolved_working.is_absolute():
             raise ValueError("working_directory_unavailable")
@@ -181,12 +185,41 @@ class LaunchdManager:
         self._require_macos()
         rendered = self.render()
         rotate_safe_logs(self.paths)
-        _atomic_installed_write(self.paths.installed_plist, rendered.read_bytes())
-        if self.is_loaded():
+        rendered_bytes = rendered.read_bytes()
+        previous_bytes = self._installed_bytes()
+        loaded = self.is_loaded()
+        _atomic_installed_write(self.paths.installed_plist, rendered_bytes)
+        if loaded and previous_bytes == rendered_bytes:
             return "installed"
+        if loaded and self.launchctl.run(("bootout", self.service)) != 0:
+            self._restore_installed(previous_bytes)
+            raise LaunchdError("launchctl_bootout_failed")
         if self.launchctl.run(("bootstrap", self.domain, str(self.paths.installed_plist))) != 0:
+            self._restore_installed(previous_bytes)
+            if loaded and previous_bytes is not None:
+                self.launchctl.run(
+                    ("bootstrap", self.domain, str(self.paths.installed_plist))
+                )
             raise LaunchdError("launchctl_bootstrap_failed")
         return "installed"
+
+    def _installed_bytes(self) -> bytes | None:
+        path = self.paths.installed_plist
+        if path.is_symlink():
+            raise LaunchdError("unsafe_plist_path")
+        if not path.exists():
+            return None
+        if not path.is_file():
+            raise LaunchdError("unsafe_plist_path")
+        return path.read_bytes()
+
+    def _restore_installed(self, content: bytes | None) -> None:
+        path = self.paths.installed_plist
+        if content is None:
+            if path.exists() and path.is_file() and not path.is_symlink():
+                path.unlink()
+            return
+        _atomic_installed_write(path, content)
 
     def status(self) -> str:
         return "loaded" if self.is_loaded() else "unloaded"

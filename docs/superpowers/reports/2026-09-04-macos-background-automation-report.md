@@ -22,7 +22,16 @@ LaunchAgent installation. Live installation remains an explicit operator step.
 
 ## Verification
 
-- Automation-focused tests: 22 passed.
-- Full project tests: 461 passed.
+- Automation-focused tests: 25 passed.
+- Full project tests: 464 passed.
 - Ruff, mypy, lockfile, diff whitespace, CLI-help, plist parsing, and disposable
   Alembic upgrade/check gates passed.
+
+## Review fixes
+
+- Console-script resolution no longer depends on `PATH`; a subprocess regression
+  invokes the actual installed script with launchd's minimal path.
+- Reinstalling changed configuration reloads an already loaded service and
+  restores the previous plist if replacement activation fails.
+- Log rotation runs only after the global lock is acquired, so an overlapping
+  process returns `already_running` without touching log files.

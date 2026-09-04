@@ -1,4 +1,6 @@
+import os
 import shutil
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -115,8 +117,7 @@ def automation_sync(
 ) -> None:
     """Synchronize configured targets without cross-source blocking."""
     try:
-        runner, _, paths = _automation_components(env_file)
-        rotate_safe_logs(paths)
+        runner, _, _ = _automation_components(env_file)
         results = runner.run(force_full=force_full)
     except (LaunchdError, RuntimeError, ValueError):
         typer.echo("status=failed safe_error=automation_configuration_failed", err=True)
@@ -1183,9 +1184,7 @@ def _automation_components(
     env_file: Path,
 ) -> tuple[AutomationRunner, LaunchdManager, LaunchdPaths]:
     repository_root = Path(__file__).resolve().parents[2]
-    executable_name = shutil.which("health-agent")
-    if executable_name is None:
-        raise ValueError("health_agent_executable_unavailable")
+    executable = _current_console_script()
     expanded_env_file = env_file.expanduser()
     if not expanded_env_file.is_absolute():
         raise ValueError("env_file_not_absolute")
@@ -1202,7 +1201,7 @@ def _automation_components(
     )
     paths = LaunchdPaths.resolve(
         automation_root=settings.automation_root,
-        executable=Path(executable_name),
+        executable=executable,
         environment_file=expanded_env_file,
         working_directory=repository_root,
     )
@@ -1214,6 +1213,7 @@ def _automation_components(
         ),
         AutomationState(paths.state_file),
         GlobalRunLock(paths.lock_file),
+        before_jobs=lambda: rotate_safe_logs(paths),
     )
     return runner, LaunchdManager(paths), paths
 
@@ -1230,3 +1230,21 @@ def _automation_manager_or_exit(env_file: Path) -> LaunchdManager:
 def _repository_relative(repository_root: Path, path: Path) -> Path:
     expanded = path.expanduser()
     return expanded if expanded.is_absolute() else repository_root / expanded
+
+
+def _current_console_script() -> Path:
+    invoked = Path(sys.argv[0]).expanduser()
+    if (
+        invoked.is_absolute()
+        and invoked.name == "health-agent"
+        and invoked.is_file()
+        and os.access(invoked, os.X_OK)
+    ):
+        return invoked.resolve()
+    sibling = Path(sys.executable).parent / "health-agent"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return sibling.resolve()
+    discovered = shutil.which("health-agent")
+    if discovered is not None:
+        return Path(discovered).resolve()
+    raise ValueError("health_agent_executable_unavailable")

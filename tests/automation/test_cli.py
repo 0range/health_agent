@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -140,3 +143,35 @@ def test_real_cli_rejects_relative_env_path_without_echoing_it() -> None:
     assert result.exit_code == 1
     assert "safe_error=automation_configuration_failed" in result.stderr
     assert "private.env" not in result.stdout + result.stderr
+
+
+def test_real_console_script_renders_with_launchd_minimal_path(tmp_path: Path) -> None:
+    console_script = Path(sys.executable).parent / "health-agent"
+    assert console_script.is_file()
+    automation_root = tmp_path / "automation"
+    env_file = tmp_path / "private.env"
+    env_file.write_text(f"AUTOMATION_ROOT={automation_root}\n", encoding="utf-8")
+    env_file.chmod(0o600)
+    environment = os.environ.copy()
+    environment["PATH"] = "/usr/bin:/bin"
+
+    result = subprocess.run(
+        (
+            str(console_script),
+            "automation",
+            "render",
+            "--env-file",
+            str(env_file),
+        ),
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status=rendered" in result.stdout
+    plist = automation_root / "launchd" / "com.orange.health-agent.sync.plist"
+    assert plist.is_file()
+    assert str(console_script) in plist.read_text(encoding="utf-8")
