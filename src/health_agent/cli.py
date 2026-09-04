@@ -35,6 +35,9 @@ from health_agent.models import (
     ReviewStatus,
     SourceRecord,
 )
+from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
+from health_agent.telegram.api import TelegramBotAPI
+from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.vault import FileVault
 from health_agent.whoop.auth_service import (
     complete_whoop_authorization,
@@ -54,11 +57,13 @@ dashboard_app = typer.Typer(help="Manage the local Metabase dashboards.")
 whoop_app = typer.Typer(help="Connect and synchronize WHOOP accounts.")
 profile_app = typer.Typer(help="Manage local person profiles.")
 gmail_app = typer.Typer(help="Manage read-only Gmail medical ingestion.")
+telegram_app = typer.Typer(help="Configure the local Telegram connector.")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
 app.add_typer(profile_app, name="profile")
 app.add_typer(gmail_app, name="gmail")
+app.add_typer(telegram_app, name="telegram")
 
 
 @app.callback()
@@ -561,6 +566,103 @@ def _selected_gmail_accounts(
     return profile.accounts if account_id is None else (profile.account(account_id),)
 
 
+@telegram_app.command("configure-token")
+def configure_telegram_token() -> None:
+    """Store a BotFather token locally without exposing it in shell history."""
+    settings = Settings()
+    token = typer.prompt("Bot token", hide_input=True)
+    _telegram_admin(settings).configure_token(token)
+    typer.echo(f"status=configured token_file={settings.effective_telegram_token_file}")
+
+
+@telegram_app.command("bind")
+def bind_telegram_identity(
+    profile_id: UUID,
+    telegram_user_id: int,
+    private_chat_id: int | None = None,
+) -> None:
+    """Allow exactly one private Telegram identity for a profile."""
+    identity = _telegram_admin(Settings()).bind_identity(
+        profile_id, telegram_user_id, private_chat_id
+    )
+    typer.echo(
+        " ".join(
+            (
+                "status=bound",
+                f"profile_id={identity.profile_id}",
+                f"telegram_user_id={identity.telegram_user_id}",
+                f"private_chat_id={identity.private_chat_id}",
+            )
+        )
+    )
+
+
+@telegram_app.command("unbind")
+def unbind_telegram_identity(profile_id: UUID) -> None:
+    """Disable a profile's Telegram identity without deleting health data."""
+    changed = _telegram_admin(Settings()).unbind_identity(profile_id)
+    typer.echo(
+        f"status={'unbound' if changed else 'not_bound'} profile_id={profile_id}"
+    )
+
+
+@telegram_app.command("status")
+def telegram_status(profile_id: UUID | None = None) -> None:
+    """Show local configuration/poll state without printing the bot token."""
+    status = _telegram_admin(Settings()).status(profile_id)
+    typer.echo(
+        " ".join(
+            (
+                f"token_configured={str(status.token_configured).lower()}",
+                f"profile_id={status.profile_id or ''}",
+                f"identity_bound={str(status.identity_bound).lower()}",
+                f"next_offset={status.next_offset if status.next_offset is not None else ''}",
+                f"last_poll_at={status.last_poll_at.isoformat() if status.last_poll_at else ''}",
+                f"last_error_code={status.last_error_code or ''}",
+            )
+        )
+    )
+
+
+@telegram_app.command("discover-id")
+def discover_telegram_id() -> None:
+    """List private sender/chat IDs from pending updates; never print message text."""
+    settings = Settings()
+    token = PrivateBotTokenStore(settings.effective_telegram_token_file).load()
+    gateway = TelegramBotAPI(token)
+    if gateway.get_webhook_url():
+        typer.echo("status=blocked error=webhook_configured", err=True)
+        raise typer.Exit(code=1)
+    updates = gateway.get_updates(
+        offset=SqliteTelegramState(settings.telegram_state_file).next_offset(),
+        timeout_seconds=1,
+    )
+    candidates: set[tuple[int, int]] = set()
+    for update in updates:
+        message = update.get("message")
+        if not isinstance(message, dict):
+            continue
+        sender = message.get("from")
+        chat = message.get("chat")
+        if not isinstance(sender, dict) or not isinstance(chat, dict):
+            continue
+        user_id = sender.get("id")
+        chat_id = chat.get("id")
+        if (
+            chat.get("type") == "private"
+            and isinstance(user_id, int)
+            and not isinstance(user_id, bool)
+            and isinstance(chat_id, int)
+            and not isinstance(chat_id, bool)
+        ):
+            candidates.add((user_id, chat_id))
+    if not candidates:
+        typer.echo("status=no_private_messages")
+        return
+    for user_id, chat_id in sorted(candidates):
+        typer.echo(f"telegram_user_id={user_id} private_chat_id={chat_id}")
+
+
 def main() -> None:
     app()
 
@@ -585,4 +687,12 @@ def _whoop_oauth(settings: Settings) -> WhoopOAuth:
         client_id,
         client_secret.get_secret_value(),
         settings.whoop_redirect_uri,
+    )
+
+
+def _telegram_admin(settings: Settings) -> TelegramAdminService:
+    return TelegramAdminService(
+        PrivateBotTokenStore(settings.effective_telegram_token_file),
+        SqliteTelegramState(settings.telegram_state_file),
+        DatabaseProfileDirectory(settings),
     )
