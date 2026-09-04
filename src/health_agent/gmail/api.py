@@ -8,7 +8,10 @@ from email.header import decode_header, make_header
 from email.utils import parseaddr
 from typing import Any, cast
 
+import httplib2  # type: ignore[import-untyped]
+from google.auth.exceptions import TransportError
 from google.oauth2.credentials import Credentials
+from google_auth_httplib2 import AuthorizedHttp  # type: ignore[import-untyped]
 from googleapiclient.discovery import Resource, build  # type: ignore[import-untyped]
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from tenacity import (
@@ -19,6 +22,7 @@ from tenacity import (
 )
 
 from health_agent.gmail.types import (
+    EncodedBody,
     GmailMessage,
     GmailPart,
     HistoryPage,
@@ -32,6 +36,7 @@ _RETRYABLE_REASONS = {
     "rateLimitExceeded",
     "userRateLimitExceeded",
 }
+DEFAULT_HTTP_TIMEOUT_SECONDS = 30
 
 
 class HistoryCursorExpired(RuntimeError):
@@ -43,6 +48,10 @@ class GmailItemUnavailable(RuntimeError):
 
 
 def _is_retryable(error: BaseException) -> bool:
+    if isinstance(
+        error, (TimeoutError, ConnectionError, httplib2.HttpLib2Error, TransportError)
+    ):
+        return True
     if not isinstance(error, HttpError):
         return False
     status = int(getattr(error.resp, "status", 0))
@@ -76,9 +85,7 @@ def _retry[T](call: Callable[[], T]) -> T:
 
 def _execute(request: Any, *, history_request: bool = False) -> dict[str, Any]:
     try:
-        return cast(
-            dict[str, Any], _retry(lambda: request.execute(num_retries=0))
-        )
+        return cast(dict[str, Any], _retry(lambda: request.execute(num_retries=0)))
     except HttpError as error:
         if history_request and int(getattr(error.resp, "status", 0)) == 404:
             raise HistoryCursorExpired("Gmail history cursor expired") from error
@@ -92,8 +99,16 @@ class GoogleGmailGateway:
         self._service = service
 
     @classmethod
-    def from_credentials(cls, credentials: Credentials) -> GoogleGmailGateway:
-        return cls(build("gmail", "v1", credentials=credentials, cache_discovery=False))
+    def from_credentials(
+        cls,
+        credentials: Credentials,
+        *,
+        timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
+    ) -> GoogleGmailGateway:
+        if timeout_seconds < 1:
+            raise ValueError("Gmail HTTP timeout must be positive")
+        http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout_seconds))
+        return cls(build("gmail", "v1", http=http, cache_discovery=False))
 
     def get_profile(self) -> MailboxProfile:
         value = _execute(self._service.users().getProfile(userId="me"))
@@ -104,7 +119,9 @@ class GoogleGmailGateway:
 
     def list_messages(self, query: str, page_token: str | None) -> MessagePage:
         value = _execute(
-            self._service.users().messages().list(
+            self._service.users()
+            .messages()
+            .list(
                 userId="me",
                 q=query,
                 maxResults=500,
@@ -120,13 +137,15 @@ class GoogleGmailGateway:
     def get_message(self, message_id: str) -> GmailMessage:
         try:
             value = _execute(
-                self._service.users().messages().get(
-                    userId="me", id=message_id, format="full"
-                )
+                self._service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
             )
         except HttpError as error:
             if int(getattr(error.resp, "status", 0)) == 404:
-                raise GmailItemUnavailable("Gmail message is no longer available") from error
+                raise GmailItemUnavailable(
+                    "Gmail message is no longer available"
+                ) from error
             raise
         payload = value.get("payload") or {}
         headers = _headers(payload)
@@ -138,34 +157,39 @@ class GoogleGmailGateway:
             subject=_decode_header(headers.get("subject", "")),
             sender=parseaddr(_decode_header(headers.get("from", "")))[1].casefold(),
             payload=_parse_part(payload),
+            label_ids=tuple(str(value) for value in value.get("labelIds", ())),
         )
 
     def list_history(self, history_id: str, page_token: str | None) -> HistoryPage:
         value = _execute(
-            self._service.users().history().list(
+            self._service.users()
+            .history()
+            .list(
                 userId="me",
                 startHistoryId=history_id,
-                historyTypes=["messageAdded", "messageDeleted"],
                 maxResults=500,
                 pageToken=page_token,
             ),
             history_request=True,
         )
-        added: dict[str, None] = {}
-        removed: dict[str, None] = {}
+        changed: dict[str, None] = {}
+        deleted: dict[str, None] = {}
         for event in value.get("history", ()):
             for entry in event.get("messagesAdded", ()):
-                added[str(entry["message"]["id"])] = None
+                changed[str(entry["message"]["id"])] = None
             for entry in event.get("messagesDeleted", ()):
-                removed[str(entry["message"]["id"])] = None
+                deleted[str(entry["message"]["id"])] = None
+            for key in ("labelsAdded", "labelsRemoved"):
+                for entry in event.get(key, ()):
+                    changed[str(entry["message"]["id"])] = None
         return HistoryPage(
-            tuple(added),
-            tuple(removed),
+            tuple(changed),
+            tuple(deleted),
             value.get("nextPageToken"),
             str(value["historyId"]),
         )
 
-    def attachment_data(self, message_id: str, attachment_id: str) -> str:
+    def attachment_data(self, message_id: str, attachment_id: str) -> EncodedBody:
         try:
             value = _execute(
                 self._service.users()
@@ -179,7 +203,8 @@ class GoogleGmailGateway:
                     "Gmail attachment is no longer available"
                 ) from error
             raise
-        return str(value["data"])
+        size = value.get("size")
+        return EncodedBody(str(value["data"]), None if size is None else int(size))
 
 
 def _headers(payload: dict[str, Any]) -> dict[str, str]:

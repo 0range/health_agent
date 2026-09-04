@@ -70,7 +70,9 @@ class GmailProfile:
 
     def upsert_account(self, account: GmailAccount) -> GmailProfile:
         accounts = tuple(
-            existing for existing in self.accounts if existing.account_id != account.account_id
+            existing
+            for existing in self.accounts
+            if existing.account_id != account.account_id
         )
         return GmailProfile(self.profile_id, (*accounts, account))
 
@@ -99,7 +101,9 @@ class GmailProfile:
             account = GmailAccount.create(
                 str(raw["account_id"]),
                 initial_lookback_days=int(raw.get("initial_lookback_days", 7)),
-                trusted_senders=[str(value) for value in raw.get("trusted_senders", ())],
+                trusted_senders=[
+                    str(value) for value in raw.get("trusted_senders", ())
+                ],
             )
             if raw.get("email") is not None:
                 account = account.with_email(str(raw["email"]))

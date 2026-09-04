@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
+
 import pytest
 
-from health_agent.gmail.classifier import classify_attachment
+from health_agent.gmail.classifier import classify_attachment, classify_message
 from health_agent.gmail.types import GmailMessage, GmailPart
 
 
@@ -45,5 +47,27 @@ def test_generic_supported_attachment_stays_internal_ambiguity() -> None:
 def test_inline_image_and_unsupported_file_are_ignored() -> None:
     logo = GmailPart("1", "image/png", "logo.png", None, 5, disposition="inline")
     archive = GmailPart("2", "application/zip", "labs.zip", "a2", 5)
-    assert classify_attachment(message("Lab results"), logo, ()).reason_code == "inline_image"
-    assert classify_attachment(message("Lab results"), archive, ()).reason_code == "unsupported_mime"
+    assert (
+        classify_attachment(message("Lab results"), logo, ()).reason_code
+        == "inline_image"
+    )
+    assert (
+        classify_attachment(message("Lab results"), archive, ()).reason_code
+        == "unsupported_mime"
+    )
+
+
+def test_body_only_appointment_is_classified_without_persisting_body() -> None:
+    body = "Напоминаем: приём у терапевта завтра".encode()
+    payload = GmailPart(
+        "",
+        "text/plain",
+        "",
+        None,
+        len(body),
+        base64.urlsafe_b64encode(body).decode().rstrip("="),
+    )
+    item = GmailMessage(
+        "m1", "t1", "10", 1000, "Reminder", "clinic@example.com", payload
+    )
+    assert classify_message(item).decision == "appointment"

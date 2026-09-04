@@ -39,3 +39,32 @@ configured account slot. The connector requests only `gmail.readonly`.
 Implementation behavior follows Google's official Gmail Python quickstart,
 OAuth scope reference, message/attachment resources, synchronization guide, and
 error-handling guide linked in `docs/integrations/gmail.md`.
+
+## Review fix round (`gmail-connector-review.md`)
+
+The initial report above is retained as historical evidence for `e084768`. The
+review blockers are closed in the follow-up implementation:
+
+- production CLI routes validated PDFs through the common profile-aware
+  PostgreSQL `import_document` and lab review pipeline; status distinguishes
+  staged, medically imported, duplicate, OCR, and attention outcomes;
+- body-only appointments and metadata-ambiguous PDFs receive bounded local
+  content classification, with a safe internal attention listing;
+- current Gmail labels make full and incremental Spam/Trash policy consistent,
+  including mail restored through label transitions;
+- verified identity and credentials publish together only after mailbox checks,
+  wrong-account/failed reauthorization preserves the old token, and the same
+  mailbox cannot cross health profiles;
+- a cross-process account lock serializes state/cursor commits, revisions retain
+  full occurrence provenance, and delivery is documented/tested as at-least-once;
+- attachment size and signature validation precede importer effects, while API
+  and OAuth callback timeouts, transport retry, repeated-page guards, and
+  symlink rejection are explicit;
+- OAuth status, sync freshness, and safe errors are durable; External/Testing's
+  seven-day refresh-token expiry is no longer described as unattended setup;
+- the pre-existing 0003 view dependency is fixed and covered by fresh
+  up/down/up migration testing.
+
+Final verification: 57 Gmail tests and 119 repository tests passed, including a
+fresh disposable PostgreSQL upgrade/downgrade/upgrade regression. Ruff and mypy
+also passed. No live mailbox, credential, or user medical file was used.

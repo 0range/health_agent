@@ -72,7 +72,9 @@ def make_document(session: Session, identity: str = "1") -> Document:
     return document
 
 
-def make_page(session: Session, document: Document, page_number: int = 1) -> DocumentPage:
+def make_page(
+    session: Session, document: Document, page_number: int = 1
+) -> DocumentPage:
     page = DocumentPage(
         document=document,
         page_number=page_number,
@@ -128,7 +130,9 @@ def test_review_required_observation_is_not_publishable(session: Session) -> Non
     session.add(observation)
 
 
-def test_verified_history_view_excludes_non_verified_observations(session: Session) -> None:
+def test_verified_history_view_excludes_non_verified_observations(
+    session: Session,
+) -> None:
     document = make_document(session)
     make_page(session, document)
     verified = LabObservation(
@@ -159,9 +163,15 @@ def test_verified_history_view_excludes_non_verified_observations(session: Sessi
     session.add_all((verified, pending))
     session.flush()
 
-    names = session.execute(
-        text("SELECT canonical_name FROM verified_lab_history ORDER BY canonical_name")
-    ).scalars().all()
+    names = (
+        session.execute(
+            text(
+                "SELECT canonical_name FROM verified_lab_history ORDER BY canonical_name"
+            )
+        )
+        .scalars()
+        .all()
+    )
     status = session.execute(
         text("SELECT status::text FROM lab_observations WHERE id = :observation_id"),
         {"observation_id": verified.id},
@@ -254,14 +264,18 @@ def test_downgrade_refuses_to_erase_non_default_profile(
     config = Config("alembic.ini")
     config.attributes["connection"] = connection
     try:
-        with pytest.raises(DBAPIError, match="non-default profiles would lose ownership"):
+        with pytest.raises(
+            DBAPIError, match="non-default profiles would lose ownership"
+        ):
             command.downgrade(config, "0003_review_corrections")
     finally:
         transaction.rollback()
         connection.close()
 
     with clean_database.begin() as cleanup_connection:
-        revision = cleanup_connection.scalar(text("SELECT version_num FROM alembic_version"))
+        revision = cleanup_connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
         cleanup_connection.execute(
             text("DELETE FROM profiles WHERE id = :id"), {"id": second_profile_id}
         )
@@ -302,7 +316,29 @@ def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
         connection.close()
 
     with clean_database.connect() as check_connection:
-        revision = check_connection.scalar(text("SELECT version_num FROM alembic_version"))
+        revision = check_connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
+
+    assert revision == "0004_chart_integrity"
+
+
+def test_fresh_migrations_can_downgrade_to_base_and_upgrade_again(
+    clean_database: Engine,
+) -> None:
+    config = Config("alembic.ini")
+    try:
+        with clean_database.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "base")
+            command.upgrade(config, "head")
+            revision = connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
+    finally:
+        with clean_database.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
 
     assert revision == "0004_chart_integrity"
 

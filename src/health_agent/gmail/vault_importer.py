@@ -1,20 +1,20 @@
-"""Streaming staging importer used until the medical pipeline adapter is wired."""
+"""Optional vault-only adapter for tests and non-medical staging workflows."""
 
 from __future__ import annotations
 
-import hashlib
-import os
-import tempfile
-from collections.abc import Iterable
 from pathlib import Path
 
 from health_agent.gmail.config import normalize_profile_id, validate_account_id
-from health_agent.gmail.types import AttachmentProvenance, ImportReceipt
+from health_agent.gmail.types import (
+    AttachmentProvenance,
+    ImportReceipt,
+    PreparedAttachment,
+)
 from health_agent.vault import FileVault
 
 
 class VaultAttachmentImporter:
-    """Stream one attachment to a profile/account-isolated immutable vault."""
+    """Copy one prepared attachment to an isolated immutable vault."""
 
     def __init__(
         self,
@@ -33,34 +33,18 @@ class VaultAttachmentImporter:
         )
 
     def import_attachment(
-        self, provenance: AttachmentProvenance, chunks: Iterable[bytes]
+        self, provenance: AttachmentProvenance, prepared: PreparedAttachment
     ) -> ImportReceipt:
         if provenance.profile_id != self.profile_id:
             raise ValueError("refusing Gmail attachment for another profile")
         if provenance.account_id != self.account_id:
             raise ValueError("refusing Gmail attachment for another account")
-        self.temporary_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.temporary_root.chmod(0o700)
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=self.temporary_root, prefix="gmail-", suffix=".partial"
+        stored = self.vault.store(prepared.path)
+        if stored.sha256 != prepared.sha256 or stored.size_bytes != prepared.size_bytes:
+            raise RuntimeError("vault receipt does not match Gmail attachment bytes")
+        return ImportReceipt(
+            stored.sha256,
+            stored.size_bytes,
+            str(stored.path),
+            "staged",
         )
-        temporary = Path(temporary_name)
-        digest = hashlib.sha256()
-        size = 0
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                for chunk in chunks:
-                    if not isinstance(chunk, bytes):
-                        raise TypeError("Gmail attachment chunks must be bytes")
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    size += len(chunk)
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary.chmod(0o600)
-            stored = self.vault.store(temporary)
-            if stored.sha256 != digest.hexdigest() or stored.size_bytes != size:
-                raise RuntimeError("vault receipt does not match Gmail attachment bytes")
-            return ImportReceipt(stored.sha256, size, str(stored.path))
-        finally:
-            temporary.unlink(missing_ok=True)

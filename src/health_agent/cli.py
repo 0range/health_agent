@@ -10,14 +10,15 @@ from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.api import GoogleGmailGateway
 from health_agent.gmail.config import GmailAccount, GmailProfile
-from health_agent.gmail.oauth import GmailOAuth
+from health_agent.gmail.medical_importer import MedicalAttachmentImporter
+from health_agent.gmail.oauth import GmailOAuth, OAuthRequired
+from health_agent.gmail.preparation import SafeAttachmentPreparer
 from health_agent.gmail.service import GmailAccountMismatch, GmailService
 from health_agent.gmail.stores import (
     LocalGmailProfileStore,
     LocalGmailStateStore,
     LocalGmailTokenStore,
 )
-from health_agent.gmail.vault_importer import VaultAttachmentImporter
 from health_agent.importer import (
     approve_observation,
     import_document,
@@ -212,16 +213,21 @@ def authorize_gmail(profile_id: UUID, account_id: str) -> None:
     profiles, tokens, _ = _gmail_stores(settings)
     profile = profiles.load(str(profile_id))
     account = profile.account(account_id)
-    credentials = GmailOAuth(settings.google_oauth_client_secrets, tokens).authorize(
-        profile.profile_id, account.account_id, force=True
+    oauth = GmailOAuth(settings.google_oauth_client_secrets, tokens)
+    credentials = oauth.stage(
+        profile.profile_id, account.account_id, force=True, interactive=True
     )
-    mailbox = GoogleGmailGateway.from_credentials(credentials).get_profile()
-    if account.email is not None and account.email != mailbox.email:
-        tokens.clear(profile.profile_id, account.account_id)
+    mailbox = GoogleGmailGateway.from_credentials(
+        credentials, timeout_seconds=settings.gmail_http_timeout_seconds
+    ).get_profile()
+    existing = tokens.load_verified(profile.profile_id, account.account_id)
+    if existing is not None and existing[0] != mailbox.email:
         raise GmailAccountMismatch(
             f"Gmail account slot {account.account_id!r} is already bound"
         )
-    profiles.save(profile.upsert_account(account.with_email(mailbox.email)))
+    oauth.publish_verified(
+        profile.profile_id, account.account_id, credentials, mailbox.email
+    )
     typer.echo(
         f"status=authorized profile={profile.profile_id} "
         f"account={account.account_id} email={mailbox.email}"
@@ -236,24 +242,52 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
     profile = profiles.load(str(profile_id))
     accounts = _selected_gmail_accounts(profile, account_id)
     for account in accounts:
-        messages, imported, ambiguous = state.counts(
-            profile.profile_id, account.account_id
-        )
+        counts = state.counts(profile.profile_id, account.account_id)
+        run = state.get_run_state(profile.profile_id, account.account_id)
+        oauth = GmailOAuth(settings.google_oauth_client_secrets, tokens)
+        token_status = oauth.local_status(profile.profile_id, account.account_id)
+        if run.last_error_code == "oauth_required":
+            token_status = "reauth_required"
+        try:
+            verified = tokens.load_verified(profile.profile_id, account.account_id)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            verified = None
+        bound_email = None if verified is None else verified[0]
         typer.echo(
             " ".join(
                 (
                     "status=configured",
                     f"profile={profile.profile_id}",
                     f"account={account.account_id}",
-                    f"authorized={'yes' if tokens.exists(profile.profile_id, account.account_id) else 'no'}",
-                    f"email={account.email or 'unknown'}",
+                    f"oauth={token_status}",
+                    f"oauth_mode={settings.google_oauth_publishing_status}",
+                    f"email={bound_email or 'unknown'}",
                     f"cursor={'ready' if state.get_cursor(profile.profile_id, account.account_id) else 'none'}",
-                    f"messages={messages}",
-                    f"imported={imported}",
-                    f"ambiguous={ambiguous}",
+                    f"messages={counts.get('messages', 0)}",
+                    f"staged={counts.get('staged', 0)}",
+                    f"medically_imported={counts.get('medically_imported', 0)}",
+                    f"attention={counts.get('attention_messages', 0) + counts.get('attention_attachments', 0)}",
+                    f"last_attempt={run.last_attempt_at or 'never'}",
+                    f"last_success={run.last_success_at or 'never'}",
+                    f"last_error={run.last_error_code or 'none'}",
                 )
             )
         )
+
+
+@gmail_app.command("attention")
+def gmail_attention(profile_id: UUID, account_id: str | None = None) -> None:
+    """List safe identifiers for internally queued Gmail items."""
+    settings = Settings()
+    profiles, _, state = _gmail_stores(settings)
+    profile = profiles.load(str(profile_id))
+    for account in _selected_gmail_accounts(profile, account_id):
+        for item in state.attention_items(profile.profile_id, account.account_id):
+            typer.echo(
+                f"status=attention profile={profile.profile_id} account={account.account_id} "
+                f"message={item.message_id} part={item.part_id} "
+                f"reason={item.outcome or 'needs_attention'}"
+            )
 
 
 @gmail_app.command("sync")
@@ -266,35 +300,60 @@ def sync_gmail(
     profile = profiles.load(str(profile_id))
     accounts = _selected_gmail_accounts(profile, account_id)
     failed = False
+    engine = build_engine(settings)
     for account in accounts:
-        if not tokens.exists(profile.profile_id, account.account_id):
-            failed = True
-            typer.echo(
-                f"status=failed profile={profile.profile_id} account={account.account_id} "
-                "safe_error=oauth_required"
-            )
-            continue
+        service_invoked = False
         try:
-            credentials = GmailOAuth(
-                settings.google_oauth_client_secrets, tokens
-            ).authorize(profile.profile_id, account.account_id)
-            report = GmailService(
+            if not tokens.exists(profile.profile_id, account.account_id):
+                raise OAuthRequired("Gmail authorization is missing")
+            oauth = GmailOAuth(settings.google_oauth_client_secrets, tokens)
+            credentials = oauth.stage(profile.profile_id, account.account_id)
+            verified = tokens.load_verified(profile.profile_id, account.account_id)
+            if verified is None:
+                raise OAuthRequired("Gmail authorization is missing")
+            bound_email = verified[0]
+            gateway = GoogleGmailGateway.from_credentials(
+                credentials, timeout_seconds=settings.gmail_http_timeout_seconds
+            )
+            mailbox = gateway.get_profile()
+            if mailbox.email != bound_email:
+                raise GmailAccountMismatch("Gmail token does not match its binding")
+            oauth.publish_verified(
+                profile.profile_id, account.account_id, credentials, mailbox.email
+            )
+            service = GmailService(
                 profile.profile_id,
-                account,
-                GoogleGmailGateway.from_credentials(credentials),
+                account.with_email(bound_email),
+                gateway,
                 state,
-                VaultAttachmentImporter(
+                MedicalAttachmentImporter(
                     profile.profile_id,
                     account.account_id,
-                    settings.vault_root,
-                    settings.temporary_root,
+                    engine,
+                    FileVault(settings.vault_root),
                 ),
-            ).sync(full=full)
+                SafeAttachmentPreparer(
+                    settings.temporary_root,
+                    settings.gmail_max_attachment_bytes,
+                ),
+            )
+            service_invoked = True
+            report = service.sync(full=full)
         except Exception as error:  # noqa: BLE001 - isolate configured accounts
             failed = True
+            safe_error = (
+                "oauth_required"
+                if isinstance(error, OAuthRequired)
+                else type(error).__name__
+            )
+            # GmailService records its own failure while still holding the sync
+            # lock. Only preflight/OAuth failures need a separate state update.
+            if not service_invoked:
+                with state.sync_lock(profile.profile_id, account.account_id):
+                    state.fail_sync(profile.profile_id, account.account_id, safe_error)
             typer.echo(
                 f"status=failed profile={profile.profile_id} account={account.account_id} "
-                f"safe_error={type(error).__name__}"
+                f"safe_error={safe_error}"
             )
             continue
         typer.echo(
@@ -305,8 +364,11 @@ def sync_gmail(
                     f"account={report.account_id}",
                     f"mode={report.mode}",
                     f"messages={report.messages_seen}",
-                    f"imported={report.attachments_imported}",
-                    f"ambiguous={report.ambiguous}",
+                    f"staged={report.attachments_staged}",
+                    f"medically_imported={report.medically_imported}",
+                    f"duplicates={report.duplicates}",
+                    f"ocr_required={report.ocr_required}",
+                    f"attention={report.needs_attention}",
                     f"ignored={report.ignored}",
                     f"unchanged={report.unchanged}",
                     f"removed={report.removed}",

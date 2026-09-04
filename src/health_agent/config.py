@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -11,13 +12,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration for the local health-agent services."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", populate_by_name=True
+    )
 
     postgres_host: str = Field(default="127.0.0.1", validation_alias="POSTGRES_HOST")
     postgres_port: int = Field(default=55432, validation_alias="POSTGRES_PORT")
-    postgres_database: str = Field(default="health_agent", validation_alias="POSTGRES_DB")
+    postgres_database: str = Field(
+        default="health_agent", validation_alias="POSTGRES_DB"
+    )
     postgres_user: str = Field(default="health_agent", validation_alias="POSTGRES_USER")
-    postgres_password: str = Field(default="health_agent", validation_alias="POSTGRES_PASSWORD")
+    postgres_password: str = Field(
+        default="health_agent", validation_alias="POSTGRES_PASSWORD"
+    )
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     vault_root: Path = Field(default=Path("data/vault"), validation_alias="VAULT_ROOT")
     gmail_root: Path = Field(
@@ -29,6 +36,18 @@ class Settings(BaseSettings):
     )
     temporary_root: Path = Field(
         default=Path("data/tmp"), validation_alias="TEMPORARY_ROOT"
+    )
+    gmail_max_attachment_bytes: int = Field(
+        default=25 * 1024 * 1024,
+        ge=1,
+        le=25 * 1024 * 1024,
+        validation_alias="GMAIL_MAX_ATTACHMENT_BYTES",
+    )
+    gmail_http_timeout_seconds: int = Field(
+        default=30, ge=1, le=300, validation_alias="GMAIL_HTTP_TIMEOUT_SECONDS"
+    )
+    google_oauth_publishing_status: Literal["testing", "production", "internal"] = (
+        Field(default="testing", validation_alias="GOOGLE_OAUTH_PUBLISHING_STATUS")
     )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
@@ -44,7 +63,9 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"}:
             raise ValueError("METABASE_URL must use http or https")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("METABASE_URL must not contain credentials, query, or fragment")
+            raise ValueError(
+                "METABASE_URL must not contain credentials, query, or fragment"
+            )
         if parsed.path not in {"", "/"}:
             raise ValueError("METABASE_URL must not contain a path")
         try:
@@ -65,7 +86,12 @@ class Settings(BaseSettings):
         if value == "health-agent@localhost":
             return value
         local, separator, domain = value.rpartition("@")
-        if not separator or not local or "." not in domain or any(char.isspace() for char in value):
+        if (
+            not separator
+            or not local
+            or "." not in domain
+            or any(char.isspace() for char in value)
+        ):
             raise ValueError(
                 "METABASE_ADMIN_EMAIL must be API-valid; only the local default is normalized"
             )

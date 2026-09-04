@@ -37,6 +37,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 0004 recreates this legacy SELECT * view before returning to 0003. Drop it
+    # while removing the referenced column, then restore the exact 0002 shape.
+    op.execute("DROP VIEW IF EXISTS verified_lab_history")
     op.drop_index(
         "ix_lab_observations_supersedes_observation_id", table_name="lab_observations"
     )
@@ -46,3 +49,7 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_column("lab_observations", "supersedes_observation_id")
+    op.execute(
+        "CREATE VIEW verified_lab_history AS "
+        "SELECT * FROM lab_observations WHERE status = 'verified'"
+    )

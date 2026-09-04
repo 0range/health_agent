@@ -2,58 +2,103 @@
 
 ## TL;DR
 
-The connector foundation is implemented and tested without a real mailbox. It can attach multiple Gmail accounts to one health profile, checks only the last seven days on first connection, then resumes from Gmail `historyId`. Likely medical PDF/images are streamed to an injected importer; generic attachments become a private ambiguity record and do not interrupt the user.
+The connector is mocked-ready, read-only, multi-profile, and multi-account. A
+first scan examines the configured lookback (seven days by default), excluding
+Spam and Trash; later scans resume from Gmail `historyId` and process relevant
+label transitions. Medical PDFs enter the same PostgreSQL/import/review pipeline
+as local files. Appointment-only messages and files needing OCR or operator
+attention remain visible in private source status without prompting in Telegram.
 
-One external step remains: enable Gmail API for a Google Desktop OAuth client and authorize each configured account once.
+Live activation still requires a Google Desktop OAuth client and one browser
+authorization per account. That authorization is durable only when the actual
+OAuth consent screen is **Production** (External) or **Internal** for an eligible
+Workspace organization. External/Testing refresh tokens using `gmail.readonly`
+expire after seven days.
 
-## Behavior
+## Data flow and safety boundary
 
-- OAuth requests exactly `https://www.googleapis.com/auth/gmail.readonly`; the connector exposes no send, modify, trash, or delete operation.
-- Initial lookback defaults to `newer_than:7d has:attachment` and is configurable from 1–365 days.
-- Each health profile may have multiple account slots such as `personal` and `work`. Email binding, token, cursor, messages, attachments, and vault paths are separated by both `profile_id` and account slot.
-- Subsequent scans page through `users.history.list`. If Gmail returns `404` for an old cursor, the connector autonomously repeats the configured lookback and installs a fresh cursor.
-- Nested MIME trees and both inline `body.data` and external `attachmentId` forms are supported. Gmail base64url data is decoded incrementally into the importer.
-- PDF, JPEG, PNG, TIFF, HEIC/HEIF, and WebP are supported. Generic `application/octet-stream` is accepted only when its filename has a supported extension.
-- A supported attachment is considered likely medical only when its filename/subject has a conservative medical signal or its exact sender was configured as trusted. Generic supported files are stored as metadata-only ambiguity; non-medical bodies and attachment bytes are not retained.
-- Inline images, unsupported formats, and generic nonmedical messages are ignored. No body, attachment bytes, subject, token, or extracted medical text is logged.
-- Message deletion events mark the local occurrence removed without making any Gmail change.
+- OAuth requests exactly `https://www.googleapis.com/auth/gmail.readonly`; no
+  send, modify, trash, delete, or label mutation is exposed.
+- The first query is `newer_than:7d -in:spam -in:trash`, configurable from
+  1–365 days. Incremental history includes added/deleted messages and label
+  changes; current `SPAM`/`TRASH` labels are rejected, while restored mail is
+  reconsidered.
+- Message subject, filename, and a bounded in-memory body prefix identify likely
+  appointments. Body text is never persisted or logged.
+- PDF/JPEG/PNG/TIFF/HEIC/HEIF/WebP candidates are incrementally decoded from the
+  complete base64url value returned by Gmail. This is not end-to-end network
+  streaming: Gmail's client library materializes the encoded API response.
+- Declared size is checked before attachment download. Encoded and decoded hard
+  limits, exact decoded size, and file magic/MIME are checked in a private staged
+  file before the medical importer is called. Default maximum is 25 MiB.
+- Metadata-ambiguous PDFs are locally content-classified. Medical/scanned PDFs
+  enter `import_document` with `source_provider="gmail"`, stable Gmail
+  occurrence identity, source link, profile ownership, content hash, and the
+  normal lab review queue. Nonmedical PDFs are discarded after classification.
+  Images are safely staged as `image_ocr_required` until the shared image OCR
+  path exists; they are never reported as medically imported.
+- Sync is serialized by a cross-process profile/account lock. Item state is
+  fsynced before its cursor. Delivery is intentionally **at least once** across a
+  process crash; the common content-addressed importer and stable occurrence
+  identity make retries idempotent. Immutable attachment revisions are retained.
+- Private config/token/state files are `0600`, directories are `0700`, and
+  symlinked path components are rejected. Token identity and credentials are
+  published together only after `users.getProfile` verifies the mailbox; a
+  failed or wrong-account reauthorization preserves the old token.
 
-## One-time Google setup
+## Google OAuth setup
 
-1. Enable Gmail API in the Google Cloud project used for this Mac installation.
-2. Configure the OAuth consent screen and add each account as a test user while the personal app remains in testing.
-3. Create an OAuth client of type **Desktop app**. The same client JSON may be used by the Drive connector when both APIs are enabled, while each connector keeps a separate exact-scope token.
-4. Save the client JSON to the ignored `data/secrets/google-oauth-client.json`.
+1. Enable Gmail API in the Google Cloud project and create an OAuth client of
+   type **Desktop app**. Save its JSON to the ignored
+   `data/secrets/google-oauth-client.json`.
+2. Choose the real consent-screen mode:
+   - **External / Testing** is suitable only for setup/testing. Add test users,
+     set `GOOGLE_OAUTH_PUBLISHING_STATUS=testing`, and expect reauthorization
+     after seven days.
+   - **External / Production** is required for unattended personal Gmail use.
+     Publish the consent screen, satisfy Google's current restricted-scope
+     verification requirements for the configured audience/use, and set
+     `GOOGLE_OAUTH_PUBLISHING_STATUS=production`.
+   - **Internal** is available only to an eligible Google Workspace
+     organization; set `GOOGLE_OAUTH_PUBLISHING_STATUS=internal`.
+3. Configure and authorize each account slot. The setting is a local declaration
+   shown by status; the connector cannot query the Cloud project's publishing
+   status, so it must match the Console.
 
-`gmail.readonly` is a restricted Google scope. This personal local installation does not send mailbox data to a project server; publishing the app for arbitrary external users would require revisiting Google's verification requirements.
+For the first live run, point `DATABASE_URL`, `VAULT_ROOT`, `TEMPORARY_ROOT`, and
+`GMAIL_ROOT` at dedicated local staging locations. OAuth client and connector
+roots are also Settings/env-overridable; no production path is hardcoded.
+
+Refresh tokens can also stop working after revocation, a Gmail-password change,
+long inactivity, account token limits, or admin policy. A refresh failure is
+persisted as `oauth_required`; `gmail status` then says `reauth_required` even if
+the stale token file still exists.
 
 ## Commands
 
 ```bash
 uv run health-agent gmail configure PROFILE_UUID personal
 uv run health-agent gmail auth PROFILE_UUID personal
-uv run health-agent gmail sync PROFILE_UUID personal
+uv run health-agent gmail sync PROFILE_UUID --account-id personal
 uv run health-agent gmail status PROFILE_UUID
+uv run health-agent gmail attention PROFILE_UUID
 ```
 
-Repeat `configure` and `auth` with another account slot to attach another mailbox. Omitting the account slot from `sync` or `status` processes every configured account independently. Add a trusted sender only when useful:
-
-```bash
-uv run health-agent gmail configure PROFILE_UUID personal --trusted-sender lab@example.com
-```
-
-## Integration boundary
-
-This branch intentionally adds no database migration. `GmailService` depends on `GmailStateStore` and `AttachmentImporter`; `AttachmentProvenance` carries profile/account, immutable Gmail message/part/attachment IDs, history ID, internal date, MIME type, source link, SHA-256, and size.
-
-The included `VaultAttachmentImporter` proves streaming and isolation. During integration after migration `0004_chart_integrity`, the production adapter should stage each PDF and call the profile-aware medical importer using `source_provider="gmail"`, a stable message/part external ID, the Gmail source link, and `profile_id`. Image attachments should enter the OCR-capable branch when it lands. The database's profile-scoped SHA constraint and `document_source_records` then deduplicate bytes while retaining Gmail provenance.
+Omit `--account-id` to status/sync all configured account slots independently.
+Use `gmail sync PROFILE_UUID --full` to repeat the lookback and retry internally
+queued file revisions after configuration or OCR capability changes. Status
+separates staged, medically imported, attention, cursor freshness, last attempt,
+last success, safe error, token state, and declared OAuth mode.
 
 ## Official references
 
 - [Gmail Python quickstart](https://developers.google.com/workspace/gmail/api/quickstart/python)
 - [Gmail OAuth scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
+- [Google refresh-token expiration](https://developers.google.com/identity/protocols/oauth2#expiration)
+- [OAuth policies](https://developers.google.com/identity/protocols/oauth2/policies)
 - [List Gmail messages](https://developers.google.com/workspace/gmail/api/guides/list-messages)
 - [Synchronize Gmail clients](https://developers.google.com/workspace/gmail/api/guides/sync)
+- [Gmail history semantics](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list)
 - [Message and MIME resource](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)
-- [Attachment resource](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments)
+- [Attachment body semantics](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments)
 - [Error and retry guidance](https://developers.google.com/workspace/gmail/api/guides/handle-errors)

@@ -1,12 +1,17 @@
-"""Conservative metadata-only classifier for medical attachments."""
+"""Conservative first-stage classifier for Gmail medical candidates."""
 
 from __future__ import annotations
 
 import re
 import unicodedata
 from dataclasses import dataclass
+from html import unescape
 from pathlib import PurePath
 
+from health_agent.gmail.preparation import (
+    InvalidAttachmentEncoding,
+    iter_base64url_chunks,
+)
 from health_agent.gmail.types import GmailMessage, GmailPart
 
 _SUPPORTED_MIME_TYPES = {
@@ -34,11 +39,20 @@ _MEDICAL_PATTERNS = tuple(
     for pattern in (
         r"\b(?:blood|lab(?:oratory)?|medical|clinic|doctor|physician)\b",
         r"\b(?:mri|ultrasound|x[ -]?ray|radiology|prescription|discharge)\b",
+        r"\b(?:appointment|consultation|follow[ -]?up|check[ -]?up)\b",
         r"\b(?:анализ\w*|лаборатор\w*|заключени\w*|исследовани\w*)\b",
         r"\b(?:обследовани\w*|медицин\w*|клиник\w*|врач\w*|рецепт\w*)\b",
         r"\b(?:мрт|кт|узи|рентген\w*|выписк\w*|госпитал\w*)\b",
+        r"\b(?:при[её]м\w*|консультаци\w*|осмотр\w*|чекап\w*)\b",
     )
 )
+_APPOINTMENT = re.compile(
+    r"\b(?:appointment|consultation|visit|doctor|physician|при[её]м\w*|"
+    r"консультаци\w*|визит\w*|врач\w*)\b",
+    re.IGNORECASE,
+)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_MAX_BODY_CLASSIFICATION_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +60,33 @@ class Classification:
     decision: str
     effective_mime_type: str | None
     reason_code: str
+
+
+def classify_message(message: GmailMessage) -> Classification:
+    """Recognize a body-only medical appointment without retaining body text."""
+    subject = _normalize(message.subject)
+    if _APPOINTMENT.search(subject):
+        return Classification("appointment", None, "appointment_subject")
+    remaining = _MAX_BODY_CLASSIFICATION_BYTES
+    for part in _walk_text_parts(message.payload):
+        if part.body_data is None or remaining <= 0:
+            continue
+        try:
+            chunks: list[bytes] = []
+            for chunk in iter_base64url_chunks(part.body_data):
+                chunks.append(chunk[:remaining])
+                remaining -= min(len(chunk), remaining)
+                if remaining == 0:
+                    break
+        except InvalidAttachmentEncoding:
+            continue
+        raw = b"".join(chunks)
+        text = raw.decode("utf-8", errors="ignore")
+        if part.mime_type == "text/html":
+            text = unescape(_HTML_TAG.sub(" ", text))
+        if _APPOINTMENT.search(_normalize(text)):
+            return Classification("appointment", None, "appointment_body")
+    return Classification("ignored", None, "no_message_signal")
 
 
 def classify_attachment(
@@ -85,3 +126,12 @@ def _effective_mime_type(part: GmailPart) -> str | None:
 
 def _normalize(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold().replace("_", " ")
+
+
+def _walk_text_parts(part: GmailPart) -> tuple[GmailPart, ...]:
+    found: list[GmailPart] = []
+    if part.mime_type in {"text/plain", "text/html"} and not part.filename:
+        found.append(part)
+    for child in part.children:
+        found.extend(_walk_text_parts(child))
+    return tuple(found)

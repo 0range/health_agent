@@ -1,21 +1,28 @@
-"""Autonomous, profile-safe Gmail medical attachment synchronization."""
+"""Autonomous, serialized Gmail medical synchronization."""
 
 from __future__ import annotations
 
-import base64
-import binascii
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 from health_agent.gmail.api import GmailItemUnavailable, HistoryCursorExpired
-from health_agent.gmail.classifier import Classification, classify_attachment
+from health_agent.gmail.classifier import (
+    Classification,
+    classify_attachment,
+    classify_message,
+)
 from health_agent.gmail.config import GmailAccount, normalize_profile_id
+from health_agent.gmail.preparation import (
+    AttachmentPreparationError,
+    SafeAttachmentPreparer,
+)
 from health_agent.gmail.types import (
     AttachmentImporter,
     AttachmentProvenance,
+    EncodedBody,
     GmailGateway,
     GmailMessage,
     GmailPart,
+    GmailRunState,
     GmailStateStore,
     GmailSyncReport,
     SeenAttachment,
@@ -23,13 +30,16 @@ from health_agent.gmail.types import (
     walk_parts,
 )
 
+_EXCLUDED_LABELS = {"SPAM", "TRASH"}
+_TERMINAL_OUTCOMES = {"medically_imported", "duplicate", "non_medical"}
+
 
 class GmailAccountMismatch(RuntimeError):
-    """The account token does not match the configured profile/account binding."""
+    """The token does not match its verified account binding."""
 
 
-class InvalidAttachmentEncoding(ValueError):
-    """Gmail returned malformed base64url attachment content."""
+class GmailPaginationLoop(RuntimeError):
+    """Gmail repeated a page token and the scan was stopped."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,17 +47,19 @@ class GmailStatus:
     profile_id: str
     account_id: str
     account_email: str | None
-    has_cursor: bool
-    messages: int
-    imported: int
-    ambiguous: int
+    cursor: str | None
+    counts: dict[str, int]
+    run: GmailRunState
 
 
 @dataclass(slots=True)
 class _Stats:
     messages_seen: int = 0
-    attachments_imported: int = 0
-    ambiguous: int = 0
+    attachments_staged: int = 0
+    medically_imported: int = 0
+    duplicates: int = 0
+    ocr_required: int = 0
+    needs_attention: int = 0
     ignored: int = 0
     unchanged: int = 0
     removed: int = 0
@@ -58,8 +70,11 @@ class _Stats:
             account_id=account_id,
             mode=mode,
             messages_seen=self.messages_seen,
-            attachments_imported=self.attachments_imported,
-            ambiguous=self.ambiguous,
+            attachments_staged=self.attachments_staged,
+            medically_imported=self.medically_imported,
+            duplicates=self.duplicates,
+            ocr_required=self.ocr_required,
+            needs_attention=self.needs_attention,
             ignored=self.ignored,
             unchanged=self.unchanged,
             removed=self.removed,
@@ -67,7 +82,7 @@ class _Stats:
 
 
 class GmailService:
-    """Reusable orchestration service for CLI and a future localhost panel."""
+    """Reusable orchestration service for CLI and the localhost panel."""
 
     def __init__(
         self,
@@ -76,61 +91,76 @@ class GmailService:
         gateway: GmailGateway,
         state: GmailStateStore,
         importer: AttachmentImporter,
+        preparer: SafeAttachmentPreparer,
     ) -> None:
         self.profile_id = normalize_profile_id(profile_id)
         self.account = account
         self.gateway = gateway
         self.state = state
         self.importer = importer
+        self.preparer = preparer
 
     def verify_account(self) -> tuple[str, str]:
         profile = self.gateway.get_profile()
         actual = profile.email.casefold()
-        if self.account.email is not None and actual != self.account.email.casefold():
+        if self.account.email is None or actual != self.account.email.casefold():
             raise GmailAccountMismatch(
-                f"Gmail account {self.account.account_id!r} is bound to another address"
+                "Gmail token does not match the verified binding"
             )
         return actual, profile.history_id
 
     def status(self) -> GmailStatus:
-        messages, imported, ambiguous = self.state.counts(
-            self.profile_id, self.account.account_id
-        )
         return GmailStatus(
             profile_id=self.profile_id,
             account_id=self.account.account_id,
             account_email=self.account.email,
-            has_cursor=(
-                self.state.get_cursor(self.profile_id, self.account.account_id)
-                is not None
-            ),
-            messages=messages,
-            imported=imported,
-            ambiguous=ambiguous,
+            cursor=self.state.get_cursor(self.profile_id, self.account.account_id),
+            counts=self.state.counts(self.profile_id, self.account.account_id),
+            run=self.state.get_run_state(self.profile_id, self.account.account_id),
         )
 
     def sync(self, *, full: bool = False) -> GmailSyncReport:
-        account_email, current_history_id = self.verify_account()
-        cursor = self.state.get_cursor(self.profile_id, self.account.account_id)
-        if full or cursor is None:
-            return self._full_sync(account_email, current_history_id, mode="full")
-        try:
-            return self._incremental_sync(account_email, cursor)
-        except HistoryCursorExpired:
-            # Gmail documents that history can disappear in less than a week.
-            fresh_profile = self.gateway.get_profile()
-            if fresh_profile.email.casefold() != account_email:
-                raise GmailAccountMismatch("Gmail account changed during cursor recovery")
-            return self._full_sync(
-                account_email, fresh_profile.history_id, mode="recovery"
-            )
+        with self.state.sync_lock(self.profile_id, self.account.account_id):
+            cursor = self.state.get_cursor(self.profile_id, self.account.account_id)
+            mode = "full" if full or cursor is None else "incremental"
+            self.state.begin_sync(self.profile_id, self.account.account_id, mode)
+            try:
+                account_email, current_history_id = self.verify_account()
+                if mode == "full":
+                    report = self._full_sync(
+                        account_email, current_history_id, mode="full"
+                    )
+                else:
+                    assert cursor is not None
+                    try:
+                        report = self._incremental_sync(account_email, cursor)
+                    except HistoryCursorExpired:
+                        fresh = self.gateway.get_profile()
+                        if fresh.email.casefold() != account_email:
+                            raise GmailAccountMismatch(
+                                "Gmail account changed during cursor recovery"
+                            )
+                        self.state.begin_sync(
+                            self.profile_id, self.account.account_id, "recovery"
+                        )
+                        report = self._full_sync(
+                            account_email, fresh.history_id, mode="recovery"
+                        )
+            except Exception as error:
+                self.state.fail_sync(
+                    self.profile_id, self.account.account_id, _safe_error_code(error)
+                )
+                raise
+            self.state.finish_sync(self.profile_id, self.account.account_id)
+            return report
 
     def _full_sync(
         self, account_email: str, target_history_id: str, *, mode: str
     ) -> GmailSyncReport:
         stats = _Stats()
-        query = f"newer_than:{self.account.initial_lookback_days}d has:attachment"
+        query = f"newer_than:{self.account.initial_lookback_days}d -in:spam -in:trash"
         page_token: str | None = None
+        seen_page_tokens: set[str] = set()
         processed: set[str] = set()
         while True:
             page = self.gateway.list_messages(query, page_token)
@@ -138,34 +168,35 @@ class GmailService:
                 if message_id not in processed:
                     self._process_message(message_id, account_email, stats)
                     processed.add(message_id)
-            if page.next_page_token is None:
+            page_token = _next_page_token(page.next_page_token, seen_page_tokens)
+            if page_token is None:
                 break
-            page_token = page.next_page_token
-        self.state.set_cursor(self.profile_id, self.account.account_id, target_history_id)
+        self.state.set_cursor(
+            self.profile_id, self.account.account_id, target_history_id
+        )
         return stats.report(self.profile_id, self.account.account_id, mode)
 
-    def _incremental_sync(
-        self, account_email: str, cursor: str
-    ) -> GmailSyncReport:
+    def _incremental_sync(self, account_email: str, cursor: str) -> GmailSyncReport:
         stats = _Stats()
         page_token: str | None = None
-        added: dict[str, None] = {}
-        removed: dict[str, None] = {}
+        seen_page_tokens: set[str] = set()
+        changed: dict[str, None] = {}
+        deleted: dict[str, None] = {}
         target_history_id: str | None = None
         while True:
             page = self.gateway.list_history(cursor, page_token)
-            for message_id in page.added_message_ids:
-                added[message_id] = None
-            for message_id in page.removed_message_ids:
-                removed[message_id] = None
+            for message_id in page.changed_message_ids:
+                changed[message_id] = None
+            for message_id in page.deleted_message_ids:
+                deleted[message_id] = None
             target_history_id = page.history_id
-            if page.next_page_token is None:
+            page_token = _next_page_token(page.next_page_token, seen_page_tokens)
+            if page_token is None:
                 break
-            page_token = page.next_page_token
-        for message_id in added:
-            if message_id not in removed:
+        for message_id in changed:
+            if message_id not in deleted:
                 self._process_message(message_id, account_email, stats)
-        for message_id in removed:
+        for message_id in deleted:
             stats.removed += self.state.mark_message_removed(
                 self.profile_id, self.account.account_id, message_id
             )
@@ -187,6 +218,13 @@ class GmailService:
             )
             return
         stats.messages_seen += 1
+        if _EXCLUDED_LABELS.intersection(message.label_ids):
+            stats.removed += self.state.mark_message_removed(
+                self.profile_id, self.account.account_id, message.message_id
+            )
+            self._record_message(message, "excluded", "excluded")
+            return
+
         decisions: list[str] = []
         for part in walk_parts(message.payload):
             if not _is_attachment(part):
@@ -198,7 +236,21 @@ class GmailService:
             self._process_attachment(
                 message, part, classification, account_email, stats
             )
+
+        body_classification = classify_message(message)
+        if body_classification.decision == "appointment":
+            decisions.append("appointment")
+            stats.needs_attention += 1
         overall = _overall_classification(decisions)
+        self._record_message(
+            message,
+            overall,
+            "attention" if overall == "appointment" else "processed",
+        )
+
+    def _record_message(
+        self, message: GmailMessage, classification: str, status: str
+    ) -> None:
         self.state.record_message(
             SeenMessage(
                 profile_id=self.profile_id,
@@ -206,8 +258,9 @@ class GmailService:
                 message_id=message.message_id,
                 history_id=message.history_id,
                 internal_date_ms=message.internal_date_ms,
-                classification=overall,
-                status="processed",
+                classification=classification,
+                status=status,
+                label_ids=message.label_ids,
             )
         )
 
@@ -219,70 +272,66 @@ class GmailService:
         account_email: str,
         stats: _Stats,
     ) -> None:
-        provenance = AttachmentProvenance(
-            profile_id=self.profile_id,
-            account_id=self.account.account_id,
-            account_email=account_email,
-            message_id=message.message_id,
-            thread_id=message.thread_id,
-            message_history_id=message.history_id,
-            internal_date_ms=message.internal_date_ms,
-            part_id=part.part_id,
-            attachment_id=part.attachment_id,
-            filename=part.filename,
-            source_mime_type=classification.effective_mime_type or part.mime_type,
-            classification=classification.decision,
-            source_uri=f"https://mail.google.com/mail/#all/{message.message_id}",
+        provenance = _provenance(
+            self.profile_id,
+            self.account.account_id,
+            account_email,
+            message,
+            part,
+            classification,
         )
         previous = self.state.get_attachment(
             self.profile_id,
             self.account.account_id,
             message.message_id,
             part.part_id,
+            provenance.revision,
         )
-        if previous is not None and previous.revision == provenance.revision:
-            if previous.status == "imported":
-                stats.unchanged += 1
-                return
-            if previous.classification == classification.decision:
-                stats.unchanged += 1
-                if previous.status == "ambiguous":
-                    stats.ambiguous += 1
-                elif previous.status == "ignored":
-                    stats.ignored += 1
-                return
-
+        if previous is not None and (
+            previous.status != "removed"
+            and (previous.outcome in _TERMINAL_OUTCOMES or previous.status == "ignored")
+        ):
+            stats.unchanged += 1
+            return
         if classification.decision == "ignored":
             stats.ignored += 1
-            self._record_attachment(provenance, part, "ignored")
-            return
-        if classification.decision == "ambiguous":
-            stats.ambiguous += 1
-            self._record_attachment(provenance, part, "ambiguous")
+            self._record_attachment(provenance, part, "ignored", outcome="ignored")
             return
 
-        encoded = (
-            part.body_data
-            if part.body_data is not None
-            else self._external_attachment(message.message_id, part.attachment_id)
-        )
-        if encoded is None:
-            stats.removed += 1
-            self._record_attachment(provenance, part, "unavailable")
-            return
         try:
-            receipt = self.importer.import_attachment(
-                provenance, iter_base64url_chunks(encoded)
+            self.preparer.validate_before_download(part.body_size)
+            body = (
+                EncodedBody(part.body_data, part.body_size)
+                if part.body_data is not None
+                else self._external_attachment(message.message_id, part.attachment_id)
             )
-        except InvalidAttachmentEncoding:
-            stats.ambiguous += 1
-            self._record_attachment(provenance, part, "invalid_encoding")
+            if body is None:
+                self._record_attention(provenance, part, "unavailable", stats)
+                return
+            if (
+                part.body_size is not None
+                and body.size_bytes is not None
+                and body.size_bytes != part.body_size
+            ):
+                raise AttachmentPreparationError(
+                    "Gmail attachment response size disagrees with message metadata"
+                )
+            with self.preparer.prepare(
+                provenance, body.data, part.body_size or body.size_bytes
+            ) as prepared:
+                receipt = self.importer.import_attachment(provenance, prepared)
+                if (
+                    receipt.sha256 != prepared.sha256
+                    or receipt.size_bytes != prepared.size_bytes
+                ):
+                    raise RuntimeError(
+                        "attachment importer receipt does not match prepared bytes"
+                    )
+                detected_mime = prepared.detected_mime_type
+        except AttachmentPreparationError as error:
+            self._record_attention(provenance, part, _safe_error_code(error), stats)
             return
-        if part.body_size is not None and receipt.size_bytes != part.body_size:
-            raise RuntimeError(
-                f"Gmail attachment size mismatch for message {message.message_id!r}, "
-                f"part {part.part_id!r}"
-            )
+
         self.state.record_attachment(
             SeenAttachment(
                 profile_id=self.profile_id,
@@ -292,20 +341,53 @@ class GmailService:
                 revision=provenance.revision,
                 attachment_id=part.attachment_id,
                 filename=part.filename,
-                mime_type=provenance.source_mime_type,
+                mime_type=detected_mime,
                 classification=classification.decision,
                 declared_size_bytes=part.body_size,
                 sha256=receipt.sha256,
                 size_bytes=receipt.size_bytes,
                 storage_reference=receipt.storage_reference,
-                status="imported",
+                status=(
+                    "attention"
+                    if receipt.outcome in {"ocr_required", "needs_attention"}
+                    else "processed"
+                ),
+                thread_id=provenance.thread_id,
+                message_history_id=provenance.message_history_id,
+                internal_date_ms=provenance.internal_date_ms,
+                account_email=provenance.account_email,
+                source_uri=provenance.source_uri,
+                outcome=receipt.outcome,
+                document_id=receipt.document_id,
             )
         )
-        stats.attachments_imported += 1
+        if receipt.storage_reference is not None:
+            stats.attachments_staged += 1
+        if receipt.outcome == "medically_imported":
+            stats.medically_imported += 1
+        elif receipt.outcome == "duplicate":
+            stats.duplicates += 1
+        elif receipt.outcome == "ocr_required":
+            stats.ocr_required += 1
+            stats.needs_attention += 1
+        elif receipt.outcome == "needs_attention":
+            stats.needs_attention += 1
+        elif receipt.outcome == "non_medical":
+            stats.ignored += 1
+
+    def _record_attention(
+        self,
+        provenance: AttachmentProvenance,
+        part: GmailPart,
+        outcome: str,
+        stats: _Stats,
+    ) -> None:
+        stats.needs_attention += 1
+        self._record_attachment(provenance, part, "attention", outcome=outcome)
 
     def _external_attachment(
         self, message_id: str, attachment_id: str | None
-    ) -> str | None:
+    ) -> EncodedBody | None:
         if attachment_id is None:
             return None
         try:
@@ -314,7 +396,12 @@ class GmailService:
             return None
 
     def _record_attachment(
-        self, provenance: AttachmentProvenance, part: GmailPart, status: str
+        self,
+        provenance: AttachmentProvenance,
+        part: GmailPart,
+        status: str,
+        *,
+        outcome: str,
     ) -> None:
         self.state.record_attachment(
             SeenAttachment(
@@ -332,36 +419,48 @@ class GmailService:
                 size_bytes=None,
                 storage_reference=None,
                 status=status,
+                thread_id=provenance.thread_id,
+                message_history_id=provenance.message_history_id,
+                internal_date_ms=provenance.internal_date_ms,
+                account_email=provenance.account_email,
+                source_uri=provenance.source_uri,
+                outcome=outcome,
             )
         )
 
 
-def iter_base64url_chunks(
-    data: str, encoded_chunk_size: int = 65536
-) -> Iterator[bytes]:
-    """Incrementally decode Gmail's unpadded base64url string."""
-    if encoded_chunk_size < 4:
-        raise ValueError("encoded chunk size must be at least four")
-    pending = ""
-    try:
-        data.encode("ascii")
-    except UnicodeEncodeError as error:
-        raise InvalidAttachmentEncoding("attachment data is not ASCII base64url") from error
-    for offset in range(0, len(data), encoded_chunk_size):
-        pending += data[offset : offset + encoded_chunk_size]
-        decodable = len(pending) - (len(pending) % 4)
-        if decodable:
-            block, pending = pending[:decodable], pending[decodable:]
-            try:
-                yield base64.b64decode(block, altchars=b"-_", validate=True)
-            except (binascii.Error, ValueError) as error:
-                raise InvalidAttachmentEncoding("invalid Gmail base64url data") from error
-    if pending:
-        padded = pending + "=" * (-len(pending) % 4)
-        try:
-            yield base64.b64decode(padded, altchars=b"-_", validate=True)
-        except (binascii.Error, ValueError) as error:
-            raise InvalidAttachmentEncoding("invalid Gmail base64url data") from error
+def _provenance(
+    profile_id: str,
+    account_id: str,
+    account_email: str,
+    message: GmailMessage,
+    part: GmailPart,
+    classification: Classification,
+) -> AttachmentProvenance:
+    return AttachmentProvenance(
+        profile_id=profile_id,
+        account_id=account_id,
+        account_email=account_email,
+        message_id=message.message_id,
+        thread_id=message.thread_id,
+        message_history_id=message.history_id,
+        internal_date_ms=message.internal_date_ms,
+        part_id=part.part_id,
+        attachment_id=part.attachment_id,
+        filename=part.filename,
+        source_mime_type=classification.effective_mime_type or part.mime_type,
+        classification=classification.decision,
+        source_uri=f"https://mail.google.com/mail/#all/{message.message_id}",
+    )
+
+
+def _next_page_token(value: str | None, seen: set[str]) -> str | None:
+    if value is None:
+        return None
+    if value in seen:
+        raise GmailPaginationLoop("Gmail repeated a pagination token")
+    seen.add(value)
+    return value
 
 
 def _is_attachment(part: GmailPart) -> bool:
@@ -369,8 +468,14 @@ def _is_attachment(part: GmailPart) -> bool:
 
 
 def _overall_classification(decisions: list[str]) -> str:
+    if "appointment" in decisions:
+        return "appointment"
     if "suspected_medical" in decisions:
         return "suspected_medical"
     if "ambiguous" in decisions:
         return "ambiguous"
     return "ignored"
+
+
+def _safe_error_code(error: BaseException) -> str:
+    return type(error).__name__

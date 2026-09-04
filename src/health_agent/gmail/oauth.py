@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
@@ -17,19 +18,30 @@ class OAuthScopeError(RuntimeError):
     """Persisted credentials contain scopes outside Gmail read-only."""
 
 
+class OAuthRequired(RuntimeError):
+    """The account needs an interactive authorization again."""
+
+
 class GmailOAuth:
     def __init__(self, client_secrets: Path, tokens: LocalGmailTokenStore) -> None:
         self.client_secrets = Path(client_secrets)
         self.tokens = tokens
 
-    def authorize(
-        self, profile_id: str, account_id: str, *, force: bool = False
+    def stage(
+        self,
+        profile_id: str,
+        account_id: str,
+        *,
+        force: bool = False,
+        interactive: bool = False,
     ) -> Credentials:
         credentials = None if force else self.load(profile_id, account_id)
         if credentials is None or (
             not credentials.valid
             and not (credentials.expired and credentials.refresh_token)
         ):
+            if not interactive:
+                raise OAuthRequired("Gmail authorization must be renewed")
             self._validate_client_secrets()
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(self.client_secrets), [GMAIL_READONLY_SCOPE]
@@ -39,33 +51,58 @@ class GmailOAuth:
                 access_type="offline",
                 prompt="consent",
                 include_granted_scopes="false",
+                timeout_seconds=180,
             )
         elif credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except RefreshError as error:
+                raise OAuthRequired("Gmail authorization must be renewed") from error
         if not credentials.valid:
-            raise RuntimeError("Google OAuth credentials are not valid")
+            raise OAuthRequired("Gmail authorization must be renewed")
         self._require_readonly(credentials)
-        self.tokens.save(profile_id, account_id, credentials.to_json())
         return credentials
 
+    def publish_verified(
+        self,
+        profile_id: str,
+        account_id: str,
+        credentials: Credentials,
+        bound_email: str,
+    ) -> Path:
+        self._require_readonly(credentials)
+        return self.tokens.publish_verified(
+            profile_id, account_id, bound_email, credentials.to_json()
+        )
+
     def load(self, profile_id: str, account_id: str) -> Credentials | None:
-        path = self.tokens.path_for(profile_id, account_id)
-        if not path.exists():
+        verified = self.tokens.load_verified(profile_id, account_id)
+        if verified is None:
             return None
-        if path.is_symlink() or not path.is_file():
-            raise RuntimeError("refusing non-regular Gmail OAuth token file")
-        path.chmod(0o600)
-        value = json.loads(path.read_text(encoding="utf-8"))
-        scopes = value.get("scopes") if isinstance(value, dict) else None
+        _, value = verified
+        scopes = value.get("scopes")
         if not isinstance(scopes, list) or set(scopes) != {GMAIL_READONLY_SCOPE}:
             raise OAuthScopeError(
                 "persisted OAuth token must declare only Gmail read-only access"
             )
-        credentials = Credentials.from_authorized_user_file(
-            str(path), [GMAIL_READONLY_SCOPE]
+        credentials = Credentials.from_authorized_user_info(
+            value, [GMAIL_READONLY_SCOPE]
         )
         self._require_readonly(credentials)
         return credentials
+
+    def local_status(self, profile_id: str, account_id: str) -> str:
+        try:
+            credentials = self.load(profile_id, account_id)
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+            return "invalid"
+        if credentials is None:
+            return "missing"
+        if credentials.valid:
+            return "valid"
+        if credentials.expired and credentials.refresh_token:
+            return "refreshable"
+        return "reauth_required"
 
     def _validate_client_secrets(self) -> None:
         if not self.client_secrets.is_file() or self.client_secrets.is_symlink():

@@ -8,9 +8,11 @@
 сохраняет оригинал и происхождение данных, отправляет найденные показатели на
 проверку и показывает в Metabase только подтвержденные значения.
 
-Gmail-коннектор уже реализован и проверен на mocked API; для живой почты ему
-нужен один Desktop OAuth client и однократная авторизация аккаунта. Google Drive,
-WHOOP и Telegram собираются отдельными параллельными срезами.
+Gmail-коннектор реализован и проверен на mocked API и disposable PostgreSQL: PDF
+из почты проходит тот же импорт и review, что локальный файл. Для живой почты
+нужны Desktop OAuth client и авторизация каждого аккаунта. В режиме Google
+External/Testing она истекает через семь дней; для фоновой работы нужен реально
+опубликованный Production-проект (либо Internal Workspace).
 
 ## Три команды
 
@@ -51,13 +53,15 @@ WHOOP и Telegram собираются отдельными параллельн
 
 У одного профиля может быть несколько почтовых аккаунтов. Первый запуск смотрит
 последние семь дней, дальше использует Gmail history cursor; письма и вложения не
-меняются. Неоднозначные вложения остаются во внутреннем статусе и не требуют
-подтверждения в Telegram.
+меняются. Неоднозначные PDF классифицируются по содержимому; визиты из тела
+письма и файлы, которым нужен OCR, остаются во внутреннем attention-статусе без
+лишних вопросов в Telegram. Spam и Trash не импортируются.
 
 ```bash
 uv run health-agent gmail configure PROFILE_UUID personal
 uv run health-agent gmail auth PROFILE_UUID personal
-uv run health-agent gmail sync PROFILE_UUID personal
+uv run health-agent gmail sync PROFILE_UUID --account-id personal
+uv run health-agent gmail status PROFILE_UUID
 ```
 
 Точная OAuth-настройка и правила классификации описаны в
