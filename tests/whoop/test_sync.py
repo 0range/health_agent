@@ -17,6 +17,7 @@ from health_agent.whoop.models import (
     WhoopSyncRun,
 )
 from health_agent.whoop.repository import register_authorized_connection
+from health_agent.whoop.status import get_whoop_status
 from health_agent.whoop.sync import WhoopSyncReport, sync_whoop
 
 
@@ -198,6 +199,24 @@ def test_two_profile_syncs_never_mix_rows(session: Session) -> None:
     assert dict(grouped) == {DEFAULT_PROFILE_ID: 1, second_profile.id: 1}
 
 
+def test_status_is_safe_and_scoped_to_selected_profile(session: Session) -> None:
+    connect(session)
+    sync_whoop(session, DEFAULT_PROFILE_ID, "main", FakeWhoopClient(), full=True)
+
+    status = get_whoop_status(session, DEFAULT_PROFILE_ID, "main")
+    missing = get_whoop_status(session, uuid4(), "main")
+
+    assert status.configured is True
+    assert status.weight_available is True
+    assert (status.cycle_count, status.recovery_count, status.sleep_count, status.workout_count) == (
+        1,
+        1,
+        1,
+        1,
+    )
+    assert missing.configured is False
+
+
 def _summary(report: WhoopSyncReport) -> tuple[str, int, int, int, int]:
     return (
         report.status,
@@ -206,4 +225,3 @@ def _summary(report: WhoopSyncReport) -> tuple[str, int, int, int, int]:
         report.normalized_updated,
         report.unchanged,
     )
-
