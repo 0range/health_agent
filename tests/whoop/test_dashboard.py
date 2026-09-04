@@ -48,7 +48,7 @@ def test_whoop_dashboard_is_profile_isolated_and_idempotent() -> None:
     )
 
     assert first == second
-    assert fake.count_named(f"{WHOOP_DASHBOARD_NAME} [{str(PROFILE)[:8]}]") == 1
+    assert fake.count_named(f"{WHOOP_DASHBOARD_NAME} [{PROFILE}]") == 1
     assert len(fake.cards) == 5
     assert len(fake.dashboards[0]["dashcards"]) == 5
     for card in fake.cards:
@@ -82,6 +82,76 @@ def test_two_profiles_get_separate_dashboards_and_cards() -> None:
         assert str(PROFILE) not in card["dataset_query"]["native"]["query"]
 
 
+def test_profiles_with_same_uuid_prefix_never_share_objects() -> None:
+    fake = FakeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings = Settings(postgres_password="local-secret")
+    engine = cast(Engine, FakeEngine())
+    first_profile = UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    second_profile = UUID("aaaaaaaa-2222-4222-8222-222222222222")
+
+    first = bootstrap_whoop_dashboard(
+        settings, first_profile, transport=transport, engine=engine
+    )
+    second = bootstrap_whoop_dashboard(
+        settings, second_profile, transport=transport, engine=engine
+    )
+
+    assert first.dashboard_id != second.dashboard_id
+    assert len(fake.dashboards) == 2
+    assert len(fake.cards) == 10
+    assert all(
+        str(first_profile) in card["dataset_query"]["native"]["query"]
+        for card in fake.cards[:5]
+    )
+    assert all(
+        str(second_profile) in card["dataset_query"]["native"]["query"]
+        for card in fake.cards[5:]
+    )
+
+
+def test_non_default_legacy_short_names_are_reused_without_duplicates() -> None:
+    fake = FakeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings = Settings(postgres_password="local-secret")
+    engine = cast(Engine, FakeEngine())
+    legacy_suffix = f" [{str(PROFILE)[:8]}]"
+
+    first = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+    fake.dashboards[0]["name"] = f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}"
+    for card, spec in zip(fake.cards, whoop_card_specs(PROFILE), strict=True):
+        card["name"] = f"{spec.name}{legacy_suffix}"
+
+    second = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+
+    assert second == first
+    assert len(fake.dashboards) == 1
+    assert len(fake.cards) == 5
+    assert fake.dashboards[0]["name"] == f"{WHOOP_DASHBOARD_NAME} [{PROFILE}]"
+
+
+def test_existing_dashboard_card_layout_drift_is_repaired() -> None:
+    fake = FakeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings = Settings(postgres_password="local-secret")
+    engine = cast(Engine, FakeEngine())
+
+    bootstrap_whoop_dashboard(settings, PROFILE, transport=transport, engine=engine)
+    fake.dashboards[0]["dashcards"][0].update(
+        {"row": 99, "col": 7, "size_x": 1, "size_y": 1}
+    )
+
+    bootstrap_whoop_dashboard(settings, PROFILE, transport=transport, engine=engine)
+
+    first_card = fake.dashboards[0]["dashcards"][0]
+    assert (first_card["row"], first_card["col"]) == (0, 0)
+    assert (first_card["size_x"], first_card["size_y"]) == (12, 8)
+
+
 def test_default_profile_has_clean_visible_names() -> None:
     fake = FakeMetabase()
     result = bootstrap_whoop_dashboard(
@@ -101,6 +171,11 @@ def test_setup_whoop_cli_prints_safe_identifiers(
 ) -> None:
     monkeypatch.setattr(
         cli,
+        "_profile_exists",
+        lambda _settings, _profile_id: True,
+    )
+    monkeypatch.setattr(
+        cli,
         "bootstrap_whoop_dashboard",
         lambda _settings, _profile_id: WhoopDashboardResult(
             dashboard_id=7,
@@ -118,3 +193,20 @@ def test_setup_whoop_cli_prints_safe_identifiers(
         f"status=ready profile_id={PROFILE} dashboard_id=7 cards=5 "
         "url=http://127.0.0.1:53000/dashboard/7\n"
     )
+
+
+def test_setup_whoop_cli_rejects_unknown_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_profile_exists",
+        lambda _settings, _profile_id: False,
+    )
+
+    result = CliRunner().invoke(
+        cli.app, ["dashboard", "setup-whoop", "--profile-id", str(PROFILE)]
+    )
+
+    assert result.exit_code != 0
+    assert "profile does not exist" in result.output

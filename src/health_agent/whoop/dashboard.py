@@ -95,8 +95,12 @@ def bootstrap_whoop_dashboard(
 ) -> WhoopDashboardResult:
     """Idempotently provision one profile-isolated WHOOP dashboard."""
     ensure_dashboard_reader(settings, engine=engine)
-    suffix = "" if profile_id == DEFAULT_PROFILE_ID else f" [{str(profile_id)[:8]}]"
-    legacy_suffix = f" [{profile_id}]" if profile_id == DEFAULT_PROFILE_ID else None
+    suffix = "" if profile_id == DEFAULT_PROFILE_ID else f" [{profile_id}]"
+    legacy_suffix = (
+        f" [{profile_id}]"
+        if profile_id == DEFAULT_PROFILE_ID
+        else f" [{str(profile_id)[:8]}]"
+    )
     dashboard_name = f"{WHOOP_DASHBOARD_NAME}{suffix}"
     with MetabaseClient(settings.metabase_url, transport=transport) as client:
         client.wait_until_healthy()
@@ -109,9 +113,7 @@ def bootstrap_whoop_dashboard(
             client,
             collection["id"],
             dashboard_name,
-            legacy_name=(
-                f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}" if legacy_suffix else None
-            ),
+            legacy_name=f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}",
         )
         card_ids: list[int] = []
         for position, spec in enumerate(whoop_card_specs(profile_id)):

@@ -51,6 +51,15 @@ Metabase-ready views: `whoop_daily_health`, `whoop_sleep_history`,
 `whoop_workout_history`, `whoop_body_snapshot`, `whoop_source_status`. Все
 содержат `profile_id`; status-view также показывает число recovery-записей.
 
+Создать или восстановить отдельный WHOOP-дашборд выбранного локального профиля:
+
+```bash
+uv run health-agent dashboard setup-whoop --profile-id PROFILE_UUID
+```
+
+Команда отклоняет неизвестный профиль и использует его полный UUID во внутренних
+именах Metabase, поэтому данные двух людей не могут попасть в одни карточки.
+
 `alembic downgrade` намеренно остановится, если в любой WHOOP-таблице уже есть
 данные: сначала нужен явный экспорт или удаление, чтобы история не исчезла молча.
 

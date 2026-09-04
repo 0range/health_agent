@@ -280,7 +280,10 @@ def setup_dashboard() -> None:
 @dashboard_app.command("setup-whoop")
 def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
     """Provision the profile-isolated WHOOP overview dashboard."""
-    result = bootstrap_whoop_dashboard(Settings(), profile_id)
+    settings = Settings()
+    if not _profile_exists(settings, profile_id):
+        raise typer.BadParameter("profile does not exist", param_hint="--profile-id")
+    result = bootstrap_whoop_dashboard(settings, profile_id)
     typer.echo(
         " ".join(
             (
@@ -1053,6 +1056,11 @@ def _telegram_admin(settings: Settings) -> TelegramAdminService:
         SqliteTelegramState(settings.telegram_state_file),
         DatabaseProfileDirectory(settings),
     )
+
+
+def _profile_exists(settings: Settings, profile_id: UUID) -> bool:
+    with session_scope(build_engine(settings)) as session:
+        return session.scalar(select(Profile.id).where(Profile.id == profile_id)) is not None
 
 
 def _staging_manager(env_file: Path | None) -> StagingManager:

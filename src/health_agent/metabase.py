@@ -542,24 +542,42 @@ def _ensure_dashboard_card(
     dashcards = dashboard.get("dashcards", [])
     if not isinstance(dashcards, list):
         raise TypeError("Unexpected Metabase dashboard cards response")
-    if any(row.get("card_id") == card_id for row in dashcards if isinstance(row, dict)):
-        return
+    matching_index = next(
+        (
+            index
+            for index, item in enumerate(dashcards)
+            if isinstance(item, dict) and item.get("card_id") == card_id
+        ),
+        None,
+    )
+    desired_layout = {
+        "row": row,
+        "col": col,
+        "size_x": size_x,
+        "size_y": size_y,
+    }
+    if matching_index is not None:
+        current = dashcards[matching_index]
+        assert isinstance(current, dict)
+        if all(current.get(key) == value for key, value in desired_layout.items()):
+            return
+        dashcards = [*dashcards]
+        dashcards[matching_index] = {**current, **desired_layout}
+    else:
+        dashcards = [
+            *dashcards,
+            {
+                "id": -1,
+                "card_id": card_id,
+                **desired_layout,
+                "parameter_mappings": [],
+                "visualization_settings": {},
+            },
+        ]
     client.request(
         "PUT",
         f"/api/dashboard/{dashboard_id}",
         json={
-            "dashcards": [
-                *dashcards,
-                {
-                    "id": -1,
-                    "card_id": card_id,
-                    "row": row,
-                    "col": col,
-                    "size_x": size_x,
-                    "size_y": size_y,
-                    "parameter_mappings": [],
-                    "visualization_settings": {},
-                },
-            ]
+            "dashcards": dashcards
         },
     )
