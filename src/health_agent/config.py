@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     google_oauth_publishing_status: Literal["testing", "production", "internal"] = (
         Field(default="testing", validation_alias="GOOGLE_OAUTH_PUBLISHING_STATUS")
     )
+    telegram_state_path: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_STATE_FILE"
+    )
+    telegram_staging_path: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_STAGING_ROOT"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )
@@ -184,4 +190,8 @@ class Settings(BaseSettings):
 
     @property
     def telegram_state_file(self) -> Path:
-        return self.telegram_root / "state.sqlite3"
+        return self.telegram_state_path or self.telegram_root / "state.sqlite3"
+
+    @property
+    def telegram_staging_root(self) -> Path:
+        return self.telegram_staging_path or self.telegram_root / "staging"

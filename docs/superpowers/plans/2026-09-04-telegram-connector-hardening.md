@@ -33,10 +33,10 @@
 - Produces `VerifiedBotCredential`, bot-scoped runtime/identity/update/outbound methods, and atomic `bind_identity(...) -> TelegramIdentity`.
 - Migrates legacy SQLite rows into bot ID `0`; verified bots always use their numeric namespace.
 
-- [ ] Test and implement atomic verified credential storage plus bot namespace preservation across replacement.
-- [ ] Test and implement bot/profile-scoped outbound keys with text digest/chat conflict detection.
-- [ ] Test and implement one-transaction identity conflict checks and committed-result return.
-- [ ] Test and implement rejection of symlink/non-regular token, directory, and SQLite paths.
+- [x] Test and implement atomic verified credential storage plus bot namespace preservation across replacement.
+- [x] Test and implement bot/profile-scoped outbound keys with text digest/chat conflict detection.
+- [x] Test and implement one-transaction identity conflict checks and committed-result return.
+- [x] Test and implement rejection of symlink/non-regular token, directory, and SQLite paths.
 
 ### Task 2: Fenced claims and durable retry scheduling
 
@@ -50,9 +50,9 @@
 **Interfaces:**
 - Produces `UpdateClaim(owner_id, generation, lease_until, attempt_count)`, CAS renew/complete/defer methods, and `PollReport.blocked_until`.
 
-- [ ] Test claim contention, renewal beyond the original lease, stale completion rejection, and generation increment after genuine expiry.
-- [ ] Implement a processing heartbeat that renews the active claim and fences every final state transition.
-- [ ] Persist exponential `next_retry_at`, cap autonomous attempts, sleep until due, and surface terminal `needs_attention` after exhaustion.
+- [x] Test claim contention, renewal beyond the original lease, stale completion rejection, and generation increment after genuine expiry.
+- [x] Implement a processing heartbeat that renews the active claim and fences every final state transition.
+- [x] Persist exponential `next_retry_at`, cap autonomous attempts, sleep until due, and surface terminal `needs_attention` after exhaustion.
 
 ### Task 3: Mutation-aware Bot API and truthful status
 
@@ -69,9 +69,9 @@
 - Produces typed `TelegramDeferred(retry_at)` and `TelegramDeliveryUnknown`; `sendMessage` never internally retries ambiguous failure.
 - Produces verified status with bot ID, credential validity, webhook state, poll heartbeat freshness, and safe error code.
 
-- [ ] Test read retry versus mutation no-retry, full `retry_after` deferral, and safe malformed response handling.
-- [ ] Verify `getMe` before atomically saving bot ID/token and scope every runtime operation to that ID.
-- [ ] Make status call `getMe` and `getWebhookInfo`, report configured/verified/webhook/running separately, and never expose token/API descriptions.
+- [x] Test read retry versus mutation no-retry, full `retry_after` deferral, and safe malformed response handling.
+- [x] Verify `getMe` before atomically saving bot ID/token and scope every runtime operation to that ID.
+- [x] Make status call `getMe` and `getWebhookInfo`, report configured/verified/webhook/running separately, and never expose token/API descriptions.
 
 ### Task 4: Pre-commit attachment staging and malformed-update quarantine
 
@@ -83,9 +83,9 @@
 **Interfaces:**
 - Produces private staged attachments with independently verified size/SHA-256/media signature before `MedicalInbox.ingest`.
 
-- [ ] Test PDF/JPEG/OGG signatures, lying MIME/size, over-limit streams, incomplete/incorrect inbox receipts, and no inbox side effect before validation.
-- [ ] Test malformed update/API integer objects become persisted safe service errors and do not terminate `run_forever`.
-- [ ] Implement private temporary staging/deletion and profile/source idempotency requirements at the inbox boundary.
+- [x] Test PDF/JPEG/OGG signatures, lying MIME/size, over-limit streams, incomplete/incorrect inbox receipts, and no inbox side effect before validation.
+- [x] Test malformed update/API integer objects become persisted safe service errors and do not terminate `run_forever`.
+- [x] Implement private temporary staging/deletion and profile/source idempotency requirements at the inbox boundary.
 
 ### Task 5: Documentation, migration compatibility, and gates
 
@@ -94,6 +94,6 @@
 - Modify: `docs/superpowers/reports/2026-09-04-telegram-connector-report.md`
 - Create: `docs/superpowers/reports/2026-09-04-telegram-connector-hardening-report.md`
 
-- [ ] Test opening an existing legacy connector SQLite file performs a lossless bot-0 migration and remains idempotent.
-- [ ] Update setup/status/delivery/retry/staging documentation without claiming live acceptance.
-- [ ] Run full pytest, Ruff, mypy, disposable migrations, diff/credential checks; commit all hardening changes and do not push.
+- [x] Test opening an existing legacy connector SQLite file performs a lossless bot-0 migration and remains idempotent.
+- [x] Update setup/status/delivery/retry/staging documentation without claiming live acceptance.
+- [x] Run full pytest, Ruff, mypy, disposable migrations, diff/credential checks; commit all hardening changes and do not push.

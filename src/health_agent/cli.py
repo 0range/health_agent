@@ -571,8 +571,17 @@ def configure_telegram_token() -> None:
     """Store a BotFather token locally without exposing it in shell history."""
     settings = Settings()
     token = typer.prompt("Bot token", hide_input=True)
-    _telegram_admin(settings).configure_token(token)
-    typer.echo(f"status=configured token_file={settings.effective_telegram_token_file}")
+    credential = _telegram_admin(settings).configure_token(token)
+    typer.echo(
+        " ".join(
+            (
+                "status=verified",
+                f"bot_id={credential.bot_id}",
+                f"bot_username={credential.username or ''}",
+                f"token_file={settings.effective_telegram_token_file}",
+            )
+        )
+    )
 
 
 @telegram_app.command("bind")
@@ -614,6 +623,12 @@ def telegram_status(profile_id: UUID | None = None) -> None:
         " ".join(
             (
                 f"token_configured={str(status.token_configured).lower()}",
+                f"credential_verified={str(status.credential_verified).lower()}",
+                f"bot_id={status.bot_id or ''}",
+                f"bot_username={status.bot_username or ''}",
+                f"webhook_configured={'' if status.webhook_configured is None else str(status.webhook_configured).lower()}",
+                f"poller_running={str(status.poller_running).lower()}",
+                f"delivery_unknown_count={status.delivery_unknown_count}",
                 f"profile_id={status.profile_id or ''}",
                 f"identity_bound={str(status.identity_bound).lower()}",
                 f"next_offset={status.next_offset if status.next_offset is not None else ''}",
@@ -628,13 +643,21 @@ def telegram_status(profile_id: UUID | None = None) -> None:
 def discover_telegram_id() -> None:
     """List private sender/chat IDs from pending updates; never print message text."""
     settings = Settings()
-    token = PrivateBotTokenStore(settings.effective_telegram_token_file).load()
-    gateway = TelegramBotAPI(token)
+    credential = PrivateBotTokenStore(
+        settings.effective_telegram_token_file
+    ).load_verified()
+    gateway = TelegramBotAPI(credential.token)
+    remote = gateway.get_me()
+    if remote.get("id") != credential.bot_id or remote.get("is_bot") is not True:
+        typer.echo("status=blocked error=bot_identity_mismatch", err=True)
+        raise typer.Exit(code=1)
     if gateway.get_webhook_url():
         typer.echo("status=blocked error=webhook_configured", err=True)
         raise typer.Exit(code=1)
     updates = gateway.get_updates(
-        offset=SqliteTelegramState(settings.telegram_state_file).next_offset(),
+        offset=SqliteTelegramState(settings.telegram_state_file).next_offset(
+            credential.bot_id
+        ),
         timeout_seconds=1,
     )
     candidates: set[tuple[int, int]] = set()

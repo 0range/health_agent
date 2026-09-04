@@ -1,5 +1,8 @@
 # Telegram Connector Implementation Report
 
+> Superseded by the post-review hardening report:
+> [`2026-09-04-telegram-connector-hardening-report.md`](2026-09-04-telegram-connector-hardening-report.md).
+
 Date: 2026-09-04
 
 Branch: `codex/v1-telegram`
@@ -21,8 +24,9 @@ webhook, fake medical answers, or a real-network test dependency.
   every call carries Profile UUID and message/time context.
 - Document/photo/voice provenance, independent streaming SHA-256 and 20 MiB
   bound; inbox deduplication contract is `(profile_id, source_external_id)`.
-- Safe 4096-character output chunking, bounded transport/5xx/429 retry, stable
-  delivery keys and duplicate reply/reminder suppression.
+- Safe 4096-character output chunking and duplicate reply/reminder suppression.
+  The hardening round changed mutating transport/5xx handling to explicit
+  `delivery_unknown` without automatic retry.
 - Service-friendly token/bind/unbind/status administration plus safe numeric ID
   discovery. Token and operational state default to ignored local `0600` files.
 - No Alembic revision was added, avoiding conflicts with other connector branches;
