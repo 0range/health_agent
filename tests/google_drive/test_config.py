@@ -4,6 +4,8 @@ import pytest
 
 from health_agent.google_drive.config import DriveProfile, normalize_folder_id
 
+PROFILE_ID = "00000000-0000-0000-0000-000000000001"
+
 
 @pytest.mark.parametrize(
     ("value", "expected"),
@@ -39,7 +41,7 @@ def test_rejects_non_folder_or_unsafe_references(value: str) -> None:
 
 def test_profile_deduplicates_roots_and_validates_local_key() -> None:
     folder = "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"
-    profile = DriveProfile.create("vitalii", [folder, folder])
+    profile = DriveProfile.create(PROFILE_ID, [folder, folder])
     assert profile.root_folder_ids == (folder,)
 
     with pytest.raises(ValueError):

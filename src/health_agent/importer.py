@@ -103,6 +103,7 @@ def import_document(
     profile_id: UUID = DEFAULT_PROFILE_ID,
     source_provider: str = "local_file",
     source_external_id: str | None = None,
+    source_revision: str | None = None,
     collected_date: date | None = None,
     issued_date: date | None = None,
 ) -> ImportReport:
@@ -130,7 +131,7 @@ def import_document(
                 document=existing,
                 provider=source_provider,
                 external_id=source_external_id or source_path.name,
-                revision=f"sha256:{stored_file.sha256}",
+                revision=source_revision or f"sha256:{stored_file.sha256}",
                 source_uri=source_uri,
             )
             _merge_medical_dates(
@@ -173,7 +174,7 @@ def import_document(
             document=document,
             provider=source_provider,
             external_id=source_external_id or source_path.name,
-            revision=f"sha256:{stored_file.sha256}",
+            revision=source_revision or f"sha256:{stored_file.sha256}",
             source_uri=source_uri,
         )
 

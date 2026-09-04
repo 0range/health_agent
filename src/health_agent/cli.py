@@ -22,6 +22,7 @@ from health_agent.gmail.stores import (
 )
 from health_agent.google_drive.api import GoogleDriveGateway
 from health_agent.google_drive.config import DriveProfile
+from health_agent.google_drive.medical_consumer import MedicalDriveConsumer
 from health_agent.google_drive.oauth import DriveOAuth
 from health_agent.google_drive.service import DriveProfileMismatch, DriveService
 from health_agent.google_drive.stores import (
@@ -29,7 +30,6 @@ from health_agent.google_drive.stores import (
     LocalSyncStateStore,
     LocalTokenStore,
 )
-from health_agent.google_drive.vault_consumer import FileVaultDriveConsumer
 from health_agent.importer import (
     approve_observation,
     import_document,
@@ -812,15 +812,20 @@ def _drive_stores(
 
 
 @drive_app.command("configure")
-def configure_drive(profile_id: str, folders: list[str]) -> None:
+def configure_drive(profile_id: UUID, folders: list[str]) -> None:
     """Configure one or more read-only source folders for a local profile."""
     settings = Settings()
     profiles, _, _ = _drive_stores(settings)
-    profile = DriveProfile.create(profile_id, folders)
-    if profiles.exists(profile_id):
-        current = profiles.load(profile_id)
-        if current.account_email is not None:
-            profile = profile.with_account(current.account_email)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profile = DriveProfile.create(profile_key, folders)
+    if profiles.exists(profile_key):
+        current = profiles.load(profile_key)
+        roots_changed = current.root_folder_ids != profile.root_folder_ids
+    else:
+        roots_changed = True
+    if roots_changed:
+        LocalSyncStateStore(settings.google_drive_root).clear_cursor(profile_key)
     profiles.save(profile)
     typer.echo(
         f"status=configured profile={profile.profile_id} roots={len(profile.root_folder_ids)}"
@@ -828,62 +833,110 @@ def configure_drive(profile_id: str, folders: list[str]) -> None:
 
 
 @drive_app.command("auth")
-def authorize_drive(profile_id: str) -> None:
+def authorize_drive(profile_id: UUID) -> None:
     """Authorize one Google account using a local Desktop OAuth callback."""
     settings = Settings()
     profiles, tokens, _ = _drive_stores(settings)
-    profile = profiles.load(profile_id)
-    credentials = DriveOAuth(settings.google_drive_client_secrets, tokens).authorize(
-        profile_id
-    )
-    account_email = GoogleDriveGateway.from_credentials(credentials).account_email()
-    if profile.account_email is not None and profile.account_email != account_email:
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profiles.load(profile_key)
+    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    credentials = oauth.stage(profile_key, force=True, interactive=True)
+    identity = GoogleDriveGateway.from_credentials(credentials).account_identity()
+    previous = tokens.load_verified(profile_key)
+    if previous is not None and previous[0].permission_id != identity.permission_id:
         raise DriveProfileMismatch(
-            f"profile {profile_id!r} is already bound to another Google account"
+            f"profile {profile_key!r} is already bound to another Google account"
         )
-    profiles.save(profile.with_account(account_email))
-    typer.echo(f"status=authorized profile={profile_id} account={account_email}")
+    oauth.publish_verified(profile_key, credentials, identity)
+    typer.echo(
+        f"status=authorized profile={profile_key} account={identity.email}"
+    )
 
 
 @drive_app.command("status")
-def drive_status(profile_id: str) -> None:
+def drive_status(profile_id: UUID) -> None:
     """Show safe local Drive configuration and synchronization freshness."""
     settings = Settings()
     profiles, tokens, state = _drive_stores(settings)
-    profile = profiles.load(profile_id)
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profile = profiles.load(profile_key)
+    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    try:
+        verified = tokens.load_verified(profile_key)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        verified = None
+    counts = state.counts(profile_key)
+    run = state.run_state(profile_key)
+    attention = sum(
+        count
+        for outcome, count in counts.items()
+        if outcome
+        in {
+            "needs_attention",
+            "too_large",
+            "processing_failed",
+            "transient_download_failed",
+            "download_failed",
+            "not_found",
+            "download_restricted",
+            "unsupported_google_native",
+            "unsupported_media_type",
+        }
+    )
     typer.echo(
         " ".join(
             (
                 "status=configured",
                 f"profile={profile.profile_id}",
-                f"authorized={'yes' if tokens.exists(profile_id) else 'no'}",
-                f"account={profile.account_email or 'unknown'}",
+                f"token={oauth.local_status(profile_key)}",
+                f"account_bound={'yes' if verified is not None else 'no'}",
+                f"account={verified[0].email if verified is not None else 'unknown'}",
                 f"roots={len(profile.root_folder_ids)}",
-                f"cursor={'ready' if state.get_cursor(profile_id) else 'none'}",
-                f"files={state.count_seen(profile_id)}",
+                f"root_accessible={run['root_accessible'] or 'unknown'}",
+                f"sync_state={'interrupted' if run['in_progress'] == 'yes' else 'idle'}",
+                f"cursor={'ready' if state.get_cursor(profile_key) else 'none'}",
+                f"medically_imported={counts.get('medically_imported', 0)}",
+                f"ocr_required={counts.get('ocr_required', 0)}",
+                f"attention={attention}",
+                f"action_required={attention + counts.get('ocr_required', 0)}",
+                f"last_attempt={run['last_attempt_at'] or 'never'}",
+                f"last_success={run['last_success_at'] or 'never'}",
+                f"last_error={run['last_error_code'] or 'none'}",
             )
         )
     )
 
 
 @drive_app.command("sync")
-def sync_drive(profile_id: str, full: bool = False) -> None:
-    """Download new or changed supported files into the profile's local vault."""
+def sync_drive(profile_id: UUID, full: bool = False) -> None:
+    """Import new or changed Drive files into the medical pipeline."""
     settings = Settings()
     profiles, tokens, state = _drive_stores(settings)
-    profile = profiles.load(profile_id)
-    if not tokens.exists(profile_id):
-        raise RuntimeError(f"Google Drive profile {profile_id!r} needs OAuth authorization")
-    credentials = DriveOAuth(settings.google_drive_client_secrets, tokens).authorize(
-        profile_id
-    )
+    _require_database_profile(settings, profile_id)
+    profile_key = str(profile_id)
+    profile = profiles.load(profile_key)
+    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    credentials = oauth.stage(profile_key)
+    verified = tokens.load_verified(profile_key)
+    if verified is None:
+        raise RuntimeError(f"Google Drive profile {profile_key!r} needs OAuth authorization")
+    identity = verified[0]
+    profile = profile.with_account(identity.permission_id, identity.email)
     service = DriveService(
         profile,
         GoogleDriveGateway.from_credentials(credentials),
         state,
-        FileVaultDriveConsumer(profile_id, settings.vault_root, settings.temporary_root),
+        MedicalDriveConsumer(
+            profile_key,
+            build_engine(settings),
+            FileVault(settings.vault_root),
+            settings.temporary_root,
+        ),
     )
     report = service.sync(full=full)
+    oauth.publish_verified(profile_key, credentials, identity)
     typer.echo(
         " ".join(
             (
@@ -891,13 +944,23 @@ def sync_drive(profile_id: str, full: bool = False) -> None:
                 f"profile={report.profile_id}",
                 f"mode={report.mode}",
                 f"discovered={report.discovered}",
-                f"imported={report.imported}",
+                f"medically_imported={report.medically_imported}",
+                f"duplicates={report.duplicates}",
+                f"ocr_required={report.ocr_required}",
+                f"attention={report.needs_attention}",
+                f"failed={report.failed}",
                 f"unchanged={report.unchanged}",
                 f"skipped={report.skipped}",
                 f"removed={report.removed}",
             )
         )
     )
+
+
+def _require_database_profile(settings: Settings, profile_id: UUID) -> None:
+    with session_scope(build_engine(settings)) as session:
+        if session.scalar(select(Profile.id).where(Profile.id == profile_id)) is None:
+            raise typer.BadParameter("profile does not exist in the health database")
 
 
 def main() -> None:

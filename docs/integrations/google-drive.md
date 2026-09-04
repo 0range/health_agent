@@ -2,7 +2,11 @@
 
 ## TL;DR
 
-The connector code is ready and tested without real credentials. It reads private folders recursively, keeps each person's account, folders, token, cursor, and downloaded vault separate, and never calls a Drive write method. One external setup remains: create a Google **Desktop OAuth client**, save its JSON locally, then authorize each profile once.
+The connector is tested with mocked Google APIs and disposable PostgreSQL. It
+reads private My Drive folders recursively, sends PDFs through the common
+medical database/review pipeline, routes scans to attention, and never calls a
+Drive write method. Live acceptance still requires a Desktop OAuth client and
+explicit authorization for each person.
 
 ## What the Drive folder needs
 
@@ -14,16 +18,29 @@ The connector code is ready and tested without real credentials. It reads privat
 - Drive shortcuts are skipped in v1 because their targets are not descendants of the configured medical folder; add the target folder itself when it should be imported.
 - Download-disabled items are recorded with a safe status and left unchanged.
 - Repeated scans compare the Drive file ID and revision before downloading; content SHA-256 and size are preserved after download.
+- Shared-drive roots are rejected in v1. Their independent change logs need a
+  separate cursor model; silently treating them like My Drive would lose data.
+- Every supported, unsupported, restricted, oversized, corrupt, removed, or
+  failed item gets a local machine status. One bad file does not stop later files.
 
-Google's API limits Google Workspace exports to 10 MB. A source file above that limit must be converted to a regular PDF by its owner before this v1 connector can ingest it.
+Google's API limits Google Workspace exports to 10 MB. Such an item is recorded
+as `too_large`; convert it to a regular PDF for ingestion.
 
 ## One-time Google setup
 
 1. In one Google Cloud project, enable the Drive API and configure the OAuth consent screen.
-2. Create an OAuth client with application type **Desktop app**. While this personal installation is in testing, add each Google account as a test user.
+2. Create an OAuth client with application type **Desktop app**. Add each Google
+   account as a test user while configuring it. Important: an External app left
+   in **Testing** normally issues a refresh token that expires after seven days
+   for this Drive scope. Durable background sync needs a published Production
+   app (or an Internal Google Workspace app); otherwise reauthorization is
+   expected.
 3. Save the downloaded JSON as `data/secrets/google-drive-oauth-client.json`. Both `data/` and tokens are ignored by Git; the connector enforces local file mode `0600`.
 
-The requested scope is exactly `https://www.googleapis.com/auth/drive.readonly`. It can view and download Drive files but cannot create, edit, move, delete, rename, or share them.
+The requested scope is exactly `https://www.googleapis.com/auth/drive.readonly`.
+Google grants it read access to every file visible to that account, although the
+connector ingests only configured roots. It cannot create, edit, move, delete,
+rename, or share files.
 
 ## Commands
 
@@ -34,13 +51,22 @@ uv run health-agent drive sync PROFILE_ID
 uv run health-agent drive status PROFILE_ID
 ```
 
-Use `drive sync PROFILE_ID --full` to deliberately rebuild inventory. Normal sync resumes from the per-profile Drive Changes cursor.
+`PROFILE_ID` is the UUID printed by `health-agent profile list`, not a nickname.
+Changing configured roots automatically invalidates the old cursor and forces a
+full inventory. Use `--full` for periodic safety reconciliation; normal sync
+resumes from the profile's My Drive Changes cursor.
 
-## Integration boundary
+## What status means
 
-This branch intentionally adds no database migration. `DriveService` depends on explicit `SyncStateStore` and `ContentConsumer` protocols, while `DriveProvenance` carries profile, root, path, Drive file ID, version/revision, timestamps, link, source MIME, output MIME, SHA-256, and size.
+`drive status` is deliberately local and content-free. It separately reports
+token state, stable account binding, whether roots passed the last successful
+sync, last success/error, and per-item medical/attention counts. It never calls a
+token file merely “authorized” based on file existence.
 
-When integrated on top of migration `0004_chart_integrity`, the production consumer should map the local profile key to `profiles.id`, then call the profile-aware medical importer with `source_provider="google_drive"`, `source_external_id=<Drive file ID>`, and the source link. The existing `documents(profile_id, sha256)` and `document_source_records` constraints will deduplicate identical bytes within one profile while retaining Drive as another source occurrence. Connector cursor/revision state may initially remain in its private local JSON store; moving it into PostgreSQL can use the same protocol later.
+No new database migration is required: the production consumer uses the existing
+profile-aware importer and immutable `SourceRecord` provenance with provider
+`google_drive`, Drive file ID, revision, and link. Identical bytes deduplicate
+only within one profile; two people remain separate.
 
 ## Official references
 

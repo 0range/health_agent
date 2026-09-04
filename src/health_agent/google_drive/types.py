@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Protocol
 
 from health_agent.google_drive.config import DriveProfile
+
+
+class GlobalDriveSyncError(RuntimeError):
+    """A profile/database invariant failure that must fail the whole run."""
+
+
+@dataclass(frozen=True, slots=True)
+class DriveAccountIdentity:
+    permission_id: str
+    email: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +37,7 @@ class DriveItem:
     can_download: bool = False
     shortcut_target_id: str | None = None
     shortcut_target_mime_type: str | None = None
+    trashed: bool = False
 
     @property
     def revision(self) -> str:
@@ -35,14 +47,15 @@ class DriveItem:
             self.md5_checksum,
             self.modified_time,
         )
-        return "|".join(part or "" for part in parts)
+        return "|".join(part or "" for part in parts) if any(parts) else ""
 
 
 @dataclass(frozen=True, slots=True)
 class DriveChange:
-    file_id: str
+    file_id: str | None
     removed: bool
     item: DriveItem | None
+    change_type: str = "file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +86,9 @@ class ContentReceipt:
     sha256: str
     size_bytes: int
     storage_reference: str
+    outcome: str = "medically_imported"
+    processing_status: str | None = None
+    document_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +113,7 @@ class SeenItem:
     size_bytes: int | None
     storage_reference: str | None
     status: str
+    safe_error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,10 +125,15 @@ class SyncReport:
     unchanged: int = 0
     skipped: int = 0
     removed: int = 0
+    medically_imported: int = 0
+    duplicates: int = 0
+    ocr_required: int = 0
+    needs_attention: int = 0
+    failed: int = 0
 
 
 class DriveGateway(Protocol):
-    def account_email(self) -> str: ...
+    def account_identity(self) -> DriveAccountIdentity: ...
 
     def get_file(self, file_id: str) -> DriveItem: ...
 
@@ -139,9 +161,13 @@ class ProfileStore(Protocol):
 
 
 class SyncStateStore(Protocol):
+    def sync_lock(self, profile_id: str) -> AbstractContextManager[None]: ...
+
     def get_cursor(self, profile_id: str) -> str | None: ...
 
     def set_cursor(self, profile_id: str, cursor: str) -> None: ...
+
+    def clear_cursor(self, profile_id: str) -> None: ...
 
     def get_seen(self, profile_id: str, file_id: str) -> SeenItem | None: ...
 
@@ -156,3 +182,13 @@ class SyncStateStore(Protocol):
     ) -> int: ...
 
     def count_seen(self, profile_id: str) -> int: ...
+
+    def counts(self, profile_id: str) -> dict[str, int]: ...
+
+    def begin_sync(self, profile_id: str, mode: str) -> None: ...
+
+    def finish_sync(self, profile_id: str) -> None: ...
+
+    def fail_sync(self, profile_id: str, safe_error_code: str) -> None: ...
+
+    def run_state(self, profile_id: str) -> dict[str, str | None]: ...

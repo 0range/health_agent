@@ -1,20 +1,26 @@
-"""Desktop OAuth with one private token file per local profile."""
+"""Desktop OAuth staged before an atomic, verified account binding is published."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
 
 from health_agent.google_drive.config import DRIVE_READONLY_SCOPE
 from health_agent.google_drive.stores import LocalTokenStore
+from health_agent.google_drive.types import DriveAccountIdentity
 
 
 class OAuthScopeError(RuntimeError):
-    """Raised when persisted credentials contain permissions outside read-only Drive."""
+    """Persisted credentials contain permissions outside read-only Drive."""
+
+
+class OAuthRequired(RuntimeError):
+    """The user must explicitly authorize or reauthorize the connector."""
 
 
 class DriveOAuth:
@@ -22,50 +28,79 @@ class DriveOAuth:
         self.client_secrets_path = Path(client_secrets_path)
         self.tokens = tokens
 
-    def authorize(self, profile_id: str) -> Credentials:
-        credentials = self.load(profile_id)
-        if credentials is None or (
-            not credentials.valid
-            and not (credentials.expired and credentials.refresh_token)
-        ):
+    def stage(
+        self,
+        profile_id: str,
+        *,
+        force: bool = False,
+        interactive: bool = False,
+    ) -> Credentials:
+        """Return usable credentials without changing the verified token file."""
+        credentials = None if force else self.load(profile_id)
+        if credentials is None:
+            if not interactive:
+                raise OAuthRequired("Google Drive authorization is missing")
             self._validate_client_secrets()
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(self.client_secrets_path), [DRIVE_READONLY_SCOPE]
             )
             credentials = flow.run_local_server(
+                host="127.0.0.1",
                 port=0,
+                timeout_seconds=300,
                 access_type="offline",
                 prompt="consent",
                 include_granted_scopes="false",
             )
         elif credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except RefreshError as error:
+                raise OAuthRequired("Google Drive reauthorization is required") from error
         if not credentials.valid:
-            raise RuntimeError("Google OAuth credentials are not valid")
+            raise OAuthRequired("Google Drive reauthorization is required")
         self._require_readonly(credentials)
-        self.tokens.save(profile_id, credentials.to_json())
         return credentials
 
+    def publish_verified(
+        self,
+        profile_id: str,
+        credentials: Credentials,
+        identity: DriveAccountIdentity,
+    ) -> Path:
+        self._require_readonly(credentials)
+        return self.tokens.publish_verified(profile_id, identity, credentials.to_json())
+
     def load(self, profile_id: str) -> Credentials | None:
-        path = self.tokens.path_for(profile_id)
-        if not path.exists():
+        verified = self.tokens.load_verified(profile_id)
+        if verified is None:
             return None
-        if path.is_symlink() or not path.is_file():
-            raise RuntimeError("refusing non-regular OAuth token file")
-        path.chmod(0o600)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        stored_scopes = payload.get("scopes") if isinstance(payload, dict) else None
+        _, payload = verified
+        stored_scopes = payload.get("scopes")
         if not isinstance(stored_scopes, list) or set(stored_scopes) != {
             DRIVE_READONLY_SCOPE
         }:
             raise OAuthScopeError(
                 "persisted Google OAuth token must declare only Drive read-only access"
             )
-        credentials = Credentials.from_authorized_user_file(
-            str(path), [DRIVE_READONLY_SCOPE]
+        credentials = Credentials.from_authorized_user_info(
+            payload, [DRIVE_READONLY_SCOPE]
         )
         self._require_readonly(credentials)
         return credentials
+
+    def local_status(self, profile_id: str) -> str:
+        try:
+            credentials = self.load(profile_id)
+        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+            return "invalid"
+        if credentials is None:
+            return "missing"
+        if credentials.valid:
+            return "ready"
+        if credentials.expired and credentials.refresh_token:
+            return "refresh_required"
+        return "reauth_required"
 
     def _validate_client_secrets(self) -> None:
         if not self.client_secrets_path.is_file() or self.client_secrets_path.is_symlink():

@@ -13,7 +13,10 @@ from health_agent.google_drive.stores import (
     LocalSyncStateStore,
     LocalTokenStore,
 )
-from health_agent.google_drive.types import SeenItem
+from health_agent.google_drive.types import DriveAccountIdentity, SeenItem
+
+ALICE = "11111111-1111-4111-8111-111111111111"
+BOB = "22222222-2222-4222-8222-222222222222"
 
 
 def _seen(profile_id: str, file_id: str = "drive-file-1") -> SeenItem:
@@ -37,7 +40,7 @@ def _seen(profile_id: str, file_id: str = "drive-file-1") -> SeenItem:
         sha256="a" * 64,
         size_bytes=42,
         storage_reference="vault/ref",
-        status="imported",
+        status="medically_imported",
     )
 
 
@@ -46,39 +49,56 @@ def test_profile_token_and_state_are_private_and_profile_isolated(tmp_path: Path
     tokens = LocalTokenStore(tmp_path)
     state = LocalSyncStateStore(tmp_path)
     root = "root-folder-123"
-    profiles.save(DriveProfile.create("alice", [root]))
-    profiles.save(DriveProfile.create("bob", [root]))
-    token_path = tokens.save("alice", json.dumps({"token": "secret"}))
-    state.record_seen(_seen("alice"))
-    state.set_cursor("alice", "cursor-a")
+    profiles.save(DriveProfile.create(ALICE, [root]))
+    profiles.save(DriveProfile.create(BOB, [root]))
+    token_path = tokens.publish_verified(
+        ALICE,
+        DriveAccountIdentity("permission-a", "alice@example.com"),
+        json.dumps({"token": "secret"}),
+    )
+    state.record_seen(_seen(ALICE))
+    state.set_cursor(ALICE, "cursor-a")
 
-    assert profiles.load("alice").profile_id == "alice"
-    assert state.get_cursor("alice") == "cursor-a"
-    assert state.get_cursor("bob") is None
-    assert state.get_seen("bob", "drive-file-1") is None
+    assert profiles.load(ALICE).profile_id == ALICE
+    assert state.get_cursor(ALICE) == "cursor-a"
+    assert state.get_cursor(BOB) is None
+    assert state.get_seen(BOB, "drive-file-1") is None
     assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE((tmp_path / "alice" / "profile.json").stat().st_mode) == 0o600
-    assert stat.S_IMODE((tmp_path / "alice" / "sync-state.json").stat().st_mode) == 0o600
-    assert stat.S_IMODE((tmp_path / "alice").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / ALICE / "profile.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / ALICE / "sync-state.json").stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / ALICE).stat().st_mode) == 0o700
 
 
 def test_store_rejects_cross_profile_payload(tmp_path: Path) -> None:
     state = LocalSyncStateStore(tmp_path)
-    path = tmp_path / "bob" / "sync-state.json"
+    path = tmp_path / BOB / "sync-state.json"
     path.parent.mkdir(parents=True)
-    payload = _seen("alice")
+    payload = _seen(ALICE)
     path.write_text(
         json.dumps({"cursor": None, "items": {payload.file_id: asdict(payload)}}),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="different profile"):
-        state.get_seen("bob", payload.file_id)
+        state.get_seen(BOB, payload.file_id)
 
 
 def test_rewrites_overly_permissive_state_mode(tmp_path: Path) -> None:
     store = LocalProfileStore(tmp_path)
-    store.save(DriveProfile.create("alice", ["root-folder-123"]))
-    path = tmp_path / "alice" / "profile.json"
+    store.save(DriveProfile.create(ALICE, ["root-folder-123"]))
+    path = tmp_path / ALICE / "profile.json"
     path.chmod(0o644)
-    store.load("alice")
+    store.load(ALICE)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_clear_cursor_forces_new_root_inventory_without_dropping_seen_items(
+    tmp_path: Path,
+) -> None:
+    state = LocalSyncStateStore(tmp_path)
+    state.record_seen(_seen(ALICE))
+    state.set_cursor(ALICE, "old-root-cursor")
+
+    state.clear_cursor(ALICE)
+
+    assert state.get_cursor(ALICE) is None
+    assert state.get_seen(ALICE, "drive-file-1") is not None

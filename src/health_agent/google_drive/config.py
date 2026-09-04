@@ -6,21 +6,20 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
-_PROFILE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _DRIVE_ID = re.compile(r"[A-Za-z0-9_-]{10,200}")
 _DRIVE_HOSTS = {"drive.google.com", "docs.google.com"}
 
 
 def validate_profile_id(value: str) -> str:
-    """Return a safe local profile key or raise a user-facing error."""
-    if _PROFILE_ID.fullmatch(value) is None:
-        raise ValueError(
-            "profile ID must be 1-64 letters, digits, underscores, or hyphens"
-        )
-    return value
+    """Use the database profile UUID as the connector ownership boundary."""
+    try:
+        return str(UUID(value))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("profile ID must be an existing profile UUID") from error
 
 
 def normalize_folder_id(value: str) -> str:
@@ -54,6 +53,7 @@ class DriveProfile:
 
     profile_id: str
     root_folder_ids: tuple[str, ...]
+    account_permission_id: str | None = None
     account_email: str | None = None
 
     @classmethod
@@ -65,11 +65,14 @@ class DriveProfile:
             raise ValueError("at least one Google Drive folder is required")
         return cls(validate_profile_id(profile_id), normalized)
 
-    def with_account(self, email: str) -> DriveProfile:
+    def with_account(self, permission_id: str, email: str) -> DriveProfile:
+        permission_id = permission_id.strip()
+        if not permission_id or any(character.isspace() for character in permission_id):
+            raise ValueError("Google account permission ID is invalid")
         email = email.strip().casefold()
         if "@" not in email or any(character.isspace() for character in email):
             raise ValueError("Google account email is invalid")
-        return DriveProfile(self.profile_id, self.root_folder_ids, email)
+        return DriveProfile(self.profile_id, self.root_folder_ids, permission_id, email)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -83,5 +86,10 @@ class DriveProfile:
         if not isinstance(raw_roots, list):
             raise TypeError("root_folder_ids must be a list")
         profile = cls.create(profile_id, [str(value) for value in raw_roots])
-        account = data.get("account_email")
-        return profile if account is None else profile.with_account(str(account))
+        account_id = data.get("account_permission_id")
+        account_email = data.get("account_email")
+        if account_id is None and account_email is None:
+            return profile
+        if not isinstance(account_id, str) or not isinstance(account_email, str):
+            raise TypeError("stored Google account binding is incomplete")
+        return profile.with_account(account_id, account_email)

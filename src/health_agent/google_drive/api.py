@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import socket
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
@@ -20,6 +21,7 @@ from tenacity import (
 
 from health_agent.google_drive.types import (
     ChangePage,
+    DriveAccountIdentity,
     DriveChange,
     DriveItem,
     ItemPage,
@@ -28,7 +30,7 @@ from health_agent.google_drive.types import (
 _FILE_FIELDS = (
     "id,name,mimeType,parents,createdTime,modifiedTime,version,headRevisionId,"
     "md5Checksum,size,webViewLink,driveId,capabilities(canDownload),"
-    "shortcutDetails(targetId,targetMimeType)"
+    "shortcutDetails(targetId,targetMimeType),trashed"
 )
 _RETRYABLE_REASONS = {
     "backendError",
@@ -39,6 +41,10 @@ _RETRYABLE_REASONS = {
 
 
 def _is_retryable(error: BaseException) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionError, socket.timeout)):
+        return True
+    if error.__class__.__module__.startswith("httplib2"):
+        return True
     if not isinstance(error, HttpError):
         return False
     status = int(getattr(error.resp, "status", 0))
@@ -92,6 +98,7 @@ def _parse_item(data: dict[str, Any]) -> DriveItem:
         can_download=bool(capabilities.get("canDownload", False)),
         shortcut_target_id=shortcut.get("targetId"),
         shortcut_target_mime_type=shortcut.get("targetMimeType"),
+        trashed=bool(data.get("trashed", False)),
     )
 
 
@@ -105,9 +112,15 @@ class GoogleDriveGateway:
     def from_credentials(cls, credentials: Credentials) -> GoogleDriveGateway:
         return cls(build("drive", "v3", credentials=credentials, cache_discovery=False))
 
-    def account_email(self) -> str:
-        response = _execute(self._service.about().get(fields="user(emailAddress)"))
-        return str(response["user"]["emailAddress"]).casefold()
+    def account_identity(self) -> DriveAccountIdentity:
+        response = _execute(
+            self._service.about().get(fields="user(permissionId,emailAddress)")
+        )
+        user = response["user"]
+        return DriveAccountIdentity(
+            permission_id=str(user["permissionId"]),
+            email=str(user["emailAddress"]).casefold(),
+        )
 
     def get_file(self, file_id: str) -> DriveItem:
         response = _execute(
@@ -153,22 +166,11 @@ class GoogleDriveGateway:
                 supportsAllDrives=True,
                 fields=(
                     "nextPageToken,newStartPageToken,"
-                    f"changes(fileId,removed,file({_FILE_FIELDS}))"
+                    f"changes(changeType,fileId,removed,file({_FILE_FIELDS}))"
                 ),
             )
         )
-        changes = tuple(
-            DriveChange(
-                file_id=str(value["fileId"]),
-                removed=bool(value.get("removed", False)),
-                item=(
-                    _parse_item(value["file"])
-                    if isinstance(value.get("file"), dict)
-                    else None
-                ),
-            )
-            for value in response.get("changes", ())
-        )
+        changes = tuple(_parse_change(value) for value in response.get("changes", ()))
         return ChangePage(
             changes,
             response.get("nextPageToken"),
@@ -197,3 +199,44 @@ class GoogleDriveGateway:
                 yield chunk
             buffer.seek(0)
             buffer.truncate(0)
+
+
+def _parse_change(value: dict[str, Any]) -> DriveChange:
+    change_type = str(value.get("changeType", "file"))
+    file_id = value.get("fileId")
+    return DriveChange(
+        file_id=None if file_id is None else str(file_id),
+        removed=bool(value.get("removed", False)),
+        item=(
+            _parse_item(value["file"])
+            if change_type == "file" and isinstance(value.get("file"), dict)
+            else None
+        ),
+        change_type=change_type,
+    )
+
+
+def safe_drive_error_code(error: BaseException) -> str:
+    """Map an API/download failure to a content-free machine status."""
+    if isinstance(error, HttpError):
+        status = int(getattr(error.resp, "status", 0))
+        try:
+            payload = json.loads(error.content.decode("utf-8"))
+            reasons = {
+                detail.get("reason")
+                for detail in payload.get("error", {}).get("errors", [])
+                if isinstance(detail, dict)
+            }
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+            reasons = set()
+        if "exportSizeLimitExceeded" in reasons:
+            return "too_large"
+        if status == 401:
+            return "oauth_required"
+        if status == 403:
+            return "download_failed"
+        if status == 404:
+            return "not_found"
+    if _is_retryable(error):
+        return "transient_download_failed"
+    return "processing_failed"
