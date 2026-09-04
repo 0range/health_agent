@@ -27,8 +27,9 @@ class ConnectorCard:
     detail: str
     last_success_at: datetime | None = None
     error_code: str | None = None
+    account_ids: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "connector": self.connector,
             "status": self.status,
@@ -37,6 +38,7 @@ class ConnectorCard:
                 self.last_success_at.isoformat() if self.last_success_at else None
             ),
             "error_code": self.error_code,
+            "account_ids": list(self.account_ids),
         }
 
 

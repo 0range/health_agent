@@ -4,11 +4,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.client import HTTPConnection
 from threading import Thread
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 
-from health_agent.panel.http import MAX_FORM_BYTES, PanelApplication, serve_panel
+from health_agent.panel.http import (
+    MAX_FORM_BYTES,
+    PanelApplication,
+    _cli_guidance,
+    serve_panel,
+)
 from health_agent.panel.models import ConnectorCard, ProfileSummary
 from health_agent.panel.service import PanelService
 
@@ -30,39 +36,54 @@ class FakeProfiles:
 
 
 class FakeReader:
-    def __init__(self, connector: str = "whoop") -> None:
-        self.connector = connector
+    def __init__(self, card: ConnectorCard | None = None) -> None:
+        self.card = card or ConnectorCard(
+            "whoop",
+            "ready",
+            "Локальный статус доступен.",
+            datetime(2026, 9, 4, tzinfo=UTC),
+            None,
+            ("personal",),
+        )
+        self.connector = self.card.connector
 
     def cards(self, _profile_id: UUID) -> tuple[ConnectorCard, ...]:
-        return (
-            ConnectorCard(
-                self.connector,
-                "ready",
-                "Local status is safe.",
-                datetime(2026, 9, 4, tzinfo=UTC),
-                None,
-            ),
-        )
+        return (self.card,)
 
 
 def application(
-    *, name: str = "Анна", connector: str = "whoop"
+    *, name: str = "Анна", card: ConnectorCard | None = None, port: int = 8766
 ) -> tuple[PanelApplication, ProfileSummary]:
     profile = ProfileSummary(uuid4(), name)
     service = PanelService(
-        FakeProfiles({profile.id: profile}), (FakeReader(connector),)
+        FakeProfiles({profile.id: profile}), (FakeReader(card),)
     )
-    return PanelApplication(service, csrf_token="test-csrf-token"), profile
+    return PanelApplication(service, csrf_token="test-csrf-token", port=port), profile
 
 
 def text(response) -> str:
     return response.body.decode("utf-8")
 
 
+def request(
+    app: PanelApplication,
+    method: str,
+    target: str,
+    headers: dict[str, str] | None = None,
+    body: bytes = b"",
+):
+    return app.handle(
+        method,
+        target,
+        {"Host": "127.0.0.1:8766", **(headers or {})},
+        body,
+    )
+
+
 def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     app, profile = application()
 
-    response = app.handle("GET", f"/profiles/{profile.id}", {}, b"")
+    response = request(app, "GET", f"/profiles/{profile.id}")
 
     page = text(response)
     assert response.status == 200
@@ -70,24 +91,30 @@ def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     assert "WHOOP" in page
     assert "Готово" in page
     assert "Последняя успешная операция" in page
-    assert f"health-agent whoop auth --profile-id {profile.id}" in page
+    assert "действий не требуется" in page
+    assert "health-agent whoop auth" not in page
     assert "<button" not in page
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"]
 
 
 def test_profile_page_renders_telegram_status_with_the_profile_option() -> None:
-    app, profile = application(connector="telegram")
+    app, profile = application(
+        card=ConnectorCard("telegram", "not_bound", "Профиль не привязан.")
+    )
 
-    response = app.handle("GET", f"/profiles/{profile.id}", {}, b"")
+    response = request(app, "GET", f"/profiles/{profile.id}")
 
-    assert f"health-agent telegram status --profile-id {profile.id}" in text(response)
+    assert (
+        f"health-agent telegram bind {profile.id} &lt;telegram-user-id&gt;"
+        in text(response)
+    )
 
 
 def test_html_escapes_profile_and_connector_values() -> None:
     app, profile = application(name='<img src=x onerror="boom">')
 
-    response = app.handle("GET", f"/profiles/{profile.id}", {}, b"")
+    response = request(app, "GET", f"/profiles/{profile.id}")
 
     page = text(response)
     assert '<img src=x onerror="boom">' not in page
@@ -97,7 +124,7 @@ def test_html_escapes_profile_and_connector_values() -> None:
 def test_home_page_lists_profiles_and_includes_csrf_protected_create_form() -> None:
     app, profile = application()
 
-    response = app.handle("GET", "/", {}, b"")
+    response = request(app, "GET", "/")
 
     page = text(response)
     assert response.status == 200
@@ -109,15 +136,15 @@ def test_home_page_lists_profiles_and_includes_csrf_protected_create_form() -> N
 def test_missing_or_invalid_profile_is_not_found() -> None:
     app, _ = application()
 
-    assert app.handle("GET", f"/profiles/{uuid4()}", {}, b"").status == 404
-    assert app.handle("GET", "/profiles/not-a-uuid", {}, b"").status == 404
-    assert app.handle("GET", f"/profiles/{uuid4().hex}", {}, b"").status == 404
+    assert request(app, "GET", f"/profiles/{uuid4()}").status == 404
+    assert request(app, "GET", "/profiles/not-a-uuid").status == 404
+    assert request(app, "GET", f"/profiles/{uuid4().hex}").status == 404
 
 
 def test_rejects_oversize_post_body_before_form_parsing() -> None:
     app, _ = application()
 
-    response = app.handle("POST", "/profiles", {}, b"x" * (MAX_FORM_BYTES + 1))
+    response = request(app, "POST", "/profiles", body=b"x" * (MAX_FORM_BYTES + 1))
 
     assert response.status == 413
 
@@ -125,19 +152,20 @@ def test_rejects_oversize_post_body_before_form_parsing() -> None:
 def test_rejects_unsupported_methods_and_routes() -> None:
     app, _ = application()
 
-    response = app.handle("PUT", "/", {}, b"")
+    response = request(app, "PUT", "/")
     assert response.status == 405
     assert response.headers["Allow"] == "GET"
-    assert app.handle("GET", "/profiles", {}, b"").status == 404
-    assert app.handle("GET", "/?ignored", {}, b"").status == 404
-    assert app.handle("POST", "/unknown", {}, b"").status == 404
+    assert request(app, "GET", "/profiles").status == 404
+    assert request(app, "GET", "/?ignored").status == 404
+    assert request(app, "POST", "/unknown").status == 404
 
 
 def test_post_creates_profile_only_with_csrf_and_same_origin() -> None:
     app, _ = application()
     body = b"name=%D0%92%D0%B8%D0%BA%D1%82%D0%BE%D1%80&csrf_token=test-csrf-token"
 
-    response = app.handle(
+    response = request(
+        app,
         "POST",
         "/profiles",
         {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://127.0.0.1:8766"},
@@ -146,17 +174,18 @@ def test_post_creates_profile_only_with_csrf_and_same_origin() -> None:
 
     assert response.status == 303
     assert response.headers["Location"] == "/"
-    assert "Виктор" in text(app.handle("GET", "/", {}, b""))
+    assert "Виктор" in text(request(app, "GET", "/"))
 
 
 def test_post_rejects_missing_csrf_or_cross_origin() -> None:
     app, _ = application()
     valid_body = b"name=Viktor&csrf_token=test-csrf-token"
 
-    assert app.handle("POST", "/profiles", {}, b"name=Viktor").status == 403
-    assert app.handle("POST", "/profiles", {}, valid_body).status == 403
+    assert request(app, "POST", "/profiles", body=b"name=Viktor").status == 403
+    assert request(app, "POST", "/profiles", body=valid_body).status == 403
     assert (
-        app.handle(
+        request(
+            app,
             "POST",
             "/profiles",
             {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://127.0.0.1:8767"},
@@ -165,7 +194,8 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
         == 403
     )
     assert (
-        app.handle(
+        request(
+            app,
             "POST",
             "/profiles",
             {"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://example.test"},
@@ -178,7 +208,7 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
 def test_page_does_not_render_secrets_or_medical_fields() -> None:
     app, _ = application()
 
-    page = text(app.handle("GET", "/", {}, b""))
+    page = text(request(app, "GET", "/"))
 
     for forbidden in ("access_token", "refresh_token", "source_value", "medical"):
         assert forbidden not in page
@@ -191,18 +221,219 @@ def test_server_refuses_non_loopback_hosts() -> None:
         serve_panel(app._service, host="0.0.0.0", port=0)
 
 
-def test_server_adapter_routes_unsupported_methods_to_application() -> None:
+@pytest.mark.parametrize("method", ("GET", "POST"))
+def test_application_rejects_hostile_host_before_route_dispatch(method: str) -> None:
     app, _ = application()
-    server = serve_panel(app._service, host="127.0.0.1", port=0)
+    hostile = "attacker.example:8766"
+
+    response = app.handle(
+        method,
+        "/" if method == "GET" else "/profiles",
+        {"Host": hostile, "Origin": "http://127.0.0.1:8766"},
+        b"name=Viktor&csrf_token=test-csrf-token",
+    )
+
+    assert response.status == 400
+    assert hostile not in text(response)
+
+
+def test_default_http_port_uses_browser_canonical_host_and_origin() -> None:
+    app, _ = application(port=80)
+    body = b"name=Viktor&csrf_token=test-csrf-token"
+
+    response = app.handle(
+        "POST",
+        "/profiles",
+        {"Host": "127.0.0.1", "Origin": "http://127.0.0.1"},
+        body,
+    )
+
+    assert response.status == 303
+    assert app.handle("GET", "/", {"Host": "127.0.0.1"}, b"").status == 200
+    assert (
+        app.handle(
+            "POST",
+            "/profiles",
+            {"Host": "127.0.0.1:80", "Origin": "http://127.0.0.1:80"},
+            body,
+        ).status
+        == 400
+    )
+    assert (
+        app.handle(
+            "POST",
+            "/profiles",
+            {"Host": "127.0.0.1", "Origin": "http://127.0.0.1:80"},
+            body,
+        ).status
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    ("card", "expected", "forbidden"),
+    (
+        (
+            ConnectorCard("whoop", "not_connected", "", account_ids=()),
+            "health-agent whoop auth --profile-id {profile_id} --account <account>",
+            "--account main",
+        ),
+        (
+            ConnectorCard("whoop", "ready", "", account_ids=("personal",)),
+            "действий не требуется",
+            "health-agent",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
+                "reauth_required",
+                "",
+                error_code="reauth_required",
+                account_ids=("personal",),
+            ),
+            "health-agent whoop auth --profile-id {profile_id} --account personal",
+            "--account main",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
+                "ready",
+                "",
+                error_code="sync_failed",
+                account_ids=("personal",),
+            ),
+            "health-agent whoop status --profile-id {profile_id} --account personal",
+            "действий не требуется",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
+                "reauth_required",
+                "",
+                error_code="reauth_required",
+                account_ids=("first", "second"),
+            ),
+            "health-agent whoop status --profile-id {profile_id} --account <account>",
+            "--account main",
+        ),
+        (
+            ConnectorCard("gmail", "not_configured", "", account_ids=()),
+            "health-agent gmail configure {profile_id} <account-id>",
+            "personal",
+        ),
+        (
+            ConnectorCard("gmail", "ready", "", account_ids=("personal",)),
+            "действий не требуется",
+            "health-agent",
+        ),
+        (
+            ConnectorCard(
+                "gmail",
+                "reauth_required",
+                "",
+                error_code="OAuthRequired",
+                account_ids=("personal",),
+            ),
+            "health-agent gmail auth {profile_id} personal",
+            "<account-id>",
+        ),
+        (
+            ConnectorCard(
+                "gmail",
+                "reauth_required",
+                "",
+                error_code="OAuthRequired",
+                account_ids=("first", "second"),
+            ),
+            "health-agent gmail status {profile_id}",
+            "personal",
+        ),
+    ),
+)
+def test_cli_guidance_state_action_matrix(
+    card: ConnectorCard, expected: str, forbidden: str
+) -> None:
+    profile_id = uuid4()
+
+    guidance = _cli_guidance(card, profile_id)
+
+    assert expected.format(profile_id=profile_id) in guidance
+    assert forbidden not in guidance
+
+
+def _live_request(
+    server,
+    method: str,
+    target: str,
+    *,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+):
     worker = Thread(target=server.handle_request)
     worker.start()
     connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
-
-    connection.request("PUT", "/")
+    connection.request(method, target, body=body, headers=headers or {})
     response = connection.getresponse()
-
+    response_body = response.read()
     worker.join(timeout=2)
     connection.close()
-    server.server_close()
+    return response, response_body
+
+
+@pytest.mark.parametrize("method", ("GET", "POST"))
+def test_ephemeral_server_rejects_hostile_host_for_get_and_post(method: str) -> None:
+    app, _ = application()
+    server = serve_panel(app._service, host="127.0.0.1", port=0)
+    hostile = "attacker.example"
+    try:
+        response, response_body = _live_request(
+            server,
+            method,
+            "/" if method == "GET" else "/profiles",
+            headers={
+                "Host": hostile,
+                "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body=(
+                b"name=Viktor&csrf_token=not-the-token" if method == "POST" else None
+            ),
+        )
+    finally:
+        server.server_close()
+
+    assert response.status == 400
+    assert hostile.encode() not in response_body
+
+
+def test_ephemeral_server_accepts_its_actual_bound_host_and_origin() -> None:
+    app, _ = application()
+    server = serve_panel(app._service, host="127.0.0.1", port=0)
+    port = server.server_address[1]
+    live_application = cast(Any, server.RequestHandlerClass).application
+    body = f"name=Viktor&csrf_token={live_application._csrf_token}".encode()
+    try:
+        get_response, _ = _live_request(server, "GET", "/")
+        post_response, _ = _live_request(
+            server,
+            "POST",
+            "/profiles",
+            headers={"Origin": f"http://127.0.0.1:{port}"},
+            body=body,
+        )
+    finally:
+        server.server_close()
+
+    assert get_response.status == 200
+    assert post_response.status == 303
+
+
+def test_server_adapter_routes_unsupported_methods_to_application() -> None:
+    app, _ = application()
+    server = serve_panel(app._service, host="127.0.0.1", port=0)
+    try:
+        response, _ = _live_request(server, "PUT", "/")
+    finally:
+        server.server_close()
     assert response.status == 405
     assert response.getheader("Allow") == "GET"

@@ -66,7 +66,8 @@ class PanelApplication:
             raise ValueError("The panel port must be between 1 and 65535")
         self._service = service
         self._csrf_token = csrf_token or token_urlsafe(32)
-        self._origin = f"http://127.0.0.1:{port}"
+        self._authority = _canonical_authority(port)
+        self._origin = f"http://{self._authority}"
 
     def handle(
         self,
@@ -76,6 +77,8 @@ class PanelApplication:
         body: bytes,
     ) -> PanelResponse:
         """Dispatch one bounded request without depending on a live HTTP server."""
+        if not _exact_header(_header(headers, "host"), self._authority):
+            return self._html(400, _message_page("Запрос отклонён проверкой адреса."))
         parsed = urlsplit(target)
         if target != parsed.path or not target.startswith("/"):
             return self._not_found()
@@ -174,7 +177,7 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
                     self.application.handle(
                         "POST",
                         self.path,
-                        dict(self.headers.items()),
+                        self._application_headers(),
                         b"x" * (MAX_FORM_BYTES + 1),
                     )
                 )
@@ -183,8 +186,17 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
 
         def _dispatch(self, body: bytes) -> None:
             self._send(
-                self.application.handle(self.command, self.path, dict(self.headers.items()), body)
+                self.application.handle(
+                    self.command, self.path, self._application_headers(), body
+                )
             )
+
+        def _application_headers(self) -> dict[str, str]:
+            headers = dict(self.headers.items())
+            host_values = self.headers.get_all("Host", failobj=[])
+            if len(host_values) != 1:
+                headers["Host"] = ""
+            return headers
 
         def handle_one_request(self) -> None:
             """Use application 405 handling for every unsupported HTTP verb."""
@@ -228,11 +240,20 @@ def serve_panel(service: PanelService, *, host: str, port: int) -> ThreadingHTTP
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
-    return next((value for key, value in headers.items() if key.lower() == name), None)
+    values = tuple(value for key, value in headers.items() if key.lower() == name)
+    return values[0] if len(values) == 1 else None
 
 
 def _same_origin(origin: str | None, expected_origin: str) -> bool:
-    return origin is not None and compare_digest(origin, expected_origin)
+    return _exact_header(origin, expected_origin)
+
+
+def _exact_header(value: str | None, expected: str) -> bool:
+    return value is not None and compare_digest(value, expected)
+
+
+def _canonical_authority(port: int) -> str:
+    return "127.0.0.1" if port == 80 else f"127.0.0.1:{port}"
 
 
 def _profile_id_from_path(path: str) -> UUID | None:
@@ -279,19 +300,56 @@ def _render_card(card: ConnectorCard, profile_id: UUID) -> str:
     label = _STATUS_LABELS.get(card.status, "Статус неизвестен")
     last_success = card.last_success_at.isoformat() if card.last_success_at else "ещё не было"
     error = f"<p>Код ошибки: {escape(card.error_code)}</p>" if card.error_code else ""
+    accounts = ""
+    if card.account_ids:
+        account_label = "Аккаунт" if len(card.account_ids) == 1 else "Аккаунты"
+        account_values = ", ".join(escape(account_id) for account_id in card.account_ids)
+        accounts = f"<p>{account_label}: {account_values}</p>"
     return f"""<article class="card"><h3>{escape(card.connector.upper())}</h3><p class="status">{label}</p>
-<p>{escape(card.detail)}</p><p>Последняя успешная операция: {escape(last_success)}</p>{error}
-<p class="muted">Следующее действие: {escape(_cli_guidance(card.connector, profile_id))}</p></article>"""
+<p>{escape(card.detail)}</p>{accounts}<p>Последняя успешная операция: {escape(last_success)}</p>{error}
+<p class="muted">Следующее действие: {escape(_cli_guidance(card, profile_id))}</p></article>"""
 
 
-def _cli_guidance(connector: str, profile_id: UUID) -> str:
-    commands = {
-        "whoop": f"выполните в Terminal: health-agent whoop auth --profile-id {profile_id}",
-        "gmail": f"выполните в Terminal: health-agent gmail configure {profile_id} <account-id>",
-        "telegram": f"выполните в Terminal: health-agent telegram status --profile-id {profile_id}",
-        "drive": "интеграция Google Drive пока недоступна.",
-    }
-    return commands.get(connector, "проверьте локальную конфигурацию через CLI.")
+def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
+    healthy = card.status in {"ready", "configured"} and card.error_code is None
+    if healthy:
+        return "действий не требуется."
+    if card.connector == "drive":
+        return "интеграция Google Drive пока недоступна."
+    if card.connector == "whoop":
+        if len(card.account_ids) > 1:
+            return (
+                "проверьте каждый аккаунт отдельно в Terminal: health-agent whoop "
+                f"status --profile-id {profile_id} --account <account>"
+            )
+        account = card.account_ids[0] if card.account_ids else "<account>"
+        command = "auth" if card.status in {"not_connected", "reauth_required"} else "status"
+        return (
+            f"выполните в Terminal: health-agent whoop {command} --profile-id "
+            f"{profile_id} --account {account}"
+        )
+    if card.connector == "gmail":
+        if len(card.account_ids) > 1:
+            return f"проверьте аккаунты в Terminal: health-agent gmail status {profile_id}"
+        if card.status == "not_configured":
+            return (
+                "выполните в Terminal: health-agent gmail configure "
+                f"{profile_id} <account-id>"
+            )
+        account = card.account_ids[0] if card.account_ids else "<account-id>"
+        if card.status in {"needs_authorization", "reauth_required"}:
+            return f"выполните в Terminal: health-agent gmail auth {profile_id} {account}"
+        return (
+            f"выполните в Terminal: health-agent gmail status {profile_id} "
+            f"--account-id {account}"
+        )
+    if card.connector == "telegram":
+        if card.status in {"not_configured", "credential_invalid"}:
+            return "выполните в Terminal: health-agent telegram configure-token"
+        if card.status == "not_bound":
+            return f"выполните в Terminal: health-agent telegram bind {profile_id} <telegram-user-id>"
+        return f"выполните в Terminal: health-agent telegram status --profile-id {profile_id}"
+    return "проверьте локальную конфигурацию через CLI."
 
 
 def _message_page(message: str) -> str:

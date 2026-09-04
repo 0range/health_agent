@@ -110,7 +110,7 @@ class WhoopStatusReader:
                     ConnectorCard(
                         self.connector,
                         "not_connected",
-                        "No WHOOP account is connected for this profile.",
+                        "К этому профилю не подключён ни один аккаунт WHOOP.",
                         None,
                         None,
                     ),
@@ -121,7 +121,7 @@ class WhoopStatusReader:
                 )
                 for account in accounts
             )
-        return (_whoop_card(statuses),)
+        return (_whoop_card(statuses, accounts),)
 
 
 class GmailStatusReader:
@@ -146,7 +146,7 @@ class GmailStatusReader:
                 ConnectorCard(
                     self.connector,
                     "not_configured",
-                    "No Gmail account is configured for this profile.",
+                    "Для этого профиля не настроен ни один аккаунт Gmail.",
                     None,
                     None,
                 ),
@@ -170,7 +170,7 @@ class TelegramStatusReader:
                 ConnectorCard(
                     self.connector,
                     "not_configured",
-                    "Telegram is not configured locally.",
+                    "Telegram не настроен локально.",
                     None,
                     _panel_error_code("telegram", status.last_error_code),
                 ),
@@ -180,7 +180,7 @@ class TelegramStatusReader:
                 ConnectorCard(
                     self.connector,
                     "credential_invalid",
-                    "Telegram credentials need local verification.",
+                    "Учётные данные Telegram нужно проверить локально.",
                     None,
                     _panel_error_code("telegram", status.last_error_code),
                 ),
@@ -190,7 +190,7 @@ class TelegramStatusReader:
                 ConnectorCard(
                     self.connector,
                     "not_bound",
-                    "No Telegram identity is bound to this profile.",
+                    "К этому профилю не привязана учётная запись Telegram.",
                     None,
                     _panel_error_code("telegram", status.last_error_code),
                 ),
@@ -200,9 +200,9 @@ class TelegramStatusReader:
                 self.connector,
                 "ready" if status.poller_running else "configured",
                 (
-                    "Telegram polling is active for this profile."
+                    "Опрос Telegram активен для этого профиля."
                     if status.poller_running
-                    else "Telegram is configured for this profile."
+                    else "Telegram настроен для этого профиля."
                 ),
                 # Telegram's poll timestamp is bot-global, never profile-scoped.
                 None,
@@ -253,7 +253,7 @@ class PanelService:
                 ConnectorCard(
                     connector=reader.connector,
                     status="status_unavailable",
-                    detail="Local connector status is unavailable.",
+                    detail="Локальный статус коннектора недоступен.",
                     last_success_at=None,
                     error_code="local_status_unavailable",
                 ),
@@ -296,7 +296,9 @@ def _profile_name(name: str) -> str:
     return normalized
 
 
-def _whoop_card(statuses: tuple[WhoopStatus, ...]) -> ConnectorCard:
+def _whoop_card(
+    statuses: tuple[WhoopStatus, ...], account_ids: tuple[str, ...] = ()
+) -> ConnectorCard:
     last_success = max(
         (status.last_success_at for status in statuses if status.last_success_at),
         default=None,
@@ -317,9 +319,10 @@ def _whoop_card(statuses: tuple[WhoopStatus, ...]) -> ConnectorCard:
     return ConnectorCard(
         "whoop",
         result,
-        f"{len(statuses)} WHOOP account(s) configured for this profile.",
+        f"Аккаунтов WHOOP в профиле: {len(statuses)}.",
         last_success,
         error_code,
+        account_ids,
     )
 
 
@@ -332,7 +335,7 @@ def _gmail_card(
         return ConnectorCard(
             "gmail",
             "not_configured",
-            "No Gmail account is configured for this profile.",
+            "Для этого профиля не настроен ни один аккаунт Gmail.",
             None,
             None,
         )
@@ -362,9 +365,10 @@ def _gmail_card(
     return ConnectorCard(
         "gmail",
         result,
-        f"{len(profile.accounts)} Gmail account(s) configured for this profile.",
+        f"Аккаунтов Gmail в профиле: {len(profile.accounts)}.",
         last_success,
         error_code,
+        tuple(account.account_id for account in profile.accounts),
     )
 
 
@@ -392,7 +396,7 @@ def _drive_card() -> ConnectorCard:
     return ConnectorCard(
         "drive",
         "not_available",
-        "Google Drive is not integrated in this installation.",
+        "Google Drive не интегрирован в этой установке.",
         None,
         None,
     )

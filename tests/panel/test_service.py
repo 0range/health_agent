@@ -155,6 +155,7 @@ def test_gmail_reader_uses_only_the_selected_profile_directory(tmp_path) -> None
     assert first_card.last_success_at is not None
     assert second_card.status == "needs_authorization"
     assert second_card.last_success_at is None
+    assert first_card.account_ids == second_card.account_ids == ("primary",)
 
 
 def test_production_panel_construction_does_not_create_telegram_state(tmp_path) -> None:
@@ -271,9 +272,10 @@ def test_one_unreadable_connector_becomes_a_safe_card() -> None:
     assert panel.connectors[0] == ConnectorCard(
         connector="gmail",
         status="status_unavailable",
-        detail="Local connector status is unavailable.",
+        detail="Локальный статус коннектора недоступен.",
         last_success_at=None,
         error_code="local_status_unavailable",
+        account_ids=(),
     )
     assert panel.connectors[-1].status == "not_available"
     assert "token=leaked" not in json.dumps(panel.to_dict())
@@ -291,3 +293,34 @@ def test_serialized_view_models_contain_only_safe_display_fields() -> None:
     assert "refresh_token" not in payload
     assert "medical" not in payload
     assert "source_value" not in payload
+
+
+def test_closed_connector_details_are_russian_ui_copy() -> None:
+    profile_id = uuid4()
+    profile = ProfileSummary(profile_id, "Person")
+    telegram = TelegramStatusReader(
+        lambda selected_profile_id: TelegramStatus(
+            token_configured=False,
+            credential_verified=False,
+            bot_id=None,
+            bot_username=None,
+            webhook_configured=None,
+            poller_running=False,
+            delivery_unknown_count=0,
+            profile_id=selected_profile_id,
+            identity_bound=False,
+            next_offset=None,
+            last_poll_at=None,
+            last_error_code="token_not_configured",
+        )
+    ).cards(profile_id)[0]
+    service = service_with(
+        FakeProfiles({profile.id: profile}),
+        FakeReader("broken", lambda _profile_id: (_ for _ in ()).throw(OSError())),
+    )
+
+    assert telegram.detail == "Telegram не настроен локально."
+    assert service.profile(profile_id).connectors[0].detail == "Локальный статус коннектора недоступен."
+    assert service.profile(profile_id).connectors[-1].detail == (
+        "Google Drive не интегрирован в этой установке."
+    )
