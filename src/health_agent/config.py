@@ -108,6 +108,25 @@ class Settings(BaseSettings):
     whoop_token_root: Path = Field(
         default=Path(".tokens/whoop"), validation_alias="WHOOP_TOKEN_ROOT"
     )
+    openai_api_key: SecretStr | None = Field(
+        default=None, validation_alias="OPENAI_API_KEY"
+    )
+    openai_api_key_file: Path = Field(
+        default=Path(".tokens/openai-api-key"),
+        validation_alias="OPENAI_API_KEY_FILE",
+    )
+    # gpt-5-mini is the deliberately stable, lower-latency default for this
+    # bounded text-only health-question workflow. Deployments may override it.
+    openai_model: str = Field(default="gpt-5-mini", validation_alias="OPENAI_MODEL")
+    openai_max_output_tokens: int = Field(
+        default=2_000,
+        ge=64,
+        le=8_000,
+        validation_alias="OPENAI_MAX_OUTPUT_TOKENS",
+    )
+    openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
+        default="low", validation_alias="OPENAI_REASONING_EFFORT"
+    )
     panel_host: str = Field(default="127.0.0.1", validation_alias="PANEL_HOST")
     panel_port: int = Field(
         default=8766, ge=1, le=65535, validation_alias="PANEL_PORT"
@@ -206,6 +225,40 @@ class Settings(BaseSettings):
         ) as error:
             raise ValueError("WHOOP credentials file is invalid") from error
         return client_id, SecretStr(client_secret)
+
+    def load_openai_api_key(self) -> SecretStr:
+        """Return the configured API key without exposing it in failures.
+
+        ``OPENAI_API_KEY`` is intentionally checked first.  The fallback is a
+        single regular private file rather than an ambient keyring so callers
+        can make this dependency explicit and auditable.
+        """
+
+        if self.openai_api_key is not None:
+            value = self.openai_api_key.get_secret_value().strip()
+            if value:
+                return SecretStr(value)
+            raise ValueError("OPENAI API key is not configured")
+
+        path = self.openai_api_key_file
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as key_file:
+                file_stat = os.fstat(key_file.fileno())
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise ValueError
+                if stat.S_IMODE(file_stat.st_mode) != 0o600:
+                    raise PermissionError
+                value = key_file.read().strip()
+            if not value:
+                raise ValueError
+        except FileNotFoundError as error:
+            raise ValueError("OPENAI API key is not configured") from error
+        except PermissionError as error:
+            raise ValueError("OPENAI API key file must have mode 0600") from error
+        except (OSError, ValueError) as error:
+            raise ValueError("OPENAI API key file is invalid") from error
+        return SecretStr(value)
 
     @model_validator(mode="after")
     def set_default_database_url(self) -> Settings:

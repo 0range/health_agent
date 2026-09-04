@@ -60,6 +60,13 @@ from health_agent.models import (
 )
 from health_agent.panel.http import serve_panel
 from health_agent.panel.service import build_panel_service
+from health_agent.questions.composition import (
+    build_question_application,
+    build_telegram_question_runtime,
+    question_status,
+    safe_question_setup_error,
+)
+from health_agent.questions.models import EvidenceSource
 from health_agent.staging import (
     StagingConfigurationError,
     StagingEnvironment,
@@ -93,6 +100,8 @@ panel_app = typer.Typer(help="Serve the local management panel.")
 staging_app = typer.Typer(help="Manage the isolated local staging environment.")
 drive_app = typer.Typer(help="Manage read-only Google Drive profiles.")
 automation_app = typer.Typer(help="Run and manage safe local connector automation.")
+question_app = typer.Typer(help="Ask profile-scoped questions from verified health data.")
+QUESTION_PROFILE_OPTION = typer.Option(..., "--profile-id")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(whoop_app, name="whoop")
@@ -103,6 +112,7 @@ app.add_typer(panel_app, name="panel")
 app.add_typer(staging_app, name="staging")
 app.add_typer(drive_app, name="drive")
 app.add_typer(automation_app, name="automation")
+app.add_typer(question_app, name="question")
 
 
 @app.callback()
@@ -829,6 +839,50 @@ def _selected_gmail_accounts(
     return profile.accounts if account_id is None else (profile.account(account_id),)
 
 
+@question_app.command("ask")
+def ask_health_question(
+    question: str,
+    profile_id: UUID = QUESTION_PROFILE_OPTION,
+) -> None:
+    """Answer one question using only the selected profile's verified context."""
+    try:
+        service = build_question_application(Settings())
+    except Exception:  # noqa: BLE001 -- local configuration details stay private
+        typer.echo(safe_question_setup_error(), err=True)
+        raise typer.Exit(code=1) from None
+    result = service.answer(profile_id, question)
+    typer.echo(result.text, err=result.safe_error_code is not None)
+    if result.safe_error_code is not None:
+        raise typer.Exit(code=1)
+
+
+@question_app.command("status")
+def health_question_status(
+    profile_id: UUID = QUESTION_PROFILE_OPTION,
+) -> None:
+    """Show safe readiness and source counts without printing health evidence."""
+    try:
+        status = question_status(Settings(), profile_id)
+    except Exception:  # noqa: BLE001 -- configuration details must not cross the CLI
+        typer.echo(
+            f"status=unavailable profile_id={profile_id} error=question_unavailable",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    if not status.available:
+        typer.echo(
+            f"status=unavailable profile_id={profile_id} "
+            f"error={status.safe_error_code or 'question_unavailable'}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    counts = " ".join(
+        f"{source.value}={status.source_counts.get(source, 0)}"
+        for source in EvidenceSource
+    )
+    typer.echo(f"status=ready readiness=local profile_id={profile_id} {counts}")
+
+
 @telegram_app.command("configure-token")
 def configure_telegram_token() -> None:
     """Store a BotFather token locally without exposing it in shell history."""
@@ -845,6 +899,25 @@ def configure_telegram_token() -> None:
             )
         )
     )
+
+
+@telegram_app.command("run")
+def run_telegram() -> None:
+    """Run the bound private long-poller using only verified local credentials."""
+    try:
+        runtime = build_telegram_question_runtime(Settings())
+        runtime.poller.validate_startup()
+    except Exception:  # noqa: BLE001 -- never expose local credential/configuration data
+        typer.echo("status=blocked error=telegram_runtime_unavailable", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo("status=running")
+    try:
+        runtime.poller.run_forever()
+    except KeyboardInterrupt:
+        typer.echo("status=stopped")
+    except Exception:  # noqa: BLE001 -- poller/state details may contain private paths
+        typer.echo("status=blocked error=telegram_runtime_failed", err=True)
+        raise typer.Exit(code=1) from None
 
 
 @telegram_app.command("bind")

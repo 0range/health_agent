@@ -10,6 +10,7 @@ dependencies = [
     "google-auth-httplib2>=0.4.2",
     "google-auth-oauthlib>=1.4.1",
     "httpx",
+    "openai>=2.0.0",
     "psycopg[binary]",
     "pydantic-settings",
     "pymupdf",
@@ -31,3 +32,10 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.11.32,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.mypy]
+exclude = "^alembic/"
+
+[[tool.mypy.overrides]]
+module = ["httplib2", "googleapiclient.*"]
+ignore_missing_imports = true

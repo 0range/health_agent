@@ -97,16 +97,15 @@ def test_removal_marks_message_and_all_attachments(tmp_path: Path) -> None:
     state.record_attachment(seen_attachment(PROFILE_A, "one"))
     assert state.mark_message_removed(PROFILE_A, "one", "message-1") == 2
     assert state.get_message(PROFILE_A, "one", "message-1").status == "removed"  # type: ignore[union-attr]
-    assert (
-        state.get_attachment(
-            PROFILE_A,
-            "one",
-            "message-1",
-            "part-1",
-            "message-1:part-1:attachment-1",
-        ).status
-        == "removed"
-    )  # type: ignore[union-attr]
+    attachment = state.get_attachment(
+        PROFILE_A,
+        "one",
+        "message-1",
+        "part-1",
+        "message-1:part-1:attachment-1",
+    )
+    assert attachment is not None
+    assert attachment.status == "removed"
     assert state.mark_message_removed(PROFILE_A, "one", "message-1") == 0
 
 

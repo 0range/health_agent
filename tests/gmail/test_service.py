@@ -304,20 +304,18 @@ def test_previously_imported_message_is_reactivated_after_spam_restore(
     gateway.history_pages[None] = HistoryPage(("m1",), (), None, "110")
     gateway.messages["m1"] = attachment_message(labels=("SPAM",))
     service.sync()
-    assert (
-        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").status
-        == "removed"
-    )  # type: ignore[union-attr]
+    attachment = state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1")
+    assert attachment is not None
+    assert attachment.status == "removed"
 
     gateway.history_pages[None] = HistoryPage(("m1",), (), None, "120")
     gateway.messages["m1"] = attachment_message(labels=("INBOX",))
     service.sync()
 
     assert len(importer.calls) == 2
-    assert (
-        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").status
-        == "processed"
-    )  # type: ignore[union-attr]
+    attachment = state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1")
+    assert attachment is not None
+    assert attachment.status == "processed"
 
 
 def test_expired_history_recovers_with_lookback(tmp_path: Path) -> None:
@@ -352,10 +350,9 @@ def test_full_scan_reconciles_known_message_moved_to_trash(tmp_path: Path) -> No
 
     assert report.removed == 2
     assert state.get_message(PROFILE, "personal", "m1").status == "excluded"  # type: ignore[union-attr]
-    assert (
-        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").status
-        == "removed"
-    )  # type: ignore[union-attr]
+    attachment = state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1")
+    assert attachment is not None
+    assert attachment.status == "removed"
     assert state.get_cursor(PROFILE, "personal") == "100"
 
     gateway.messages["m1"] = attachment_message(labels=("INBOX",))
@@ -494,10 +491,9 @@ def test_unnamed_supported_attachment_gets_safe_deterministic_name(
     filename = importer.calls[0][0].filename
     assert filename.startswith("gmail-") and filename.endswith(".pdf")
     assert "/" not in filename
-    assert (
-        state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1").filename
-        == filename
-    )  # type: ignore[union-attr]
+    attachment = state.get_attachment(PROFILE, "personal", "m1", "1", "m1:1:a1")
+    assert attachment is not None
+    assert attachment.filename == filename
 
 
 def test_unnamed_inline_attachment_body_is_accepted_when_marked_attachment(

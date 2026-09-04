@@ -395,7 +395,17 @@ class TelegramUpdateService:
             claim, status, error_code
         ):
             return ProcessResult(claim.update_id, "claim_lost", False)
+        self._cleanup_reply(claim)
         return ProcessResult(claim.update_id, status, True)
+
+    def _cleanup_reply(self, claim: UpdateClaim) -> None:
+        # Optional adapter hook; only a committed terminal audit permits deletion.
+        cleanup = getattr(self.questions, "complete_update", None)
+        if callable(cleanup):
+            try:
+                cleanup(claim.bot_id, claim.update_id)
+            except Exception:  # noqa: BLE001, S110 -- TTL sweep handles orphaned replies
+                pass
 
     def _claim_lost(
         self, claim: UpdateClaim, heartbeat: _ClaimHeartbeat
@@ -417,6 +427,7 @@ class TelegramUpdateService:
                 claim, "needs_attention", "retry_budget_exhausted"
             ):
                 return ProcessResult(claim.update_id, "claim_lost", False)
+            self._cleanup_reply(claim)
             return ProcessResult(claim.update_id, "needs_attention", True)
         scheduled = retry_at or (
             self.clock().astimezone(UTC)
@@ -447,6 +458,19 @@ class TelegramLongPoller:
         self.clock = clock
         self.sleeper = sleeper
         self._identity_verified = False
+
+    def validate_startup(self) -> None:
+        """Verify the local credential namespace before reporting a running poller."""
+
+        try:
+            if _gateway_bot_id(self.gateway.get_me()) != self.bot_id:
+                raise TelegramAPIError("bot_identity_mismatch")
+            if self.gateway.get_webhook_url():
+                raise TelegramWebhookConfigured()
+            self._identity_verified = True
+        except TelegramAPIError as error:
+            self.state.record_poll(self.bot_id, error.safe_error_code)
+            raise
 
     def poll_once(self) -> PollReport:
         try:
