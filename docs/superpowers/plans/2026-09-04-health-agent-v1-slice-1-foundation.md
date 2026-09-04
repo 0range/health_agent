@@ -28,6 +28,7 @@
 - `pyproject.toml` — package, CLI and locked Python dependencies.
 - `compose.yaml` — localhost-only PostgreSQL, Metabase and their persistent volumes.
 - `.env.example` / `.gitignore` — non-secret contract and exclusions.
+- `docker/postgres/init/001-metabase.sql` — separate Metabase application database in the same local PostgreSQL service.
 - `src/health_agent/config.py` — validated paths and connection settings.
 - `src/health_agent/db.py` — engine and transaction boundary.
 - `src/health_agent/models.py` — source, document, page, lab observation and review models.
@@ -48,6 +49,7 @@
 - Create: `.env.example`
 - Create: `pyproject.toml`
 - Create: `compose.yaml`
+- Create: `docker/postgres/init/001-metabase.sql`
 - Create: `src/health_agent/__init__.py`
 - Create: `src/health_agent/cli.py`
 - Test: `tests/test_cli.py`
@@ -137,15 +139,34 @@ services:
       MB_DB_HOST: postgres
       MB_DB_PORT: 5432
       MB_DB_DBNAME: metabase
-      MB_DB_USER: metabase
-      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+      MB_DB_USER: health_agent
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
     volumes: ["health_metabase:/metabase-data"]
+```
+
+The PostgreSQL service additionally mounts the initialization directory:
+
+```yaml
+    volumes:
+      - health_postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+```
+
+The initialization SQL is intentionally minimal:
+
+```sql
+CREATE DATABASE metabase;
+```
+
+The two applications use separate databases in one localhost-only PostgreSQL service. A separate database role is unnecessary for this single-user local version.
+
+Complete the volume declarations:
+
+```yaml
 volumes:
   health_postgres: {}
   health_metabase: {}
 ```
-
-The PostgreSQL initialization script creates separate `health_agent` and `metabase` databases/users so Metabase application state is not mixed with health data.
 
 - [ ] **Step 5: Verify the project boundary**
 
@@ -156,7 +177,7 @@ Expected: PASS; `git status --short` lists no `.env` or `data/` contents.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add .python-version .gitignore .env.example pyproject.toml uv.lock compose.yaml src tests
+git add .python-version .gitignore .env.example pyproject.toml uv.lock compose.yaml docker src tests
 git commit -m "build: bootstrap local health agent"
 ```
 
