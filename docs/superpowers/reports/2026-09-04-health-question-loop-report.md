@@ -163,3 +163,28 @@ OVERALL READY**, the complete local gates were rerun from the clean branch:
 
 These final gates used only synthetic fixtures and mocked external transports.
 They do not change the live-only limitations above.
+
+## Final integration rebase — September 5, 2026
+
+The complete question-loop branch was rebased from its original `1387d5e` base
+onto exact main commit `1f53d32` (`codex/v1-slice-1`). The rebased code tip before
+this integration note was `e5a2228`. Conflicts were limited to the shared CLI and
+README surfaces and were resolved as a union: management panel, Drive, Gmail,
+WHOOP, staging, macOS automation, and all existing commands remain present while
+`question ask/status` and `telegram run` remain registered. The OpenAI dependency,
+configuration fields, and lock entries are retained.
+
+Post-rebase verification from the clean question worktree:
+
+| Gate | Result |
+| --- | --- |
+| `uv run pytest -q` | PASS — 570 tests; 5 known PyMuPDF/SWIG deprecation warnings |
+| `uv run ruff check .` | PASS |
+| `uv run mypy src` | PASS — 69 source files |
+| `uv lock --check` | PASS — 71 packages resolved without changing the lock |
+| `git diff --check` | PASS |
+| `uv run pytest tests/whoop/test_schema.py::test_whoop_migration_matches_sqlalchemy_metadata -q` | PASS — disposable PostgreSQL/Alembic metadata check |
+
+`health-agent --help`, `question --help`, and `telegram --help` were also invoked
+locally to confirm the combined command tree. No branch was merged or pushed, and
+no live credentials, external APIs, OAuth flows, or personal data were used.
