@@ -186,3 +186,173 @@ implementation was modified, no tests or services were run, no volume was delete
 and no secret value was displayed. The security-best-practices checklist informed
 the fail-closed path, secret-handling, and subprocess-boundary review; no
 framework-specific reference existed for this Python CLI/Compose stack.
+
+## Fix re-review — 2026-09-04 (`4a21e5c`)
+
+### Verdict
+
+- **SPEC: CHANGES**
+- **QUALITY: CHANGES**
+- **OVERALL: CHANGES**
+
+The default staging configuration now passes a real isolated smoke and five of
+the six original findings are closed. Original finding 3 remains a blocker: the
+production collision model still misses containment relationships and can forget
+the repository's fixed production Compose targets when application overrides are
+present. The Compose project name is also not included in the isolation model.
+
+### Remaining blockers, ordered by severity
+
+#### 1. High — the staging and production Compose projects can be the same
+
+Staging pins `health-agent-staging` in the Compose file, command line, and child
+environment (`compose.staging.yaml:1`; `src/health_agent/staging.py:12,319-339`).
+That is internally consistent, but neither `ProductionTargets` nor validation
+models the effective production Compose project. The production Compose file has
+no fixed `name:` (`compose.yaml:1`), so its default is the checkout directory or
+an external `COMPOSE_PROJECT_NAME`.
+
+This is not hypothetical in the reviewed worktree: independent
+`docker compose --file compose.yaml config` resolved the production file to
+`name: health-agent-staging`. Both files also use service names `postgres` and
+`metabase`. Starting either definition under the same project can therefore
+recreate the other's containers; guarded `staging clean --remove-orphans` can
+stop/remove containers from that shared project. Different logical volume names
+reduce data deletion risk but do not prevent production replacement or downtime.
+
+Use an explicit, immutable production project name distinct from staging (the
+simplest option), or derive and reject every effective production project source
+before any `up`, `stop`, or `down`. Add an acceptance test that renders both
+Compose files and asserts distinct project identities as well as distinct
+containers/volumes.
+
+The actual smoke during this review did **not** hit this collision: the running
+production installation was project `health-agent`, while staging was
+`health-agent-staging`. That confirms the happy path, not the fail-closed invariant.
+
+#### 2. High — production overrides replace fixed Compose collision targets instead of augmenting them
+
+The production Compose topology is fixed at PostgreSQL `55432`, Metabase `53000`,
+database/role `health_agent`, and Metabase DB `metabase`
+(`compose.yaml:5-9,22-32`). `ProductionTargets.load`, however, replaces these
+defaults with `POSTGRES_*`/`METABASE_URL` values from the production application
+environment (`src/health_agent/staging.py:123-170`). It does not always union the
+fixed Compose targets. `PRODUCTION_DATABASES` is declared but is not used.
+
+For example, if production `.env` sets `POSTGRES_PORT=56433` and
+`METABASE_URL=http://127.0.0.1:54001`, staging can be configured for `55432` and
+`53000`; validation accepts them even though a running production Compose still
+owns those fixed ports. The same omission exists for the fixed `health_agent`
+database/role after corresponding application overrides. A direct diagnostic
+against the current validator confirmed that the fixed `55432`/`53000` pair is
+accepted when the modeled production application ports are overridden.
+
+Always retain the fixed production Compose ports, database names, roles, and
+project in the forbidden set, then add effective application targets on top.
+Tests currently prove only the inverse case—production is overridden *to the
+staging defaults* (`tests/test_staging.py:134-158`)—and miss an override *away
+from production Compose defaults* followed by staging reuse of those defaults.
+
+#### 3. High — production path overlap is equality-only, not containment-safe
+
+Every staging path must be below `.staging`, and symlink-safe lexical creation is
+now robust. But comparison to effective production paths is only
+`identity in production.paths` (`src/health_agent/staging.py:273-286`). It does
+not reject either side containing the other.
+
+Both of these production configurations were independently accepted by the
+current validator:
+
+- production `VAULT_ROOT=.staging`, which contains every staging target;
+- production `VAULT_ROOT=.staging/vault/production`, which is inside the staging
+  vault root.
+
+In either case staging can write or chmod within a production-owned tree. Compare
+canonical identities for equality **and** ancestor/descendant overlap, with file
+targets treated as collisions whenever a staging-managed directory contains
+them. Extend the current exact-equality test at
+`tests/test_staging.py:134-158` with both containment directions.
+
+### Original finding disposition
+
+1. **Remote PostgreSQL host — closed.** Both field-derived and URL-derived
+   effective application targets must be loopback and must agree. Focused tests
+   cover a remote `POSTGRES_HOST`, remote URL, and URL/field mismatch.
+2. **Symlinked staging roots — closed for managed roots.** Validation walks each
+   existing component lexically; creation uses directory file descriptors with
+   `O_NOFOLLOW`; tests cover root/nested symlinks and a post-validation swap.
+3. **Effective production targets — still open.** Exact application override
+   collisions are detected, but blockers 1-3 above leave project, fixed Compose
+   defaults, and path containment unprotected.
+4. **WHOOP secret handling — closed.** Inline client ID/secret and
+   `STAGING_METABASE_DB` are rejected; WHOOP auth/sync requires a regular
+   non-symlink mode-`0600` credential file, while disconnected status remains
+   usable. Non-synthetic env secrets require a mode-`0600` env file.
+5. **Metabase DB override — closed.** `metabase_staging` is fixed in Compose/init,
+   the override key is forbidden, and equality with the application DB fails.
+6. **Actual root mode — closed.** Automated tests and both retained artifacts and
+   this review's live smoke show `.staging` plus managed child directories at
+   `0700`.
+
+Gmail and Telegram roots, state, temporary data, OAuth/token files, vault, WHOOP
+tokens, and credentials are all included in the managed staging environment and
+are under `.staging`. The default subprocess drops managed production connector
+variables before installing staging values. No credential values were printed or
+found in tracked files.
+
+### Independently reproduced automated gates
+
+- `uv run pytest -q tests/test_staging.py`: **37 passed**; five existing PyMuPDF
+  SWIG deprecation warnings.
+- `uv run pytest -q`: **317 passed**; the same five warnings.
+- `uv run ruff check .`: **passed**.
+- `uv run mypy src`: **passed**, 41 source files.
+- `docker compose --project-name health-agent-staging --env-file
+  .env.staging.example --file compose.staging.yaml config --quiet`: **passed**.
+- `uv lock --check`, `git diff --check 0988b67..HEAD`, and final
+  `git diff --check`: **passed**.
+
+Tests use a random disposable PostgreSQL container/database with explicit name
+guards before cleanup. They do not use live credentials, WHOOP payloads, or
+production health rows.
+
+### Independently reproduced real smoke
+
+Using the retained staging-only volumes, this review ran the documented sequence
+and then stopped it again:
+
+1. `staging start` brought up only project `health-agent-staging`; PostgreSQL
+   became healthy and migration completed.
+2. `staging run -- alembic current` returned `0005_whoop (head)`.
+3. WHOOP status returned `configured=false`, `token=missing`, zero records, and
+   no error without requiring credentials.
+4. Dashboard setup returned `status=ready`, a staging URL on
+   `http://127.0.0.1:54000`, and Metabase `/api/health` returned `{"status":"ok"}`.
+5. Docker inspection showed only loopback bindings
+   `127.0.0.1:56432 -> 5432` and `127.0.0.1:54000 -> 3000`, project label
+   `health-agent-staging`, the staging init bind read-only, and only
+   `health-agent-staging_staging_health_postgres` /
+   `health-agent-staging_staging_health_metabase` volumes.
+6. The separate production project `health-agent` remained running throughout.
+   `staging stop` then left both staging containers stopped and both staging
+   volumes retained. No `clean` or volume deletion was performed.
+7. Actual modes for `.staging`, `vault`, `tmp`, `tokens`, `connector-state`, and
+   `credentials` were all `0700`.
+
+This independently confirms retained-volume restart, migration, application DB
+routing, Metabase, command behavior, modes, labels, ports, mounts, and a clean
+stop. The author's reported fresh-volume clean/recreate was not repeated because
+that would delete retained state; it remains credible but not independently
+proven by this re-review.
+
+### Live-only concerns (not additional current blockers)
+
+- No live WHOOP OAuth or payload was used. The required separate credential file,
+  callback, token creation, full sync, and restart continuity still require the
+  owner's explicit staging acceptance.
+- Docker images are version-tagged rather than digest-pinned. This remains
+  acceptable for the requested local, non-enterprise installation.
+- The runner inherits the current Docker context/`DOCKER_HOST`. The reproduced
+  smoke had no such environment override and used the local Docker Desktop. If
+  remote Docker contexts are ever used on this Mac, local-only validation should
+  reject them before destructive staging commands.
