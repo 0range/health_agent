@@ -493,3 +493,77 @@ token/auth/client/sync/status/configuration/migration code, and the added tests.
 The reported final gates are 143 passing tests, clean Ruff/mypy/diff checks, and
 the migration checks listed above. Per instruction, none were rerun during this
 review. Only this review report was changed.
+
+---
+
+## Hardening round 3 final re-review at `f92077b`
+
+Review delta: `e9b219f..f92077b`.
+
+### Verdict
+
+- **SPEC: PASS**
+- **QUALITY: APPROVED**
+- **OVERALL: APPROVED FOR LIVE ACCEPTANCE**
+
+No implementation finding remains from the round-2 review. The final fix preserves
+the database/token atomicity invariant across both ordinary exceptions and
+`BaseException` interruption after candidate publication. This branch is ready for
+the disclosed live OAuth and full-sync acceptance work.
+
+### Round-2 finding disposition
+
+- **Medium — post-DB-commit exception restored the old token and destroyed recovery
+  evidence: ADDRESSED.** Exceptional exit from `TokenStore.replacement()` no longer
+  guesses that the database rolled back. It leaves the coordinated, mode-0600
+  journal intact. `publish_whoop_authorization()` then releases the inner token
+  lock, retains the outer account-operation lock, re-reads the committed database
+  generation, and resolves the journal accordingly. A post-commit cleanup failure
+  therefore keeps the candidate, while a failed commit still restores the prior
+  token. If immediate reconciliation fails, the journal remains for the existing
+  startup recovery path.
+
+### Final invariant and quality checks
+
+- Resolution is generation-aware: only a coordinated journal whose UUID matches
+  the committed `WhoopConnection.token_generation` selects the candidate;
+  mismatch or no committed generation selects the previous token. Repeating
+  `resolve()` after journal cleanup is harmless, so recovery is idempotent.
+- Lock ordering remains operation flock, then database or token lock. Exception
+  reconciliation runs only after the replacement context has released the token
+  lock, avoiding the earlier self-deadlock shape while still excluding a
+  concurrent auth/sync/status operation for that account.
+- The focused regression models a database generation becoming committed before
+  session cleanup raises and verifies candidate retention and journal cleanup.
+  The existing commit-failure regression now verifies old-token restoration via
+  the same authoritative reconciliation path.
+- Restart tests cover interruption after commit and injected failures at token
+  `fchmod`, file `fsync`, replace, token-directory `fsync`, journal cleanup, and
+  journal-directory `fsync`. In every tested finalization fault, a fresh
+  `TokenStore` uses the committed generation to recover the candidate. The
+  pre-commit/post-replace failure test continues to recover the previous token.
+- No token, credential, upstream body, profile identity, or exception content was
+  added to CLI/log output. The new implementation emits no secret values; test
+  token strings are synthetic. The delta does not alter OAuth HTTP behavior,
+  scope enforcement, rate-limit handling, migration lineage, normalization, or
+  profile/account isolation.
+- The implementation report claims 151 full-suite passes, 90 focused WHOOP
+  passes, clean Ruff/mypy/diff gates, and the existing migration checks. Per
+  instruction, this review inspected the code, tests, report, and diff only and
+  did not rerun those gates.
+
+### Live-only concerns
+
+- The configured WHOOP Developer application, exact loopback redirect, browser
+  callback, authorization-code exchange, and first full sync still require the
+  planned human acceptance run. No real credential or account payload was used in
+  this round.
+- Real history volume, upstream response variation/eventual consistency,
+  pagination, refresh-token rotation, reduced live scopes, and actual WHOOP
+  rate-limit headers remain unexercised outside mocked/local coverage.
+- Crash tests provide strong injected-fault evidence, but power-loss durability
+  still ultimately depends on atomic rename and `fsync` behavior on the target
+  macOS filesystem.
+- The migration conclusion still depends on the documented pre-release fact that
+  no real database retained the earlier `0005_whoop`; any retained review database
+  must be confirmed data-free and rebuilt as documented.
