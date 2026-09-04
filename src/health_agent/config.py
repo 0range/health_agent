@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     connector_state_root: Path = Field(
         default=Path("data/connectors"), validation_alias="CONNECTOR_STATE_ROOT"
     )
+    automation_root: Path = Field(
+        default=Path("data/automation"), validation_alias="AUTOMATION_ROOT"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )
