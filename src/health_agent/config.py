@@ -48,8 +48,20 @@ class Settings(BaseSettings):
     gmail_http_timeout_seconds: int = Field(
         default=30, ge=1, le=300, validation_alias="GMAIL_HTTP_TIMEOUT_SECONDS"
     )
+    telegram_root: Path = Field(
+        default=Path("data/telegram"), validation_alias="TELEGRAM_ROOT"
+    )
+    telegram_token_file: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_BOT_TOKEN_FILE"
+    )
     google_oauth_publishing_status: Literal["testing", "production", "internal"] = (
         Field(default="testing", validation_alias="GOOGLE_OAUTH_PUBLISHING_STATUS")
+    )
+    telegram_state_path: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_STATE_FILE"
+    )
+    telegram_staging_path: Path | None = Field(
+        default=None, validation_alias="TELEGRAM_STAGING_ROOT"
     )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
@@ -171,3 +183,15 @@ class Settings(BaseSettings):
                 f"{self.postgres_port}/{self.postgres_database}"
             )
         return self
+
+    @property
+    def effective_telegram_token_file(self) -> Path:
+        return self.telegram_token_file or self.telegram_root / "bot-token"
+
+    @property
+    def telegram_state_file(self) -> Path:
+        return self.telegram_state_path or self.telegram_root / "state.sqlite3"
+
+    @property
+    def telegram_staging_root(self) -> Path:
+        return self.telegram_staging_path or self.telegram_root / "staging"

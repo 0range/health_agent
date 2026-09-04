@@ -3,6 +3,8 @@
 client_secret*.json
 credentials.json
 token.json
+.telegram/
+telegram-token*.txt
 data/
 *.pdf
 *.png
