@@ -8,7 +8,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
 _COPY_BUFFER_BYTES = 1024 * 1024
 
 
