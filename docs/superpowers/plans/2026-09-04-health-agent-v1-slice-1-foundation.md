@@ -304,7 +304,7 @@ Expected: FAIL because `FileVault` does not exist.
 class FileVault:
     def store(self, source: Path) -> StoredFile:
         digest = sha256_file(source)
-        target = self.root / digest[:2] / f"{digest}{source.suffix.lower()}"
+        target = self.root / digest[:2] / digest
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not target.exists():
             temporary = target.with_suffix(target.suffix + ".partial")
