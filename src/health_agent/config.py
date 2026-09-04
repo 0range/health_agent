@@ -4,7 +4,7 @@ import ipaddress
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     )
     metabase_admin_email: str = Field(
         default="health-agent@localhost", validation_alias="METABASE_ADMIN_EMAIL"
+    )
+    whoop_client_id: str | None = Field(default=None, validation_alias="WHOOP_CLIENT_ID")
+    whoop_client_secret: SecretStr | None = Field(
+        default=None, validation_alias="WHOOP_CLIENT_SECRET"
+    )
+    whoop_redirect_uri: str = Field(
+        default="http://127.0.0.1:8765/whoop/callback",
+        validation_alias="WHOOP_REDIRECT_URI",
+    )
+    whoop_token_root: Path = Field(
+        default=Path(".tokens/whoop"), validation_alias="WHOOP_TOKEN_ROOT"
     )
 
     @field_validator("metabase_url")
