@@ -121,3 +121,49 @@ stable secret-free terminal result, and keep the existing clean SIGINT exit.
   prevents those existing protections from being reached in an unbootstrapped
   state.
 
+## Fix-round re-review — `99f51c2..67497de`
+
+Scope: current implementation, Task 3 report, and the requested follow-up
+checks. No tests were run and no production files were changed.
+
+**SPEC: PASS.** The prior delivery requirements are now implemented: runtime
+composition registers the verified bot before update-state foreign-key use,
+startup validates `getMe` and webhook state before `status=running`, `/sync`
+uses the actual profile-bound CLI forms, and profile existence is enforced at
+the binding and question-context boundaries. The default inbox gates on the
+signature-validated media type, consumes and hashes the complete staged stream,
+uses the normal vault/importer transaction with Telegram provenance, and
+returns importer-derived statuses. Existing update claims, delivery fencing,
+and outbound idempotency remain unchanged.
+
+**QUALITY: FAIL.** One interruption path can retain a raw transient PDF.
+
+### Q4 — MEDIUM: temporary raw PDF is not cleaned up on `KeyboardInterrupt`
+
+`TelegramMedicalInbox._write_private_copy` cleans its `mkstemp` file only under
+`except Exception` ([composition.py:240-247](src/health_agent/questions/composition.py#L240)).
+`KeyboardInterrupt` and other `BaseException` subclasses raised while iterating
+or writing `chunks` bypass that handler; the outer `ingest` `finally` has not
+yet been entered because `_write_private_copy` has not returned. Thus a user
+interrupt during a Telegram attachment write leaves a private but raw PDF in
+`temporary_root`, contrary to the required cleanup-on-failure property. Put
+the unlink in a `finally` guarded by a successful-write flag (or catch
+`BaseException`) so ordinary errors and interrupts remove the transient file.
+
+## Fix-round confirmed properties
+
+- `register_bot` occurs before the gateway, poller, or update-service can use
+  the namespace; `register_bot` creates the matching runtime row.
+- `validate_startup` checks bot identity and webhook configuration, records
+  safe Telegram API failure codes, and the CLI exposes only stable blocked
+  codes for startup or later poller failures.
+- `question status` constructs the same local responder as `ask`, identifies
+  that readiness as local, and safely maps settings/context failures.
+- Validated PDFs are imported with `profile_id`, `source_provider="telegram"`,
+  and the update-derived `source_external_id`; document SHA deduplication and
+  source-record revision idempotence are retained. Non-PDFs are fully consumed
+  and truthfully reported as not imported.
+- Transient roots reject symlink components and regular completion/failure
+  paths remove the copy. Persistent attachment bytes are held in the existing
+  vault rather than a new raw store; Q4 is the remaining interruption cleanup
+  exception.
