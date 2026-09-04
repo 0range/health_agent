@@ -19,7 +19,7 @@ _DIRECT_SUBJECT = re.compile(
 _URGENT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\b(?:chest pain|chest (?:pressure|tightness)|pressure|tightness in (?:my )?chest)\b",
+        r"\b(?:chest pain|chest (?:pressure|tightness)|(?:pressure|tightness) in (?:my )?chest)\b",
         r"\b(?:can(?:not|'t) breathe|trouble breathing|difficulty breathing|shortness of breath)\b",
         r"\b(?:suicid(?:al|e)|kill myself|harm myself|want to die|feel like killing myself)\b",
         r"\b(?:stroke symptoms?|face droop|one[- ]sided weakness)\b",

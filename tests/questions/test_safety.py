@@ -36,6 +36,18 @@ def test_urgent_guard_does_not_intercept_ordinary_questions() -> None:
 @pytest.mark.parametrize(
     "question",
     (
+        "My blood pressure is 120/80; is that normal?",
+        "I noticed the atmospheric pressure changed today.",
+        "My tire pressure is low.",
+    ),
+)
+def test_urgent_guard_requires_chest_context_for_pressure(question: str) -> None:
+    assert not has_urgent_red_flag(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
         "What causes chest pain?",
         "Is chest tightness a symptom of anxiety?",
         "What causes shortness of breath?",
