@@ -319,10 +319,14 @@ class TokenStore:
             replacement = TokenReplacement(
                 self, profile_slug, account_name, generation, token
             )
+            completed_normally = False
             try:
                 yield replacement
+                completed_normally = True
             finally:
-                if not replacement.committed:
+                # On an exception the database may already have committed this
+                # generation, so keep the journal for authoritative recovery.
+                if completed_normally and not replacement.resolved:
                     replacement.rollback()
 
     def recover(
@@ -429,15 +433,15 @@ class TokenReplacement:
         self._generation = generation
         self._candidate = candidate
         self._published = False
-        self._committed = False
+        self._resolved = False
 
     @property
     def generation(self) -> UUID:
         return self._generation
 
     @property
-    def committed(self) -> bool:
-        return self._committed
+    def resolved(self) -> bool:
+        return self._resolved
 
     def publish(self) -> Path:
         self._published = True
@@ -445,11 +449,17 @@ class TokenReplacement:
             self._profile_slug, self._account_name, self._candidate
         )
 
-    def commit(self) -> None:
+    def resolve(self, committed_generation: UUID | None) -> None:
+        """Idempotently select the token matching committed database state."""
         if not self._published:
             raise TokenStoreError("WHOOP token replacement was not published")
-        self._committed = True
-        self._store._clear_journal_unlocked(self._profile_slug, self._account_name)
+        self._store._recover_unlocked(
+            self._profile_slug,
+            self._account_name,
+            str(committed_generation) if committed_generation else None,
+            allow_coordinated=True,
+        )
+        self._resolved = True
 
     def rollback(self) -> None:
         journal = self._store._read_journal_unlocked(

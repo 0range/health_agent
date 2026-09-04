@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import stat
 from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
@@ -111,6 +112,7 @@ def test_replacing_restores_prior_good_token_when_caller_fails(tmp_path: Path) -
         replacement.publish()
         raise RuntimeError("database commit failed")
 
+    store.recover("vitalii", "main", None)
     assert store.load("vitalii", "main") == previous
 
 
@@ -134,7 +136,8 @@ def test_committed_replacement_keeps_candidate_and_clears_journal(
 
     with store.replacement("vitalii", "main", candidate) as replacement:
         replacement.publish()
-        replacement.commit()
+        replacement.resolve(replacement.generation)
+        replacement.resolve(replacement.generation)
 
     assert store.load("vitalii", "main") == candidate
     assert not (store.root / "vitalii" / "main.journal").exists()
@@ -168,6 +171,111 @@ def test_interrupted_replacement_recovers_from_database_generation(
     )
 
 
+def test_interrupt_after_database_commit_keeps_journal_for_restart(
+    tmp_path: Path,
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = make_token("previous")
+    candidate = make_token("candidate")
+    store.save("vitalii", "main", previous)
+    generation = None
+
+    with (
+        pytest.raises(KeyboardInterrupt),
+        store.replacement("vitalii", "main", candidate) as replacement,
+    ):
+        generation = replacement.generation
+        replacement.publish()
+        raise KeyboardInterrupt
+
+    assert generation is not None
+    restarted = TokenStore(store.root)
+    restarted.recover("vitalii", "main", generation)
+    assert restarted.load("vitalii", "main") == candidate
+
+
+@pytest.mark.parametrize(
+    "fault_stage",
+    (
+        "token_fchmod",
+        "token_fsync",
+        "token_replace",
+        "token_directory_fsync",
+        "journal_cleanup",
+        "journal_directory_fsync",
+    ),
+)
+def test_every_post_commit_finalization_fault_is_restart_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault_stage: str,
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    candidate = make_token("candidate")
+    store.save("vitalii", "main", make_token("previous"))
+    generation = None
+
+    with (
+        pytest.raises(TokenStoreError),
+        store.replacement("vitalii", "main", candidate) as replacement,
+    ):
+        generation = replacement.generation
+        replacement.publish()
+        with monkeypatch.context() as fault:
+            if fault_stage == "token_fchmod":
+                fault.setattr(
+                    os,
+                    "fchmod",
+                    lambda *args: (_ for _ in ()).throw(OSError("synthetic fchmod")),
+                )
+            elif fault_stage == "token_fsync":
+                fault.setattr(
+                    os,
+                    "fsync",
+                    lambda *args: (_ for _ in ()).throw(OSError("synthetic fsync")),
+                )
+            elif fault_stage == "token_replace":
+                fault.setattr(
+                    os,
+                    "replace",
+                    lambda *args: (_ for _ in ()).throw(OSError("synthetic replace")),
+                )
+            elif fault_stage == "token_directory_fsync":
+                fault.setattr(
+                    store,
+                    "_sync_directory",
+                    lambda *args: (_ for _ in ()).throw(
+                        OSError("synthetic token directory fsync")
+                    ),
+                )
+            elif fault_stage == "journal_cleanup":
+                fault.setattr(
+                    store,
+                    "_clear_journal_unlocked",
+                    lambda *args: (_ for _ in ()).throw(
+                        TokenStoreError("synthetic journal cleanup")
+                    ),
+                )
+            else:
+                sync_calls = 0
+                original_sync = store._sync_directory
+
+                def fail_journal_directory_sync(path: Path) -> None:
+                    nonlocal sync_calls
+                    sync_calls += 1
+                    if sync_calls == 2:
+                        raise OSError("synthetic journal directory fsync")
+                    original_sync(path)
+
+                fault.setattr(store, "_sync_directory", fail_journal_directory_sync)
+            replacement.resolve(replacement.generation)
+
+    assert generation is not None
+    restarted = TokenStore(store.root)
+    restarted.recover("vitalii", "main", generation)
+    assert restarted.load("vitalii", "main") == candidate
+
+
 def test_post_replace_fsync_failure_restores_previous_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -192,6 +300,7 @@ def test_post_replace_fsync_failure_restores_previous_token(
     ):
         replacement.publish()
 
+    store.recover("vitalii", "main", None)
     assert store.load("vitalii", "main") == previous
 
 

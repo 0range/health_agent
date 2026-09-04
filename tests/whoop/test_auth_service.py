@@ -179,6 +179,64 @@ def test_publish_restores_good_token_when_database_commit_fails(
     assert store.load("vitalii", "main") == previous
 
 
+def test_publish_keeps_candidate_when_database_commits_before_cleanup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = TokenStore(tmp_path / "tokens")
+    previous = WhoopToken(
+        "old-access",
+        "old-refresh",
+        datetime.now(UTC) + timedelta(hours=1),
+        WHOOP_SCOPES,
+    )
+    candidate = WhoopToken(
+        "new-access",
+        "new-refresh",
+        datetime.now(UTC) + timedelta(hours=1),
+        WHOOP_SCOPES,
+    )
+    store.save("vitalii", "main", previous)
+    connection = SimpleNamespace(token_generation=None)
+    committed_generation: UUID | None = None
+    session_calls = 0
+    monkeypatch.setattr(
+        "health_agent.whoop.auth_service.validate_registration_target",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        "health_agent.whoop.auth_service.register_authorized_connection",
+        lambda *args: connection,
+    )
+    monkeypatch.setattr(
+        "health_agent.whoop.auth_service._committed_token_generation",
+        lambda *args: committed_generation,
+    )
+
+    @contextmanager
+    def post_commit_cleanup_failure() -> Iterator[object]:
+        nonlocal committed_generation, session_calls
+        session_calls += 1
+        current_call = session_calls
+        yield object()
+        if current_call == 2:
+            committed_generation = connection.token_generation
+            raise RuntimeError("post-commit session cleanup failed")
+
+    with pytest.raises(RuntimeError, match="post-commit"):
+        publish_whoop_authorization(
+            post_commit_cleanup_failure,  # type: ignore[arg-type]
+            store,
+            UUID("00000000-0000-0000-0000-000000000001"),
+            "vitalii",
+            "main",
+            AuthorizedWhoopAccount(10129, WHOOP_SCOPES, candidate),
+        )
+
+    assert committed_generation is not None
+    assert store.load("vitalii", "main") == candidate
+    assert not (store.root / "vitalii" / "main.journal").exists()
+
+
 def test_invalid_local_target_fails_before_oauth_can_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

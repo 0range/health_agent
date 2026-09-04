@@ -35,7 +35,9 @@ uv run health-agent whoop status --profile-id 00000000-0000-0000-0000-0000000000
 
 Для одного WHOOP-аккаунта порядок блокировок всегда один: сначала внешний
 account-operation lock, затем token-file и PostgreSQL locks. Незавершённая замена
-токена восстанавливается по durable journal и `token_generation` из базы.
+токена восстанавливается по durable journal и `token_generation` из базы. Даже
+ошибка после успешного DB commit не откатывает токен вслепую: журнал разрешается
+по фактически записанному generation сразу или при следующем status/sync.
 
 ## Что сохраняется
 

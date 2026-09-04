@@ -118,21 +118,50 @@ def publish_whoop_authorization(
                 account_name,
                 _committed_token_generation(recovery_session, profile_id, account_name),
             )
-        with token_store.replacement(
-            profile_key, account_name, authorized.token
-        ) as replacement:
-            with session_context() as session:
-                validate_registration_target(session, profile_id, account_name)
-                connection = register_authorized_connection(
-                    session,
-                    profile_id,
-                    account_name,
-                    authorized.external_user_id,
-                    authorized.granted_scopes,
-                )
-                connection.token_generation = replacement.generation
-                replacement.publish()
-            replacement.commit()
+        try:
+            with token_store.replacement(
+                profile_key, account_name, authorized.token
+            ) as replacement:
+                with session_context() as session:
+                    validate_registration_target(session, profile_id, account_name)
+                    connection = register_authorized_connection(
+                        session,
+                        profile_id,
+                        account_name,
+                        authorized.external_user_id,
+                        authorized.granted_scopes,
+                    )
+                    connection.token_generation = replacement.generation
+                    replacement.publish()
+                replacement.resolve(replacement.generation)
+        except BaseException:
+            _reconcile_authorization_journal(
+                session_context,
+                token_store,
+                profile_id,
+                profile_key,
+                account_name,
+            )
+            raise
+
+
+def _reconcile_authorization_journal(
+    session_context: Callable[[], AbstractContextManager[Session]],
+    token_store: TokenStore,
+    profile_id: UUID,
+    profile_key: str,
+    account_name: str,
+) -> None:
+    """Best-effort resolution; failures leave the durable journal for startup."""
+    try:
+        with session_context() as session:
+            token_store.recover(
+                profile_key,
+                account_name,
+                _committed_token_generation(session, profile_id, account_name),
+            )
+    except Exception:  # noqa: BLE001 - preserve the original publication failure
+        return
 
 
 def _committed_token_generation(
