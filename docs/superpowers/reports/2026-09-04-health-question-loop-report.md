@@ -63,3 +63,86 @@ chat delivery, a permitted OpenAI key/account using non-sensitive test data, and
 the owner’s intended data-processing/privacy posture. The local runtime must
 also have its PostgreSQL schema applied and appropriate verified evidence before
 an answer can be useful.
+
+## Whole-branch review fixes — September 5, 2026
+
+Implementation commit: `d672a4f7d14a60abb3c1909fbc6ac081d311aa7f`
+(`fix: preserve question replies and enforce safety context bounds`).
+This follow-up addresses R1–R4 in
+[the whole-branch review](health-question-loop-review.md); it is implementation
+and verification evidence, not an independent re-review verdict.
+
+- R1: A private reply-only spool publishes the final rendered answer before
+  Telegram delivery. Opaque bot/update filenames and a hashed authenticated
+  profile/user/chat scope prevent cross-binding reuse. Regular `0600` files in
+  a `0700` directory are capped at 128 KiB; publication is atomic and cannot
+  overwrite an existing reply. No question, raw context, credentials, or
+  conversation history is stored. The final answer includes its Sources footer
+  and therefore contains the medical facts already prepared for delivery.
+  First-part and later-part deferrals reuse those bytes across process restarts.
+  Existing part hashes, conflicts, and unknown-send fencing remain unchanged.
+  An optional cleanup hook runs only after a committed terminal update; startup
+  and incoming questions sweep orphan files older than seven days. Expired or
+  manually removed spools cannot guarantee replay and the outbound checks remain
+  fail-closed. PDF imported/duplicate results now share canonical receipt status
+  and reply text, avoiding both attachment-audit and outbound conflicts.
+- R2: Direct emergency statements take precedence over informational question
+  handling; the exemption is narrowed to informational constructions. Bilingual
+  safety and service tests include implicit Russian first person, contractions,
+  and third-person emergencies, and prove that retrieval/responders are skipped.
+  Generic chest-pain and difficulty-breathing questions stay informational.
+- R3: Generic analyte trends no longer imply weight. Current weight has its own
+  intent. A typed limitation distinguishes a prohibited weight inference from
+  an entirely unanswerable request. Weight-only change stays local; mixed
+  sleep/weight-change requests can answer sleep while retaining the prohibition.
+- R4: Body sync-as-of snapshots obey both inclusive temporal bounds. Exact UTC
+  selection, calendar-day laboratory resolution, per-source cap, and observation
+  versus synchronization semantics are included in structured model input and
+  the deterministic Sources footer. Stale/future and boundary regressions pass.
+- Ancillary: The default output cap is 2,000 tokens (configurable 64–8,000) with
+  explicit low reasoning effort; the SDK timeout is 30 seconds with automatic
+  retries disabled. The completed-status guard remains in place. The one-way
+  safety identifier is now 64 characters, within the current documented limit.
+
+### Official SDK/API evidence and limits
+
+Installed OpenAI Python SDK `3.8.0` was inspected locally. Its Responses `create`
+signature accepts `extra_headers`, `reasoning`, and `timeout`; it has no dedicated
+idempotency argument, and the base client initializes `_idempotency_header` to
+`None`. Official documentation establishes `X-Client-Request-Id` as a tracing
+header for Responses, not a deterministic response replay contract. The hashed
+Telegram request ID is propagated through the application/responder using that
+supported header; delivery determinism comes from the local spool. No unsupported
+`Idempotency-Key`, prompt-cache, or sampling-determinism claim was introduced.
+See [official request-ID documentation](https://developers.openai.com/api/reference/overview#supplying-your-own-request-id-with-x-client-request-id)
+and the [Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create).
+
+The output cap includes reasoning tokens. Larger defaults and explicit effort
+address the static budget concern but do not establish useful live completion
+rates or clinical correctness. See [reasoning-token guidance](https://developers.openai.com/api/docs/guides/reasoning#controlling-costs).
+
+### Gates rerun
+
+| Gate | Result |
+| --- | --- |
+| `uv run --offline pytest -q tests/questions tests/telegram/test_service.py` | PASS — 123 tests before the last two adapter regressions were added |
+| `uv run --offline pytest -q` | PASS — 427 tests, including both final adapter regressions; 5 existing PyMuPDF/SWIG deprecation warnings |
+| `uv run --offline ruff check .` | PASS |
+| `uv run --offline mypy .` | PASS — 104 source files |
+| Disposable PostgreSQL Alembic `command.check` | PASS within the full suite — `tests/whoop/test_schema.py::test_whoop_migration_matches_sqlalchemy_metadata` |
+| `git diff --check` | PASS |
+
+The new delivery tests use real SQLite/update/messenger components and synthetic
+PostgreSQL retrieval. A stochastic fake responder and changed database make a
+second generation observably different; the restart test confirms no second
+generation occurs and the exact original multipart bytes complete. A PDF fake
+importer returns imported then duplicate under a first-send deferral, and both
+attachment/outbound audits complete. Spool tests cover restart, authenticated
+scope conflicts, permissions, symlinks, oversized reads/writes, and orphan TTL.
+
+All test API transports were mocked; no real credentials, health records,
+Telegram/OpenAI/OAuth service requests, or runtime database were used. Tests ran
+with offline dependency resolution and an already-cached PostgreSQL Docker image;
+the fixture uses local Docker/TCP. Official documentation retrieval was read-only.
+Live BotFather/account/model validation and synthetic clinical/adversarial
+evaluation remain separate owner-operated steps.
