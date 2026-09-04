@@ -167,3 +167,19 @@ the unlink in a `finally` guarded by a successful-write flag (or catch
   paths remove the copy. Persistent attachment bytes are held in the existing
   vault rather than a new raw store; Q4 is the remaining interruption cleanup
   exception.
+
+## Q4 final re-review — `9f4c4e9`
+
+Focused scope: the Q4 temporary-file cleanup correction and its added
+regression coverage. No tests were run and no production files were changed.
+
+**SPEC: PASS.** The fix preserves the requested complete-stream import flow
+while ensuring interrupted writes do not create a persistent raw attachment.
+
+**QUALITY: PASS.** `_write_private_copy` now catches `BaseException` after its
+private `mkstemp` allocation, closes any still-open descriptor, unlinks the
+temporary path, and re-raises. This covers the previously missed
+`KeyboardInterrupt` path before `ingest` can enter its outer cleanup `finally`.
+The focused regression test supplies bytes then raises `KeyboardInterrupt` and
+asserts the temporary root is empty. Q4 is resolved; no actionable findings in
+this focused re-review.
