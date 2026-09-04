@@ -282,6 +282,77 @@ database/container names before cleanup, and removes it afterward. Drive API and
 OAuth tests remain mocked; no live Google account or private medical file was
 used.
 
+## Final fix re-review — 2026-09-04 (`49e4481`)
+
+**SPEC verdict: SHIP.** All four remaining findings from the prior review are
+closed, and the requested CLI/E2E acceptance is present without claiming live
+Google access.
+
+**QUALITY verdict: SHIP.** The focused and full suites, static checks, lockfile,
+diff, and executable CLI surfaces pass independently. No new blocking finding
+was identified.
+
+**OVERALL verdict: SHIP.** This branch is ready to merge as the mocked,
+profile-safe Google Drive connector slice. Real OAuth/private-folder acceptance
+remains an explicit post-merge operator smoke, not a code blocker or a claimed
+result.
+
+### Finding closure
+
+1. **Medical date and exact dashboard row — closed.** The common importer
+   recognizes only explicitly labelled collection/issue dates and does not use
+   Drive timestamps. Review output exposes document/date fields and
+   `review set-date` provides a profile-scoped correction path. The database
+   acceptance invokes normal `drive sync`, persists `2024-05-06`, applies the
+   review date action, approves the parsed observation through the common review
+   service, and verifies ferritin `42` appears through the exact shipped
+   `LAB_HISTORY_QUERY`. A subsequent CLI `drive sync --full` remains idempotent.
+2. **Durable retry after cursor advancement — closed.** Per-profile JSON state
+   retains `transient_download_failed` and `processing_failed` items. Every
+   ordinary incremental run re-fetches and reprocesses that queue before reading
+   changes; failures remain queued, while OAuth/global/SQL failures still abort
+   without cursor advancement. Tests cover both an exhausted 503 download and a
+   consumer failure succeeding on a later incremental run after the earlier run
+   already committed its new cursor.
+3. **Configure/sync serialization — closed.** Root replacement, cursor
+   invalidation, sync profile loading, and cursor publication use the same
+   per-profile file lock. The deterministic concurrency test proves configure
+   blocks behind an active sync lock and cannot replace roots until the old
+   cursor is protected from restoration.
+4. **Finite Google client timeout — closed.** `GOOGLE_DRIVE_HTTP_TIMEOUT_SECONDS`
+   is validated to 1–300 seconds (default 30), feeds an authorized
+   `httplib2.Http(timeout=...)` transport for metadata, changes, account lookup,
+   and media requests, and is also forced onto token refresh calls. Construction
+   and refresh propagation are directly tested.
+
+CLI acceptance also covers successful staged authorization with verified
+account publication, successful normal sync, explicit `--full`, and a non-zero
+failed sync with content-free persisted status. These are mocked at the Google
+gateway/OAuth boundary but exercise the actual commands, local stores, medical
+consumer, PostgreSQL importer/review data, and card SQL.
+
+### Independently reproduced final gates
+
+- `uv run pytest -q tests/google_drive`: **59 passed** (five PyMuPDF SWIG
+  deprecation warnings).
+- `uv run pytest -q`: **434 passed** (same five warnings).
+- `uv run ruff check .`: **passed**.
+- `uv run mypy src`: **passed**, 55 source files.
+- `uv lock --check`: **passed**.
+- `git diff --check a3f6b05..49e4481`: **passed**.
+- `health-agent drive`, `drive auth`, `drive sync`, and
+  `review set-date` help surfaces: **passed**.
+
+### Live-only concerns (non-blocking)
+
+- No live OAuth callback/token exchange, recursive private-folder traversal,
+  download/export, Changes mutation, trash/restore, or token refresh was run.
+- The acceptance executes the exact Metabase card SQL against PostgreSQL; it
+  does not start Metabase or exercise its HTTP/UI rendering.
+- External/Testing OAuth refresh tokens can still expire after seven days;
+  unattended operation depends on the documented Production/Internal consent
+  setup. Shared drives remain deliberately unsupported for v1.
+
 ### Live-only and integration concerns (not additional code findings)
 
 - Complete one real OAuth/account/root smoke after the blockers are fixed:
