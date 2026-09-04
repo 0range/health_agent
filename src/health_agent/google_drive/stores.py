@@ -229,6 +229,20 @@ class LocalSyncStateStore:
         value["folder_path"] = tuple(value.get("folder_path", ()))
         return SeenItem(**value)
 
+    def retryable_items(self, profile_id: str) -> tuple[SeenItem, ...]:
+        items = self._read(profile_id).get("items", {})
+        if not isinstance(items, dict):
+            raise TypeError("stored Drive items must be an object")
+        retryable: list[SeenItem] = []
+        for file_id in sorted(items):
+            item = self.get_seen(profile_id, file_id)
+            if item is not None and item.status in {
+                "transient_download_failed",
+                "processing_failed",
+            }:
+                retryable.append(item)
+        return tuple(retryable)
+
     def record_seen(self, item: SeenItem) -> None:
         profile_id = validate_profile_id(item.profile_id)
         state = self._read(profile_id)

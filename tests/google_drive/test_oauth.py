@@ -135,7 +135,11 @@ def test_mismatched_account_cannot_overwrite_existing_binding(tmp_path: Path) ->
 def test_refresh_failure_becomes_explicit_reauthorization_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    oauth = DriveOAuth(tmp_path / "client.json", LocalTokenStore(tmp_path / "profiles"))
+    oauth = DriveOAuth(
+        tmp_path / "client.json",
+        LocalTokenStore(tmp_path / "profiles"),
+        timeout_seconds=19,
+    )
 
     class ExpiredCredentials:
         expired = True
@@ -143,6 +147,7 @@ def test_refresh_failure_becomes_explicit_reauthorization_state(
         valid = False
 
         def refresh(self, request: object) -> None:
+            assert request.timeout_seconds == 19
             raise RefreshError("revoked")
 
     monkeypatch.setattr(oauth, "load", lambda profile_id: ExpiredCredentials())

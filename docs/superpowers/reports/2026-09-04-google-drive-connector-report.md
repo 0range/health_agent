@@ -68,3 +68,36 @@ Verification after the fix:
 
 Live OAuth, root access, download, and sync remain an explicit acceptance step
 after the user is ready to authorize Google. They are not claimed by this report.
+
+## Final review fix — 2026-09-04
+
+Rebased onto `codex/v1-slice-1` at `0d65969` and closed the four blockers from
+the final re-review without contacting Google or using real medical data.
+
+- The importer conservatively extracts explicitly labelled collection and issue
+  dates from PDF text. Collection date remains primary and issue date the
+  fallback; Drive timestamps are never treated as medical dates. Review output
+  exposes the dates and document ID, and `review set-date` supports correction.
+- Retryable per-file outcomes are retained in durable profile state and replayed
+  before the next ordinary incremental change scan, so cursor advancement does
+  not lose an exhausted transient download or processing attempt.
+- Root replacement and cursor invalidation now share the same per-profile lock
+  as sync. The sync CLI loads the current roots only after acquiring that lock.
+- Drive API operations and token refresh use the bounded
+  `GOOGLE_DRIVE_HTTP_TIMEOUT_SECONDS` setting (30 seconds by default).
+- CLI acceptance covers successful authorization, normal and `--full` sync,
+  safe failure status, and the exact synthetic Drive PDF → date review → lab
+  approval → shipped Metabase query path.
+
+Final local verification:
+
+- `uv run pytest -q tests/google_drive`: 59 passed.
+- `uv run pytest -q`: 434 passed.
+- `uv run ruff check .`: passed.
+- `uv run mypy src`: passed (55 source files).
+- `uv lock --check` and `git diff --check`: passed.
+- `uv run alembic upgrade head && uv run alembic check`: passed against a fresh,
+  disposable PostgreSQL container; no migration was required.
+
+All Drive/OAuth tests in this result are mocked. A live private-folder smoke is
+still an explicit user-authorized acceptance step and is not claimed here.

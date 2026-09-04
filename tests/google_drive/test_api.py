@@ -187,3 +187,45 @@ def test_list_children_uses_read_only_shared_aware_query_and_parses_fields() -> 
     assert calls["supportsAllDrives"] is True
     assert calls["includeItemsFromAllDrives"] is True
     assert "trashed" in str(calls["fields"])
+
+
+def test_gateway_builds_authorized_transport_with_finite_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    raw_http = object()
+    authorized_http = object()
+    service = object()
+
+    monkeypatch.setattr(
+        api.httplib2,
+        "Http",
+        lambda *, timeout: calls.update(timeout=timeout) or raw_http,
+    )
+    monkeypatch.setattr(
+        api,
+        "AuthorizedHttp",
+        lambda credentials, *, http: (
+            calls.update(credentials=credentials, http=http) or authorized_http
+        ),
+    )
+
+    def fake_build(name: str, version: str, **kwargs: object) -> object:
+        calls.update(name=name, version=version, build_kwargs=kwargs)
+        return service
+
+    monkeypatch.setattr(api, "build", fake_build)
+    credentials = object()
+
+    gateway = api.GoogleDriveGateway.from_credentials(  # type: ignore[arg-type]
+        credentials, timeout_seconds=17
+    )
+
+    assert gateway._service is service
+    assert calls["timeout"] == 17
+    assert calls["http"] is raw_http
+    assert calls["credentials"] is credentials
+    assert calls["build_kwargs"] == {
+        "http": authorized_http,
+        "cache_discovery": False,
+    }

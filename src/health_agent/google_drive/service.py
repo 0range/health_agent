@@ -143,7 +143,11 @@ class DriveService:
             run=self.state.run_state(self.profile.profile_id),
         )
 
-    def sync(self, *, full: bool = False) -> SyncReport:
+    def sync(
+        self, *, full: bool = False, lock_already_held: bool = False
+    ) -> SyncReport:
+        if lock_already_held:
+            return self._sync_locked(full=full)
         with self.state.sync_lock(self.profile.profile_id):
             return self._sync_locked(full=full)
 
@@ -237,6 +241,7 @@ class DriveService:
 
     def _incremental_sync(self, cursor: str) -> SyncReport:
         stats = _Stats()
+        self._replay_retry_queue(stats)
         page_token = cursor
         final_token: str | None = None
         while True:
@@ -296,6 +301,31 @@ class DriveService:
             raise RuntimeError("Drive Changes API ended without a new start page token")
         self.state.set_cursor(self.profile.profile_id, final_token)
         return stats.report(self.profile.profile_id, "incremental")
+
+    def _replay_retry_queue(self, stats: _Stats) -> None:
+        for queued in self.state.retryable_items(self.profile.profile_id):
+            try:
+                item = self.gateway.get_file(queued.file_id)
+                if item.trashed:
+                    if self.state.mark_removed(self.profile.profile_id, item.file_id):
+                        stats.removed += 1
+                    continue
+                location = self._location_under_root(item)
+                if location is None:
+                    if self.state.mark_removed(self.profile.profile_id, item.file_id):
+                        stats.removed += 1
+                    continue
+                root_id, ancestors, folder_path = location
+                self._safe_process_item(item, root_id, ancestors, folder_path, stats)
+            except Exception as error:
+                code = safe_drive_error_code(error)
+                if code == "oauth_required" or isinstance(
+                    error, (GlobalDriveSyncError, SQLAlchemyError)
+                ):
+                    raise
+                # The existing JSON item is the durable queue entry. Leave it in
+                # place so the next ordinary incremental run tries again.
+                stats.failed += 1
 
     def _process_item(
         self,

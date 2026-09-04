@@ -34,6 +34,7 @@ from health_agent.importer import (
     approve_observation,
     import_document,
     reject_observation,
+    set_document_medical_dates,
 )
 from health_agent.metabase import bootstrap_metabase
 from health_agent.models import (
@@ -180,13 +181,19 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
             .scalar_subquery()
         )
         rows = session.execute(
-            select(LabObservation, filename)
+            select(
+                LabObservation,
+                filename,
+                Document.id,
+                Document.collected_date,
+                Document.issued_date,
+            )
             .join(LabObservation.document)
             .where(LabObservation.status == ReviewStatus.NEEDS_REVIEW)
             .where(Document.profile_id == profile_id)
             .order_by(LabObservation.created_at, LabObservation.id)
         ).all()
-    for observation, filename in rows:
+    for observation, filename, document_id, collected_date, issued_date in rows:
         typer.echo(
             " ".join(
                 (
@@ -196,6 +203,9 @@ def list_review_items(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
                     f"source_unit={observation.source_unit or ''}",
                     f"page={observation.page_number}",
                     f"filename={filename}",
+                    f"document_id={document_id}",
+                    f"collected_date={collected_date or ''}",
+                    f"issued_date={issued_date or ''}",
                 )
             )
         )
@@ -221,6 +231,33 @@ def reject_review_item(
     with session_scope(build_engine(settings)) as session:
         reject_observation(session, observation_id, profile_id=profile_id)
     typer.echo(f"status=rejected observation_id={observation_id}")
+
+
+@review_app.command("set-date")
+def set_review_document_date(
+    document_id: UUID,
+    collected_date: str | None = None,
+    issued_date: str | None = None,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> None:
+    """Set a human-reviewed medical date without using an import timestamp."""
+    settings = Settings()
+    with session_scope(build_engine(settings)) as session:
+        document = set_document_medical_dates(
+            session,
+            document_id,
+            collected_date=_medical_date("collected-date", collected_date),
+            issued_date=_medical_date("issued-date", issued_date),
+            profile_id=profile_id,
+        )
+        saved_id = document.id
+        saved_collected_date = document.collected_date
+        saved_issued_date = document.issued_date
+    typer.echo(
+        f"status=date_set document_id={saved_id} "
+        f"collected_date={saved_collected_date or ''} "
+        f"issued_date={saved_issued_date or ''}"
+    )
 
 
 @dashboard_app.command("setup")
@@ -815,18 +852,19 @@ def _drive_stores(
 def configure_drive(profile_id: UUID, folders: list[str]) -> None:
     """Configure one or more read-only source folders for a local profile."""
     settings = Settings()
-    profiles, _, _ = _drive_stores(settings)
+    profiles, _, state = _drive_stores(settings)
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
     profile = DriveProfile.create(profile_key, folders)
-    if profiles.exists(profile_key):
-        current = profiles.load(profile_key)
-        roots_changed = current.root_folder_ids != profile.root_folder_ids
-    else:
-        roots_changed = True
-    if roots_changed:
-        LocalSyncStateStore(settings.google_drive_root).clear_cursor(profile_key)
-    profiles.save(profile)
+    with state.sync_lock(profile_key):
+        if profiles.exists(profile_key):
+            current = profiles.load(profile_key)
+            roots_changed = current.root_folder_ids != profile.root_folder_ids
+        else:
+            roots_changed = True
+        if roots_changed:
+            state.clear_cursor(profile_key)
+        profiles.save(profile)
     typer.echo(
         f"status=configured profile={profile.profile_id} roots={len(profile.root_folder_ids)}"
     )
@@ -840,9 +878,15 @@ def authorize_drive(profile_id: UUID) -> None:
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
     profiles.load(profile_key)
-    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
     credentials = oauth.stage(profile_key, force=True, interactive=True)
-    identity = GoogleDriveGateway.from_credentials(credentials).account_identity()
+    identity = GoogleDriveGateway.from_credentials(
+        credentials, timeout_seconds=settings.google_drive_http_timeout_seconds
+    ).account_identity()
     previous = tokens.load_verified(profile_key)
     if previous is not None and previous[0].permission_id != identity.permission_id:
         raise DriveProfileMismatch(
@@ -862,7 +906,11 @@ def drive_status(profile_id: UUID) -> None:
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
     profile = profiles.load(profile_key)
-    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
     try:
         verified = tokens.load_verified(profile_key)
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -916,26 +964,35 @@ def sync_drive(profile_id: UUID, full: bool = False) -> None:
     profiles, tokens, state = _drive_stores(settings)
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
-    profile = profiles.load(profile_key)
-    oauth = DriveOAuth(settings.google_drive_client_secrets, tokens)
+    oauth = DriveOAuth(
+        settings.google_drive_client_secrets,
+        tokens,
+        settings.google_drive_http_timeout_seconds,
+    )
     credentials = oauth.stage(profile_key)
     verified = tokens.load_verified(profile_key)
     if verified is None:
         raise RuntimeError(f"Google Drive profile {profile_key!r} needs OAuth authorization")
     identity = verified[0]
-    profile = profile.with_account(identity.permission_id, identity.email)
-    service = DriveService(
-        profile,
-        GoogleDriveGateway.from_credentials(credentials),
-        state,
-        MedicalDriveConsumer(
-            profile_key,
-            build_engine(settings),
-            FileVault(settings.vault_root),
-            settings.temporary_root,
-        ),
-    )
-    report = service.sync(full=full)
+    with state.sync_lock(profile_key):
+        profile = profiles.load(profile_key).with_account(
+            identity.permission_id, identity.email
+        )
+        service = DriveService(
+            profile,
+            GoogleDriveGateway.from_credentials(
+                credentials,
+                timeout_seconds=settings.google_drive_http_timeout_seconds,
+            ),
+            state,
+            MedicalDriveConsumer(
+                profile_key,
+                build_engine(settings),
+                FileVault(settings.vault_root),
+                settings.temporary_root,
+            ),
+        )
+        report = service.sync(full=full, lock_already_held=True)
     oauth.publish_verified(profile_key, credentials, identity)
     typer.echo(
         " ".join(

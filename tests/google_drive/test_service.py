@@ -73,6 +73,14 @@ class MemoryState:
     def get_seen(self, profile_id: str, file_id: str) -> SeenItem | None:
         return self.items.get((profile_id, file_id))
 
+    def retryable_items(self, profile_id: str) -> tuple[SeenItem, ...]:
+        return tuple(
+            value
+            for (owner, _), value in sorted(self.items.items())
+            if owner == profile_id
+            and value.status in {"transient_download_failed", "processing_failed"}
+        )
+
     def record_seen(self, value: SeenItem) -> None:
         self.items[(value.profile_id, value.file_id)] = value
 
@@ -284,6 +292,7 @@ def test_incremental_sync_pages_changes_and_advances_cursor_only_on_success() ->
     )
     DriveService(profile, gateway, state, MemoryConsumer(ALICE)).sync()
     changed = replace(gateway.files["blood-pdf"], version="2")
+    gateway.files["blood-pdf"] = changed
     gateway.content["blood-pdf"] = b"new!"
     gateway.changes["start-1"] = ChangePage(
         (DriveChange("blood-pdf", False, changed),), "change-page-2", None
@@ -300,7 +309,7 @@ def test_incremental_sync_pages_changes_and_advances_cursor_only_on_success() ->
     assert state.items[(ALICE, "scan-jpg")].status == "removed"
 
 
-def test_failed_incremental_consumer_is_recorded_and_cursor_advances() -> None:
+def test_failed_incremental_consumer_is_durably_retried_after_cursor_advances() -> None:
     gateway = configured_gateway()
     state = MemoryState()
     profile = DriveProfile.create(ALICE, ["root-folder"]).with_account(
@@ -308,6 +317,7 @@ def test_failed_incremental_consumer_is_recorded_and_cursor_advances() -> None:
     )
     DriveService(profile, gateway, state, MemoryConsumer(ALICE)).sync()
     changed = replace(gateway.files["blood-pdf"], version="2")
+    gateway.files["blood-pdf"] = changed
     gateway.changes["start-1"] = ChangePage(
         (DriveChange("blood-pdf", False, changed),), None, "start-2"
     )
@@ -321,6 +331,13 @@ def test_failed_incremental_consumer_is_recorded_and_cursor_advances() -> None:
     assert report.failed == 1
     assert state.cursors[ALICE] == "start-2"
     assert state.items[(ALICE, "blood-pdf")].status == "processing_failed"
+
+    gateway.changes["start-2"] = ChangePage((), None, "start-3")
+    retry = DriveService(profile, gateway, state, MemoryConsumer(ALICE)).sync()
+
+    assert retry.medically_imported == 1
+    assert state.cursors[ALICE] == "start-3"
+    assert state.items[(ALICE, "blood-pdf")].status == "medically_imported"
 
 
 def test_download_restriction_and_unsupported_google_native_are_explicit() -> None:
@@ -434,6 +451,32 @@ def test_oversized_export_gets_machine_status_and_does_not_abort() -> None:
     assert state.items[(ALICE, "doctor-doc")].status == "too_large"
     assert state.items[(ALICE, "doctor-doc")].safe_error_code == "too_large"
     assert state.items[(ALICE, "scan-jpg")].status == "medically_imported"
+
+
+def test_exhausted_transient_download_is_replayed_by_normal_incremental_sync() -> None:
+    gateway = configured_gateway()
+    response = httplib2.Response({"status": "503"})
+    gateway.download_errors["blood-pdf"] = HttpError(
+        response, b'{"error":{"errors":[{"reason":"backendError"}]}}'
+    )
+    state = MemoryState()
+    profile = DriveProfile.create(ALICE, ["root-folder"]).with_account(
+        "permission-alice@example.com", "alice@example.com"
+    )
+
+    first = DriveService(profile, gateway, state, MemoryConsumer(ALICE)).sync()
+
+    assert first.failed == 1
+    assert state.items[(ALICE, "blood-pdf")].status == "transient_download_failed"
+    assert state.cursors[ALICE] == "start-1"
+    gateway.download_errors.clear()
+    gateway.changes["start-1"] = ChangePage((), None, "start-2")
+
+    retry = DriveService(profile, gateway, state, MemoryConsumer(ALICE)).sync()
+
+    assert retry.medically_imported == 1
+    assert state.items[(ALICE, "blood-pdf")].status == "medically_imported"
+    assert state.cursors[ALICE] == "start-2"
 
 
 def test_unchanged_content_refreshes_folder_path() -> None:

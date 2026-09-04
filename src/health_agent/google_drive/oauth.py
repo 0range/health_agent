@@ -24,9 +24,15 @@ class OAuthRequired(RuntimeError):
 
 
 class DriveOAuth:
-    def __init__(self, client_secrets_path: Path, tokens: LocalTokenStore) -> None:
+    def __init__(
+        self,
+        client_secrets_path: Path,
+        tokens: LocalTokenStore,
+        timeout_seconds: int = 30,
+    ) -> None:
         self.client_secrets_path = Path(client_secrets_path)
         self.tokens = tokens
+        self.timeout_seconds = timeout_seconds
 
     def stage(
         self,
@@ -54,7 +60,7 @@ class DriveOAuth:
             )
         elif credentials.expired and credentials.refresh_token:
             try:
-                credentials.refresh(Request())
+                credentials.refresh(_BoundedRequest(self.timeout_seconds))
             except RefreshError as error:
                 raise OAuthRequired("Google Drive reauthorization is required") from error
         if not credentials.valid:
@@ -114,3 +120,13 @@ class DriveOAuth:
         actual = set(credentials.granted_scopes or credentials.scopes or ())
         if actual != {DRIVE_READONLY_SCOPE}:
             raise OAuthScopeError("Google OAuth token must grant only Drive read-only access")
+
+
+class _BoundedRequest:
+    def __init__(self, timeout_seconds: int) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._request = Request()
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        kwargs["timeout"] = self.timeout_seconds
+        return self._request(*args, **kwargs)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -93,6 +95,18 @@ _CANONICAL_NAMES = {
     "prolactin": "prolactin",
 }
 
+_DATE_TOKEN = r"(\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4})"
+_COLLECTION_DATE = re.compile(
+    rf"(?:collection|collected|specimen)\s+date\s*[:\-]?\s*{_DATE_TOKEN}|"
+    rf"дата\s+(?:забора|взятия)\s*[:\-]?\s*{_DATE_TOKEN}",
+    re.IGNORECASE,
+)
+_ISSUE_DATE = re.compile(
+    rf"(?:issue|issued|report)\s+date\s*[:\-]?\s*{_DATE_TOKEN}|"
+    rf"дата\s+(?:выдачи|заключения)\s*[:\-]?\s*{_DATE_TOKEN}",
+    re.IGNORECASE,
+)
+
 
 def import_document(
     session: Session,
@@ -114,6 +128,12 @@ def import_document(
     """
     source_path = Path(source_path)
     stored_file = vault.store(source_path)
+    extracted_pdf = extract_pdf(source_path)
+    inferred_collection, inferred_issue = _infer_medical_dates(
+        page.text for page in extracted_pdf.pages
+    )
+    collected_date = collected_date or inferred_collection
+    issued_date = issued_date or inferred_issue
 
     transaction = (
         session.begin_nested() if session.in_transaction() else session.begin()
@@ -145,7 +165,6 @@ def import_document(
                 review_count=0,
             )
 
-        extracted_pdf = extract_pdf(source_path)
         candidates = parse_lab_candidates(extracted_pdf.pages)
         lab_like = looks_like_lab_document(extracted_pdf.pages)
         processing_status, safe_error_code = _processing_state(
@@ -214,6 +233,28 @@ def import_document(
         )
 
 
+def _infer_medical_dates(texts: Iterable[str]) -> tuple[date | None, date | None]:
+    text = "\n".join(str(value) for value in texts)
+    return _unique_labeled_date(_COLLECTION_DATE, text), _unique_labeled_date(
+        _ISSUE_DATE, text
+    )
+
+
+def _unique_labeled_date(pattern: re.Pattern[str], text: str) -> date | None:
+    values: set[date] = set()
+    for match in pattern.finditer(text):
+        raw = next(value for value in match.groups() if value is not None)
+        try:
+            if "-" in raw:
+                values.add(date.fromisoformat(raw))
+            else:
+                day, month, year = (int(value) for value in re.split(r"[./]", raw))
+                values.add(date(year, month, day))
+        except ValueError:
+            continue
+    return next(iter(values)) if len(values) == 1 else None
+
+
 def approve_observation(
     session: Session,
     observation_id: UUID,
@@ -254,6 +295,36 @@ def reject_observation(
     review_item.resolved_at = utc_now()
     _refresh_document_processing_status(session, observation.document_id)
     session.flush()
+
+
+def set_document_medical_dates(
+    session: Session,
+    document_id: UUID,
+    *,
+    collected_date: date | None = None,
+    issued_date: date | None = None,
+    profile_id: UUID = DEFAULT_PROFILE_ID,
+) -> Document:
+    """Apply an explicit human-reviewed collection and/or issue date."""
+    if collected_date is None and issued_date is None:
+        raise ValueError("at least one medical date is required")
+    document = session.scalar(
+        select(Document).where(
+            Document.id == document_id,
+            Document.profile_id == profile_id,
+        )
+    )
+    if document is None:
+        raise ValueError("document does not exist for this profile")
+    if collected_date is not None:
+        document.collected_date = collected_date
+    if issued_date is not None:
+        document.issued_date = issued_date
+    if document.safe_error_code == "conflicting_medical_date":
+        document.safe_error_code = None
+        _refresh_document_processing_status(session, document.id)
+    session.flush()
+    return document
 
 
 def correct_observation(

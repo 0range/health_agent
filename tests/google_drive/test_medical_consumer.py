@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from uuid import UUID
 
@@ -23,11 +24,13 @@ from health_agent.vault import FileVault
 BOB = UUID("22222222-2222-4222-8222-222222222222")
 
 
-def pdf_bytes(tmp_path: Path) -> bytes:
-    path = tmp_path / "lab.pdf"
+def pdf_bytes(
+    tmp_path: Path, text: str = "Ferritin 42 ng/mL 30-400", name: str = "lab.pdf"
+) -> bytes:
+    path = tmp_path / name
     with pymupdf.open() as document:
         page = document.new_page()
-        page.insert_text((72, 72), "Ferritin 42 ng/mL 30-400")
+        page.insert_text((72, 72), text)
         document.save(path)
     return path.read_bytes()
 
@@ -91,3 +94,27 @@ def test_missing_database_profile_fails_closed(clean_database: Engine, tmp_path:
     )
     with pytest.raises(RuntimeError, match="does not exist"):
         consumer.consume(provenance(BOB), iter((pdf_bytes(tmp_path),)))
+
+
+def test_explicit_issue_date_is_imported_without_using_drive_timestamps(
+    clean_database: Engine, tmp_path: Path
+) -> None:
+    content = pdf_bytes(
+        tmp_path,
+        "Report date: 07.05.2024\nFerritin 42 ng/mL 30-400",
+        "issued.pdf",
+    )
+    consumer = MedicalDriveConsumer(
+        str(DEFAULT_PROFILE_ID),
+        clean_database,
+        FileVault(tmp_path / "vault"),
+        tmp_path / "tmp",
+    )
+
+    receipt = consumer.consume(provenance(DEFAULT_PROFILE_ID), iter((content,)))
+
+    assert receipt.document_id is not None
+    with session_scope(clean_database) as session:
+        document = session.get_one(Document, UUID(receipt.document_id))
+        assert document.collected_date is None
+        assert document.issued_date == date(2024, 5, 7)

@@ -8,7 +8,9 @@ import socket
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
+import httplib2  # type: ignore[import-untyped]
 from google.oauth2.credentials import Credentials
+from google_auth_httplib2 import AuthorizedHttp  # type: ignore[import-untyped]
 from googleapiclient.discovery import Resource, build  # type: ignore[import-untyped]
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore[import-untyped]
@@ -109,8 +111,14 @@ class GoogleDriveGateway:
         self._service = service
 
     @classmethod
-    def from_credentials(cls, credentials: Credentials) -> GoogleDriveGateway:
-        return cls(build("drive", "v3", credentials=credentials, cache_discovery=False))
+    def from_credentials(
+        cls, credentials: Credentials, *, timeout_seconds: int = 30
+    ) -> GoogleDriveGateway:
+        transport = AuthorizedHttp(
+            credentials,
+            http=httplib2.Http(timeout=timeout_seconds),
+        )
+        return cls(build("drive", "v3", http=transport, cache_discovery=False))
 
     def account_identity(self) -> DriveAccountIdentity:
         response = _execute(

@@ -22,6 +22,19 @@ explicit authorization for each person.
   separate cursor model; silently treating them like My Drive would lose data.
 - Every supported, unsupported, restricted, oversized, corrupt, removed, or
   failed item gets a local machine status. One bad file does not stop later files.
+- Exhausted transient/processing failures remain in a private durable retry queue
+  and are replayed by the next ordinary incremental run before its cursor advances.
+- Explicit `Collection date` / `Дата забора` is used for laboratory charts;
+  explicit issue/report date is the fallback. Drive created/modified timestamps
+  are provenance only and are never substituted for a medical date.
+- The review queue shows the document ID and detected dates. A reviewer can set
+  or correct either date before approval:
+
+  ```bash
+  uv run health-agent review set-date DOCUMENT_ID --collected-date YYYY-MM-DD
+  ```
+
+  Use `--issued-date YYYY-MM-DD` for an issue date.
 
 Google's API limits Google Workspace exports to 10 MB. Such an item is recorded
 as `too_large`; convert it to a regular PDF for ingestion.
@@ -67,6 +80,11 @@ No new database migration is required: the production consumer uses the existing
 profile-aware importer and immutable `SourceRecord` provenance with provider
 `google_drive`, Drive file ID, revision, and link. Identical bytes deduplicate
 only within one profile; two people remain separate.
+
+Drive API and token-refresh calls use the finite timeout configured by
+`GOOGLE_DRIVE_HTTP_TIMEOUT_SECONDS` (30 seconds by default). Root replacement and
+cursor invalidation share the same per-profile process lock as synchronization,
+so a running old-root scan cannot restore a stale cursor.
 
 ## Official references
 
