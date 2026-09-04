@@ -28,7 +28,7 @@ file. Их можно удалить вручную только после пр
 
 | Ресурс | Staging | Production default |
 |---|---|---|
-| Compose project | `health-agent-staging` | каталог/обычный Compose project |
+| Compose project | `health-agent-staging` | фиксированный `health-agent` |
 | PostgreSQL port | `56432` | `55432` |
 | Application DB | `health_agent_staging` | `health_agent` |
 | Metabase port | `54000` | `53000` |
@@ -43,8 +43,12 @@ file. Их можно удалить вручную только после пр
 другие управляемые production-переменные из окружения, затем загружают только
 `.env.staging` или безопасный пример `.env.staging.example`. Перед запуском
 валидатор отдельно читает только target-поля эффективного production `.env` и
-окружения (без значений секретов) и прекращает работу при пересечении порта, базы,
-роли или пути. PostgreSQL и Metabase обязаны оставаться loopback-only.
+окружения (без значений секретов) и прекращает работу при пересечении Compose
+project, порта, базы, роли или пути. Фиксированные production Compose targets
+`health-agent`, `55432`, `53000`, `health_agent` и `metabase` всегда остаются в
+запрещённом наборе; app-overrides только дополняют его. Пересечением путей считается
+также вложенность в любую сторону. PostgreSQL и Metabase обязаны оставаться
+loopback-only.
 
 `.staging` и все существующие компоненты управляемых путей не могут быть symlink;
 каталоги создаются без перехода по symlink и получают режим `0700`. Callback

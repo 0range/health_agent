@@ -51,3 +51,35 @@ recreated. Production volumes and `.staging` files were not targeted.
 
 Branch was rebased onto foundation `509309c`. The review report commit was
 preserved as rebased commit `0988b67`. No push was performed.
+
+## Final re-review fixes
+
+The re-review at `926c720` found one remaining production-collision class. It is
+now closed as follows:
+
+- Production Compose has the explicit project name `health-agent`. Staging also
+  models `COMPOSE_PROJECT_NAME` from production `.env` and the current process and
+  refuses the effective `health-agent-staging` collision before any Compose
+  command, including `stop` and `clean`.
+- Fixed production Compose targets (`55432`, `53000`, `health_agent`, `metabase`,
+  and role `health_agent`) are always forbidden. Production application settings
+  augment rather than replace those targets.
+- Canonical filesystem targets reject equality and ancestor/descendant overlap in
+  both directions, including production `.staging` and
+  `.staging/vault/production` examples.
+- Rendering both Compose files from this worktree resolves distinct project names:
+  `health-agent` and `health-agent-staging`.
+
+Final verification:
+
+- Focused staging suite: 45 passed.
+- Full suite: 325 passed; Ruff, mypy, `uv lock --check`, both Compose renders,
+  and `git diff --check` passed.
+- Retained-volume smoke reached `0005_whoop (head)`, reported WHOOP
+  `token=missing`, bootstrapped the staging dashboard, and returned Metabase
+  `/api/health` `ok`.
+- Docker simultaneously reported production project `health-agent` and staging
+  project `health-agent-staging`; production remained running while staging was
+  stopped with its volumes preserved.
+
+No credentials, WHOOP payloads, or live OAuth were used.

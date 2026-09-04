@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 STAGING_PROJECT = "health-agent-staging"
+PRODUCTION_PROJECT = "health-agent"
 STAGING_METABASE_DATABASE = "metabase_staging"
 PRODUCTION_POSTGRES_PORT = 55432
 PRODUCTION_METABASE_PORT = 53000
@@ -84,6 +85,7 @@ _FORBIDDEN_STAGING_KEYS = {
     "STAGING_METABASE_DB",
 }
 _PRODUCTION_TARGET_KEYS = {
+    "COMPOSE_PROJECT_NAME",
     "DATABASE_URL",
     "METABASE_URL",
     "POSTGRES_DB",
@@ -115,9 +117,10 @@ class DatabaseTarget:
 @dataclass(frozen=True, slots=True)
 class ProductionTargets:
     postgres_ports: frozenset[int]
-    metabase_port: int
+    metabase_ports: frozenset[int]
     database_names: frozenset[str]
     database_users: frozenset[str]
+    compose_projects: frozenset[str]
     paths: frozenset[Path]
 
     @classmethod
@@ -161,12 +164,23 @@ class ProductionTargets:
             for raw_path in path_values.values()
         )
         return cls(
-            postgres_ports=frozenset({postgres_port, database_target.port}),
-            metabase_port=metabase_port,
-            database_names=frozenset(
-                {postgres_database, database_target.database, "metabase"}
+            postgres_ports=frozenset(
+                {PRODUCTION_POSTGRES_PORT, postgres_port, database_target.port}
             ),
-            database_users=frozenset({postgres_user, database_target.user}),
+            metabase_ports=frozenset({PRODUCTION_METABASE_PORT, metabase_port}),
+            database_names=frozenset(
+                PRODUCTION_DATABASES
+                | {postgres_database, database_target.database}
+            ),
+            database_users=frozenset(
+                {"health_agent", postgres_user, database_target.user}
+            ),
+            compose_projects=frozenset(
+                {
+                    PRODUCTION_PROJECT,
+                    values.get("COMPOSE_PROJECT_NAME", PRODUCTION_PROJECT),
+                }
+            ),
             paths=paths,
         )
 
@@ -212,6 +226,10 @@ class StagingEnvironment:
         value = self.values.__getitem__
         if value("STAGING_COMPOSE_PROJECT") != STAGING_PROJECT:
             raise StagingConfigurationError("staging Compose project name is fixed")
+        if STAGING_PROJECT in self.production.compose_projects:
+            raise StagingConfigurationError(
+                "staging Compose project overlaps the effective production project"
+            )
 
         postgres_target = DatabaseTarget(
             host=_canonical_host(value("POSTGRES_HOST")),
@@ -236,7 +254,7 @@ class StagingEnvironment:
         metabase_port = _port(value("STAGING_METABASE_PORT"), "STAGING_METABASE_PORT")
         if postgres_target.port in self.production.postgres_ports:
             raise StagingConfigurationError("staging PostgreSQL uses a production port")
-        if metabase_port == self.production.metabase_port:
+        if metabase_port in self.production.metabase_ports:
             raise StagingConfigurationError("staging Metabase uses a production port")
         if postgres_target.port == metabase_port:
             raise StagingConfigurationError("staging ports must be distinct")
@@ -280,7 +298,11 @@ class StagingEnvironment:
                 )
             final_kind = "directory" if key in _DIRECTORY_KEYS else "file"
             _reject_symlink_components(self.root, path, final_kind=final_kind)
-            if _filesystem_identity(path) in self.production.paths:
+            identity = _filesystem_identity(path)
+            if any(
+                _paths_overlap(identity, production_path)
+                for production_path in self.production.paths
+            ):
                 raise StagingConfigurationError(
                     "staging path overlaps the effective production configuration"
                 )
@@ -556,6 +578,14 @@ def _absolute_lexical(path: Path) -> Path:
 
 def _filesystem_identity(path: Path) -> Path:
     return path.resolve(strict=False)
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return (
+        first == second
+        or first.is_relative_to(second)
+        or second.is_relative_to(first)
+    )
 
 
 def _canonical_host(host: str) -> str:

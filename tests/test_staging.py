@@ -11,6 +11,7 @@ from health_agent.cli import app
 from health_agent.staging import (
     PRODUCTION_METABASE_PORT,
     PRODUCTION_POSTGRES_PORT,
+    PRODUCTION_PROJECT,
     STAGING_METABASE_DATABASE,
     STAGING_PROJECT,
     StagingConfigurationError,
@@ -145,7 +146,10 @@ def test_database_url_must_match_staging_database_and_port(tmp_path: Path) -> No
         ("POSTGRES_DB=health_agent_staging\n", "production database"),
         ("POSTGRES_USER=health_agent_staging\n", "production database role"),
         ("METABASE_URL=http://127.0.0.1:54000\n", "production port"),
+        ("COMPOSE_PROJECT_NAME=health-agent-staging\n", "production project"),
         ("VAULT_ROOT=.staging/vault\n", "effective production"),
+        ("VAULT_ROOT=.staging\n", "effective production"),
+        ("VAULT_ROOT=.staging/vault/production\n", "effective production"),
     ),
 )
 def test_effective_production_overrides_are_collision_targets(
@@ -153,6 +157,49 @@ def test_effective_production_overrides_are_collision_targets(
 ) -> None:
     (tmp_path / ".env").write_text(production_override, encoding="utf-8")
     env_file = write_override(tmp_path)
+
+    with pytest.raises(StagingConfigurationError, match=message):
+        StagingEnvironment.load(tmp_path, env_file)
+
+
+def test_ambient_production_compose_project_collision_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", STAGING_PROJECT)
+    env_file = write_override(tmp_path)
+
+    with pytest.raises(StagingConfigurationError, match="production project"):
+        StagingEnvironment.load(tmp_path, env_file)
+
+
+@pytest.mark.parametrize(
+    ("staging_override", "message"),
+    (
+        ({"POSTGRES_PORT": "55432"}, "production port"),
+        (
+            {
+                "STAGING_METABASE_PORT": "53000",
+                "METABASE_URL": "http://127.0.0.1:53000",
+            },
+            "production port",
+        ),
+        ({"POSTGRES_DB": "health_agent"}, "production database"),
+        ({"POSTGRES_USER": "health_agent"}, "production database role"),
+    ),
+)
+def test_production_application_overrides_do_not_replace_fixed_compose_targets(
+    tmp_path: Path, staging_override: dict[str, str], message: str
+) -> None:
+    (tmp_path / ".env").write_text(
+        (
+            "POSTGRES_PORT=56433\n"
+            "POSTGRES_DB=health_agent_other\n"
+            "POSTGRES_USER=health_agent_other\n"
+            "METABASE_URL=http://127.0.0.1:54001\n"
+        ),
+        encoding="utf-8",
+    )
+    env_file = write_override(tmp_path, **staging_override)
 
     with pytest.raises(StagingConfigurationError, match=message):
         StagingEnvironment.load(tmp_path, env_file)
@@ -421,9 +468,12 @@ def test_application_environment_drops_inherited_production_values(
 
 
 def test_staging_compose_declares_fixed_separate_databases_and_volumes() -> None:
+    production_compose = Path("compose.yaml").read_text(encoding="utf-8")
     compose = Path("compose.staging.yaml").read_text(encoding="utf-8")
 
+    assert production_compose.startswith(f"name: {PRODUCTION_PROJECT}\n")
     assert "name: health-agent-staging" in compose
+    assert f"name: {PRODUCTION_PROJECT}\n" not in compose
     assert "staging_health_postgres" in compose
     assert "staging_health_metabase" in compose
     assert "health_agent_staging" in compose
