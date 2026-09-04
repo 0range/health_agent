@@ -11,12 +11,15 @@ from health_agent.importer import (
     import_document,
     reject_observation,
 )
+from health_agent.metabase import bootstrap_metabase
 from health_agent.models import Document, LabObservation, ReviewStatus, SourceRecord
 from health_agent.vault import FileVault
 
 app = typer.Typer(help="Personal Health Agent")
 review_app = typer.Typer(help="Review imported laboratory candidates.")
+dashboard_app = typer.Typer(help="Manage the local Metabase dashboards.")
 app.add_typer(review_app, name="review")
+app.add_typer(dashboard_app, name="dashboard")
 
 
 @app.callback()
@@ -87,6 +90,22 @@ def reject_review_item(observation_id: UUID) -> None:
     with session_scope(build_engine(settings)) as session:
         reject_observation(session, observation_id)
     typer.echo(f"status=rejected observation_id={observation_id}")
+
+
+@dashboard_app.command("setup")
+def setup_dashboard() -> None:
+    """Provision the verified laboratory history dashboard."""
+    result = bootstrap_metabase(Settings())
+    typer.echo(
+        " ".join(
+            (
+                "status=ready",
+                f"dashboard_id={result.dashboard_id}",
+                f"card_id={result.card_id}",
+                f"url={result.dashboard_url}",
+            )
+        )
+    )
 
 
 def main() -> None:

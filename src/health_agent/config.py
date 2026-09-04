@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     postgres_password: str = Field(default="health_agent", validation_alias="POSTGRES_PASSWORD")
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     vault_root: Path = Field(default=Path("data/vault"), validation_alias="VAULT_ROOT")
+    metabase_url: str = Field(
+        default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
+    )
+    metabase_admin_email: str = Field(
+        default="health-agent@localhost", validation_alias="METABASE_ADMIN_EMAIL"
+    )
 
     @model_validator(mode="after")
     def set_default_database_url(self) -> Settings:
