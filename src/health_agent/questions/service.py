@@ -1,0 +1,162 @@
+"""Framework-independent health-question application service."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol
+from uuid import UUID
+
+from health_agent.questions.models import (
+    ContextLimitation,
+    EvidenceItem,
+    EvidenceTimeSemantics,
+    HealthQuestionContext,
+)
+from health_agent.questions.safety import guard_urgent_question
+
+QUESTION_UNAVAILABLE_TEXT = (
+    "Health-question answering is temporarily unavailable. Please try again later."
+)
+INSUFFICIENT_EVIDENCE_TEXT = (
+    "I don't have enough verified health data in the selected window to answer that "
+    "safely."
+)
+
+
+class QuestionAnswerErrorCode(StrEnum):
+    """Closed, public-safe failure codes for the question boundary."""
+
+    INVALID_REQUEST = "invalid_request"
+    CONTEXT_UNAVAILABLE = "context_unavailable"
+    RESPONDER_UNAVAILABLE = "responder_unavailable"
+
+
+class QuestionResponderError(RuntimeError):
+    """A responder failed without carrying vendor, request, or medical data."""
+
+
+class HealthQuestionContextBuilder(Protocol):
+    """Read-only profile-scoped evidence retrieval boundary."""
+
+    def build(self, profile_id: UUID, question: str) -> HealthQuestionContext: ...
+
+
+class HealthQuestionResponder(Protocol):
+    """Generate text only from an already-bounded health-question context."""
+
+    def respond(
+        self, *, profile_id: UUID, question: str, context: HealthQuestionContext
+    ) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionAnswerResult:
+    """Safe answer plus structured retrieval metadata for UI adapters."""
+
+    text: str
+    safe_error_code: QuestionAnswerErrorCode | None
+    evidence: tuple[EvidenceItem, ...] = ()
+    limitations: tuple[ContextLimitation, ...] = ()
+    urgent: bool = False
+
+    @property
+    def available(self) -> bool:
+        return self.safe_error_code is None
+
+
+class HealthQuestionApplicationService:
+    """Apply safety, profile-scoped retrieval, and deterministic presentation."""
+
+    def __init__(
+        self,
+        context_builder: HealthQuestionContextBuilder,
+        responder: HealthQuestionResponder,
+    ) -> None:
+        self._context_builder = context_builder
+        self._responder = responder
+
+    def answer(self, profile_id: UUID, question: str) -> QuestionAnswerResult:
+        """Answer safely; emergency wording never reaches retrieval or a vendor."""
+
+        if not isinstance(question, str) or not question.strip():
+            return _unavailable(QuestionAnswerErrorCode.INVALID_REQUEST)
+
+        urgent = guard_urgent_question(question)
+        if urgent is not None:
+            return QuestionAnswerResult(urgent, None, urgent=True)
+
+        try:
+            context = self._context_builder.build(profile_id, question)
+        except Exception:  # noqa: BLE001 -- persistence details must not cross this boundary
+            return _unavailable(QuestionAnswerErrorCode.CONTEXT_UNAVAILABLE)
+
+        if not context.evidence:
+            return QuestionAnswerResult(
+                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
+                safe_error_code=None,
+                limitations=context.limitations,
+            )
+
+        try:
+            generated = self._responder.respond(
+                profile_id=profile_id, question=question, context=context
+            )
+        except Exception:  # noqa: BLE001 -- never disclose client/provider failure data
+            return _unavailable(
+                QuestionAnswerErrorCode.RESPONDER_UNAVAILABLE,
+                evidence=context.evidence,
+                limitations=context.limitations,
+            )
+
+        if not isinstance(generated, str) or not generated.strip():
+            return _unavailable(
+                QuestionAnswerErrorCode.RESPONDER_UNAVAILABLE,
+                evidence=context.evidence,
+                limitations=context.limitations,
+            )
+        return QuestionAnswerResult(
+            text=_with_footer(generated.strip(), context),
+            safe_error_code=None,
+            evidence=context.evidence,
+            limitations=context.limitations,
+        )
+
+
+def render_source_footer(context: HealthQuestionContext) -> str:
+    """Render local source provenance in the context's deterministic order."""
+
+    lines = ["Sources:"]
+    if context.evidence:
+        lines.extend(_render_evidence(item) for item in context.evidence)
+    else:
+        lines.append("- No verified data was available in the selected window.")
+    if context.limitations:
+        lines.extend(("", "Limitations:"))
+        lines.extend(f"- {limitation.message}" for limitation in context.limitations)
+    return "\n".join(lines)
+
+
+def _render_evidence(item: EvidenceItem) -> str:
+    when = item.observed_at.date().isoformat()
+    value = f"{item.value} {item.unit}" if item.unit else item.value
+    suffix = " (synced as of)" if item.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF else ""
+    return f"- {item.citation_label} {when}: {item.metric} — {value}{suffix}"
+
+
+def _with_footer(answer: str, context: HealthQuestionContext) -> str:
+    return f"{answer}\n\n{render_source_footer(context)}"
+
+
+def _unavailable(
+    code: QuestionAnswerErrorCode,
+    *,
+    evidence: tuple[EvidenceItem, ...] = (),
+    limitations: tuple[ContextLimitation, ...] = (),
+) -> QuestionAnswerResult:
+    return QuestionAnswerResult(
+        QUESTION_UNAVAILABLE_TEXT,
+        code,
+        evidence=evidence,
+        limitations=limitations,
+    )
