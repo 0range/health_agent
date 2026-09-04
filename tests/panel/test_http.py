@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 from http.client import HTTPConnection
 from threading import Thread
 from typing import Any, cast
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import pytest
 
+from health_agent.google_drive.config import DriveProfile
 from health_agent.panel.http import (
     MAX_FORM_BYTES,
     PanelApplication,
@@ -51,14 +53,46 @@ class FakeReader:
         return (self.card,)
 
 
+class FakeDrive:
+    connector = "drive"
+
+    def __init__(self) -> None:
+        self.roots: dict[UUID, tuple[str, ...]] = {}
+
+    def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]:
+        roots = self.roots.get(profile_id, ())
+        return (
+            ConnectorCard(
+                "drive",
+                "needs_authorization" if roots else "not_configured",
+                f"Папок Google Drive: {len(roots)}."
+                if roots
+                else "Папка не настроена.",
+            ),
+        )
+
+    def folder_ids(self, profile_id: UUID) -> tuple[str, ...]:
+        return self.roots.get(profile_id, ())
+
+    def configure(self, profile_id: UUID, folders: list[str]) -> None:
+        self.roots[profile_id] = DriveProfile.create(
+            str(profile_id), folders
+        ).root_folder_ids
+
+
 def application(
     *, name: str = "Анна", card: ConnectorCard | None = None, port: int = 8766
-) -> tuple[PanelApplication, ProfileSummary]:
+) -> tuple[PanelApplication, ProfileSummary, FakeDrive]:
     profile = ProfileSummary(uuid4(), name)
+    drive = FakeDrive()
     service = PanelService(
-        FakeProfiles({profile.id: profile}), (FakeReader(card),)
+        FakeProfiles({profile.id: profile}), (FakeReader(card),), drive=drive
     )
-    return PanelApplication(service, csrf_token="test-csrf-token", port=port), profile
+    return (
+        PanelApplication(service, csrf_token="test-csrf-token", port=port),
+        profile,
+        drive,
+    )
 
 
 def text(response) -> str:
@@ -81,7 +115,7 @@ def request(
 
 
 def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
-    app, profile = application()
+    app, profile, _ = application()
 
     response = request(app, "GET", f"/profiles/{profile.id}")
 
@@ -93,26 +127,26 @@ def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     assert "Последняя успешная операция" in page
     assert "действий не требуется" in page
     assert "health-agent whoop auth" not in page
-    assert "<button" not in page
+    assert "Настроить Google Drive" in page
+    assert 'name="csrf_token" value="test-csrf-token"' in page
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"]
 
 
 def test_profile_page_renders_telegram_status_with_the_profile_option() -> None:
-    app, profile = application(
+    app, profile, _ = application(
         card=ConnectorCard("telegram", "not_bound", "Профиль не привязан.")
     )
 
     response = request(app, "GET", f"/profiles/{profile.id}")
 
-    assert (
-        f"health-agent telegram bind {profile.id} &lt;telegram-user-id&gt;"
-        in text(response)
+    assert f"health-agent telegram bind {profile.id} &lt;telegram-user-id&gt;" in text(
+        response
     )
 
 
 def test_html_escapes_profile_and_connector_values() -> None:
-    app, profile = application(name='<img src=x onerror="boom">')
+    app, profile, _ = application(name='<img src=x onerror="boom">')
 
     response = request(app, "GET", f"/profiles/{profile.id}")
 
@@ -122,19 +156,19 @@ def test_html_escapes_profile_and_connector_values() -> None:
 
 
 def test_home_page_lists_profiles_and_includes_csrf_protected_create_form() -> None:
-    app, profile = application()
+    app, profile, _ = application()
 
     response = request(app, "GET", "/")
 
     page = text(response)
     assert response.status == 200
-    assert f'/profiles/{profile.id}' in page
+    assert f"/profiles/{profile.id}" in page
     assert 'aria-label="Имя нового профиля"' in page
     assert 'name="csrf_token" value="test-csrf-token"' in page
 
 
 def test_missing_or_invalid_profile_is_not_found() -> None:
-    app, _ = application()
+    app, _, _ = application()
 
     assert request(app, "GET", f"/profiles/{uuid4()}").status == 404
     assert request(app, "GET", "/profiles/not-a-uuid").status == 404
@@ -142,7 +176,7 @@ def test_missing_or_invalid_profile_is_not_found() -> None:
 
 
 def test_rejects_oversize_post_body_before_form_parsing() -> None:
-    app, _ = application()
+    app, _, _ = application()
 
     response = request(app, "POST", "/profiles", body=b"x" * (MAX_FORM_BYTES + 1))
 
@@ -150,7 +184,7 @@ def test_rejects_oversize_post_body_before_form_parsing() -> None:
 
 
 def test_rejects_unsupported_methods_and_routes() -> None:
-    app, _ = application()
+    app, _, _ = application()
 
     response = request(app, "PUT", "/")
     assert response.status == 405
@@ -161,14 +195,17 @@ def test_rejects_unsupported_methods_and_routes() -> None:
 
 
 def test_post_creates_profile_only_with_csrf_and_same_origin() -> None:
-    app, _ = application()
+    app, _, _ = application()
     body = b"name=%D0%92%D0%B8%D0%BA%D1%82%D0%BE%D1%80&csrf_token=test-csrf-token"
 
     response = request(
         app,
         "POST",
         "/profiles",
-        {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://127.0.0.1:8766"},
+        {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "http://127.0.0.1:8766",
+        },
         body,
     )
 
@@ -177,8 +214,165 @@ def test_post_creates_profile_only_with_csrf_and_same_origin() -> None:
     assert "Виктор" in text(request(app, "GET", "/"))
 
 
+def test_post_configures_selected_profiles_drive_folders_and_shows_success() -> None:
+    app, profile, drive = application()
+    first = "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"
+    second = "2g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsC"
+    body = urlencode(
+        {
+            "folders": (f"https://drive.google.com/drive/folders/{first}\n{second}"),
+            "csrf_token": "test-csrf-token",
+        }
+    ).encode()
+
+    response = request(
+        app,
+        "POST",
+        f"/profiles/{profile.id}/drive",
+        {"Origin": "http://127.0.0.1:8766"},
+        body,
+    )
+
+    assert response.status == 303
+    assert response.headers["Location"] == f"/profiles/{profile.id}/drive-saved"
+    assert drive.roots[profile.id] == (first, second)
+    success = request(app, "GET", response.headers["Location"])
+    assert success.status == 200
+    assert "Настройка Google Drive сохранена." in text(success)
+    assert first in text(success)
+    assert second in text(success)
+
+
+@pytest.mark.parametrize(
+    "folders",
+    (
+        "https://evil.example/drive/folders/1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB",
+        "javascript:alert(1)",
+        '<script>alert("boom")</script>',
+        "   ",
+    ),
+)
+def test_drive_form_rejects_invalid_or_hostile_folder_values(folders: str) -> None:
+    app, profile, drive = application()
+    body = urlencode({"folders": folders, "csrf_token": "test-csrf-token"}).encode()
+
+    response = request(
+        app,
+        "POST",
+        f"/profiles/{profile.id}/drive",
+        {"Origin": "http://127.0.0.1:8766"},
+        body,
+    )
+
+    page = text(response)
+    assert response.status == 400
+    assert "Проверьте ссылки на папки Google Drive." in page
+    assert profile.id not in drive.roots
+    assert "<script>" not in page
+    assert "Traceback" not in page
+
+
+def test_drive_form_rejects_missing_csrf_cross_origin_duplicates_and_oversize() -> None:
+    app, profile, drive = application()
+    path = f"/profiles/{profile.id}/drive"
+    valid = urlencode(
+        {
+            "folders": "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB",
+            "csrf_token": "test-csrf-token",
+        }
+    ).encode()
+
+    assert request(app, "POST", path, body=valid).status == 403
+    assert (
+        request(
+            app,
+            "POST",
+            path,
+            {"Origin": "https://attacker.example"},
+            valid,
+        ).status
+        == 403
+    )
+    duplicate = valid + b"&folders=2g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsC"
+    assert (
+        request(
+            app,
+            "POST",
+            path,
+            {"Origin": "http://127.0.0.1:8766"},
+            duplicate,
+        ).status
+        == 400
+    )
+    assert (
+        request(
+            app,
+            "POST",
+            path,
+            {"Origin": "http://127.0.0.1:8766"},
+            b"x" * (MAX_FORM_BYTES + 1),
+        ).status
+        == 413
+    )
+    assert profile.id not in drive.roots
+
+
+def test_drive_form_rejects_unknown_profile_without_writing_configuration() -> None:
+    app, _, drive = application()
+    unknown = uuid4()
+    body = urlencode(
+        {
+            "folders": "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB",
+            "csrf_token": "test-csrf-token",
+        }
+    ).encode()
+
+    response = request(
+        app,
+        "POST",
+        f"/profiles/{unknown}/drive",
+        {"Origin": "http://127.0.0.1:8766"},
+        body,
+    )
+
+    assert response.status == 404
+    assert unknown not in drive.roots
+
+
+def test_drive_form_hides_local_storage_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, profile, drive = application()
+
+    def fail_safely(_profile_id: UUID, _folders: list[str]) -> None:
+        raise RuntimeError("refresh_token=secret MRI-result.pdf")
+
+    monkeypatch.setattr(drive, "configure", fail_safely)
+    body = urlencode(
+        {
+            "folders": "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB",
+            "csrf_token": "test-csrf-token",
+        }
+    ).encode()
+
+    response = request(
+        app,
+        "POST",
+        f"/profiles/{profile.id}/drive",
+        {"Origin": "http://127.0.0.1:8766"},
+        body,
+    )
+
+    page = text(response)
+    assert response.status == 500
+    assert "Не удалось сохранить настройку Google Drive." in page
+    assert "refresh_token" not in page
+    assert "MRI-result.pdf" not in page
+    assert "Traceback" not in page
+
+
 def test_post_rejects_missing_csrf_or_cross_origin() -> None:
-    app, _ = application()
+    app, _, _ = application()
     valid_body = b"name=Viktor&csrf_token=test-csrf-token"
 
     assert request(app, "POST", "/profiles", body=b"name=Viktor").status == 403
@@ -188,7 +382,10 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
             app,
             "POST",
             "/profiles",
-            {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://127.0.0.1:8767"},
+            {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "http://127.0.0.1:8767",
+            },
             valid_body,
         ).status
         == 403
@@ -198,7 +395,10 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
             app,
             "POST",
             "/profiles",
-            {"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://example.test"},
+            {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://example.test",
+            },
             valid_body,
         ).status
         == 403
@@ -206,7 +406,7 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
 
 
 def test_page_does_not_render_secrets_or_medical_fields() -> None:
-    app, _ = application()
+    app, _, _ = application()
 
     page = text(request(app, "GET", "/"))
 
@@ -215,7 +415,7 @@ def test_page_does_not_render_secrets_or_medical_fields() -> None:
 
 
 def test_server_refuses_non_loopback_hosts() -> None:
-    app, _ = application()
+    app, _, _ = application()
 
     with pytest.raises(ValueError, match="127.0.0.1"):
         serve_panel(app._service, host="0.0.0.0", port=0)
@@ -223,7 +423,7 @@ def test_server_refuses_non_loopback_hosts() -> None:
 
 @pytest.mark.parametrize("method", ("GET", "POST"))
 def test_application_rejects_hostile_host_before_route_dispatch(method: str) -> None:
-    app, _ = application()
+    app, _, _ = application()
     hostile = "attacker.example:8766"
 
     response = app.handle(
@@ -238,7 +438,7 @@ def test_application_rejects_hostile_host_before_route_dispatch(method: str) -> 
 
 
 def test_default_http_port_uses_browser_canonical_host_and_origin() -> None:
-    app, _ = application(port=80)
+    app, _, _ = application(port=80)
     body = b"name=Viktor&csrf_token=test-csrf-token"
 
     response = app.handle(
@@ -348,6 +548,16 @@ def test_default_http_port_uses_browser_canonical_host_and_origin() -> None:
             "health-agent gmail status {profile_id}",
             "personal",
         ),
+        (
+            ConnectorCard("drive", "not_configured", ""),
+            "укажите папку Google Drive в форме ниже",
+            "health-agent drive auth",
+        ),
+        (
+            ConnectorCard("drive", "needs_authorization", ""),
+            "health-agent drive auth {profile_id}",
+            "пока недоступна",
+        ),
     ),
 )
 def test_cli_guidance_state_action_matrix(
@@ -382,7 +592,7 @@ def _live_request(
 
 @pytest.mark.parametrize("method", ("GET", "POST"))
 def test_ephemeral_server_rejects_hostile_host_for_get_and_post(method: str) -> None:
-    app, _ = application()
+    app, _, _ = application()
     server = serve_panel(app._service, host="127.0.0.1", port=0)
     hostile = "attacker.example"
     try:
@@ -407,7 +617,7 @@ def test_ephemeral_server_rejects_hostile_host_for_get_and_post(method: str) -> 
 
 
 def test_ephemeral_server_accepts_its_actual_bound_host_and_origin() -> None:
-    app, _ = application()
+    app, _, _ = application()
     server = serve_panel(app._service, host="127.0.0.1", port=0)
     port = server.server_address[1]
     live_application = cast(Any, server.RequestHandlerClass).application
@@ -429,7 +639,7 @@ def test_ephemeral_server_accepts_its_actual_bound_host_and_origin() -> None:
 
 
 def test_server_adapter_routes_unsupported_methods_to_application() -> None:
-    app, _ = application()
+    app, _, _ = application()
     server = serve_panel(app._service, host="127.0.0.1", port=0)
     try:
         response, _ = _live_request(server, "PUT", "/")
