@@ -107,6 +107,9 @@ class LabObservation(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    supersedes_observation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("lab_observations.id"), index=True
+    )
     page_number: Mapped[int]
     canonical_name: Mapped[str] = mapped_column(String(255), index=True)
     source_name: Mapped[str] = mapped_column(String(500))
@@ -135,6 +138,10 @@ class LabObservation(Base):
 
     document: Mapped[Document] = relationship(back_populates="observations")
     review_item: Mapped[ReviewItem | None] = relationship(back_populates="observation", uselist=False)
+    supersedes_observation: Mapped[LabObservation | None] = relationship(
+        back_populates="corrections", remote_side="LabObservation.id"
+    )
+    corrections: Mapped[list[LabObservation]] = relationship(back_populates="supersedes_observation")
 
     @property
     def is_publishable(self) -> bool:
