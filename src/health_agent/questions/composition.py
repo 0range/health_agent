@@ -244,7 +244,7 @@ class TelegramMedicalInbox:
                     destination.write(chunk)
                 destination.flush()
                 os.fsync(destination.fileno())
-        except Exception:
+        except BaseException:
             try:
                 os.close(descriptor)
             except OSError:

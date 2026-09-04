@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from health_agent.config import Settings
 from health_agent.importer import ImportReport
 from health_agent.questions.composition import (
@@ -205,6 +207,25 @@ def test_telegram_inbox_removes_temporary_bytes_on_invalid_stream(tmp_path: Path
         pass
     else:
         raise AssertionError("invalid attachment stream was accepted")
+
+    assert list((tmp_path / "temporary").glob("*")) == []
+
+
+def test_telegram_inbox_removes_temporary_bytes_when_write_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    inbox = TelegramMedicalInbox(
+        object(),  # type: ignore[arg-type]
+        FileVault(tmp_path / "vault"),
+        tmp_path / "temporary",
+    )
+
+    def interrupted_stream():
+        yield b"partial private bytes"
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        inbox.ingest(_attachment(PROFILE_ID), interrupted_stream())
 
     assert list((tmp_path / "temporary").glob("*")) == []
 
