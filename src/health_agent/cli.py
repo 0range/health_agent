@@ -692,12 +692,21 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
     settings = Settings()
     profiles, tokens, state = _gmail_stores(settings)
     profile_key = str(profile_id)
-    if not profiles.exists(profile_key):
+    try:
+        if not profiles.exists(profile_key):
+            typer.echo(
+                f"status=not_configured profile={profile_key} "
+                "action_required=configure"
+            )
+            return
+        profile = profiles.load(profile_key)
+    except (OSError, RuntimeError, TypeError, ValueError):
         typer.echo(
-            f"status=not_configured profile={profile_key} action_required=configure"
+            f"status=invalid_configuration profile={profile_key} "
+            "action_required=repair_configuration",
+            err=True,
         )
-        return
-    profile = profiles.load(profile_key)
+        raise typer.Exit(code=1) from None
     try:
         accounts = _selected_gmail_accounts(profile, account_id)
     except KeyError:

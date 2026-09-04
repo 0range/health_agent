@@ -40,6 +40,33 @@ def test_status_reports_missing_profile_configuration_without_traceback(
     assert "Traceback" not in result.output
 
 
+@pytest.mark.parametrize("profile_entry_kind", ("broken_symlink", "directory"))
+def test_status_fails_closed_for_nonregular_profile_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile_entry_kind: str,
+) -> None:
+    root = tmp_path / "gmail"
+    profile_directory = root / PROFILE
+    profile_directory.mkdir(parents=True)
+    profile_path = profile_directory / "profile.json"
+    if profile_entry_kind == "broken_symlink":
+        profile_path.symlink_to(tmp_path / "missing-profile.json")
+    else:
+        profile_path.mkdir()
+    monkeypatch.setenv("GMAIL_ROOT", str(root))
+
+    result = CliRunner().invoke(app, ["gmail", "status", PROFILE])
+
+    assert result.exit_code == 1
+    assert result.output == (
+        f"status=invalid_configuration profile={PROFILE} "
+        "action_required=repair_configuration\n"
+    )
+    assert "not_configured" not in result.output
+    assert "Traceback" not in result.output
+
+
 def test_status_reports_missing_account_configuration_without_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
