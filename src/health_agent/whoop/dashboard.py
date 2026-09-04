@@ -19,6 +19,7 @@ from health_agent.metabase import (
     _rows,
     ensure_dashboard_reader,
 )
+from health_agent.models import DEFAULT_PROFILE_ID
 
 WHOOP_DASHBOARD_NAME = "WHOOP — сон и восстановление"
 
@@ -94,8 +95,9 @@ def bootstrap_whoop_dashboard(
 ) -> WhoopDashboardResult:
     """Idempotently provision one profile-isolated WHOOP dashboard."""
     ensure_dashboard_reader(settings, engine=engine)
-    suffix = str(profile_id)
-    dashboard_name = f"{WHOOP_DASHBOARD_NAME} [{suffix}]"
+    suffix = "" if profile_id == DEFAULT_PROFILE_ID else f" [{str(profile_id)[:8]}]"
+    legacy_suffix = f" [{profile_id}]" if profile_id == DEFAULT_PROFILE_ID else None
+    dashboard_name = f"{WHOOP_DASHBOARD_NAME}{suffix}"
     with MetabaseClient(settings.metabase_url, transport=transport) as client:
         client.wait_until_healthy()
         client.authenticate(
@@ -103,11 +105,23 @@ def bootstrap_whoop_dashboard(
         )
         collection = _ensure_collection(client)
         database = _ensure_database(client, settings)
-        dashboard = _ensure_named_dashboard(client, collection["id"], dashboard_name)
+        dashboard = _ensure_named_dashboard(
+            client,
+            collection["id"],
+            dashboard_name,
+            legacy_name=(
+                f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}" if legacy_suffix else None
+            ),
+        )
         card_ids: list[int] = []
         for position, spec in enumerate(whoop_card_specs(profile_id)):
             card = _ensure_whoop_card(
-                client, database["id"], collection["id"], spec, suffix
+                client,
+                database["id"],
+                collection["id"],
+                spec,
+                suffix,
+                legacy_suffix=legacy_suffix,
             )
             card_ids.append(card["id"])
             _ensure_dashboard_card(
@@ -127,7 +141,11 @@ def bootstrap_whoop_dashboard(
 
 
 def _ensure_named_dashboard(
-    client: MetabaseClient, collection_id: int, name: str
+    client: MetabaseClient,
+    collection_id: int,
+    name: str,
+    *,
+    legacy_name: str | None = None,
 ) -> dict[str, Any]:
     desired = {"name": name, "collection_id": collection_id}
     existing = _candidate(
@@ -135,6 +153,12 @@ def _ensure_named_dashboard(
         name,
         expected_parent=("collection_id", collection_id),
     )
+    if existing is None and legacy_name is not None:
+        existing = _candidate(
+            _rows(client, "/api/dashboard"),
+            legacy_name,
+            expected_parent=("collection_id", collection_id),
+        )
     method = "POST" if existing is None else "PUT"
     path = "/api/dashboard" if existing is None else f"/api/dashboard/{existing['id']}"
     dashboard = _require_entity(client.request(method, path, json=desired), name)
@@ -149,8 +173,10 @@ def _ensure_whoop_card(
     collection_id: int,
     spec: WhoopCardSpec,
     profile_suffix: str,
+    *,
+    legacy_suffix: str | None = None,
 ) -> dict[str, Any]:
-    managed_name = f"{spec.name} [{profile_suffix}]"
+    managed_name = f"{spec.name}{profile_suffix}"
     desired = {
         "name": managed_name,
         "collection_id": collection_id,
@@ -170,6 +196,12 @@ def _ensure_whoop_card(
         managed_name,
         expected_parent=("collection_id", collection_id),
     )
+    if existing is None and legacy_suffix is not None:
+        existing = _candidate(
+            _rows(client, "/api/card"),
+            f"{spec.name}{legacy_suffix}",
+            expected_parent=("collection_id", collection_id),
+        )
     method = "POST" if existing is None else "PUT"
     path = "/api/card" if existing is None else f"/api/card/{existing['id']}"
     card = _require_entity(client.request(method, path, json=desired), managed_name)

@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from health_agent import cli
 from health_agent.config import Settings
+from health_agent.models import DEFAULT_PROFILE_ID
 from health_agent.whoop.dashboard import (
     WHOOP_DASHBOARD_NAME,
     WhoopDashboardResult,
@@ -47,7 +48,7 @@ def test_whoop_dashboard_is_profile_isolated_and_idempotent() -> None:
     )
 
     assert first == second
-    assert fake.count_named(f"{WHOOP_DASHBOARD_NAME} [{PROFILE}]") == 1
+    assert fake.count_named(f"{WHOOP_DASHBOARD_NAME} [{str(PROFILE)[:8]}]") == 1
     assert len(fake.cards) == 5
     assert len(fake.dashboards[0]["dashcards"]) == 5
     for card in fake.cards:
@@ -79,6 +80,20 @@ def test_two_profiles_get_separate_dashboards_and_cards() -> None:
     for card in fake.cards[5:]:
         assert str(other) in card["dataset_query"]["native"]["query"]
         assert str(PROFILE) not in card["dataset_query"]["native"]["query"]
+
+
+def test_default_profile_has_clean_visible_names() -> None:
+    fake = FakeMetabase()
+    result = bootstrap_whoop_dashboard(
+        Settings(postgres_password="local-secret"),
+        DEFAULT_PROFILE_ID,
+        transport=httpx.MockTransport(fake.handle),
+        engine=cast(Engine, FakeEngine()),
+    )
+
+    assert result.dashboard_id == 1
+    assert fake.dashboards[0]["name"] == WHOOP_DASHBOARD_NAME
+    assert all("[" not in card["name"] for card in fake.cards)
 
 
 def test_setup_whoop_cli_prints_safe_identifiers(
