@@ -103,6 +103,7 @@ def setup_dashboard() -> None:
                 f"dashboard_id={result.dashboard_id}",
                 f"card_id={result.card_id}",
                 f"url={result.dashboard_url}",
+                f"admin_email={result.admin_email}",
             )
         )
     )

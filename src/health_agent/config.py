@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,47 @@ class Settings(BaseSettings):
     metabase_admin_email: str = Field(
         default="health-agent@localhost", validation_alias="METABASE_ADMIN_EMAIL"
     )
+
+    @field_validator("metabase_url")
+    @classmethod
+    def validate_local_metabase_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("METABASE_URL must use http or https")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("METABASE_URL must not contain credentials, query, or fragment")
+        if parsed.path not in {"", "/"}:
+            raise ValueError("METABASE_URL must not contain a path")
+        try:
+            is_loopback = ipaddress.ip_address(parsed.hostname or "").is_loopback
+        except ValueError:
+            is_loopback = parsed.hostname == "localhost"
+        if not is_loopback:
+            raise ValueError("METABASE_URL must use a loopback host")
+        try:
+            _ = parsed.port
+        except ValueError as error:
+            raise ValueError("METABASE_URL contains an invalid port") from error
+        return value.rstrip("/")
+
+    @field_validator("metabase_admin_email")
+    @classmethod
+    def validate_metabase_admin_email(cls, value: str) -> str:
+        if value == "health-agent@localhost":
+            return value
+        local, separator, domain = value.rpartition("@")
+        if not separator or not local or "." not in domain or any(char.isspace() for char in value):
+            raise ValueError(
+                "METABASE_ADMIN_EMAIL must be API-valid; only the local default is normalized"
+            )
+        return value
+
+    @property
+    def effective_metabase_admin_email(self) -> str:
+        """Return the explicit Metabase login identity for the configured address."""
+        if self.metabase_admin_email == "health-agent@localhost":
+            return "health-agent@localhost.local"
+        return self.metabase_admin_email
 
     @model_validator(mode="after")
     def set_default_database_url(self) -> Settings:
