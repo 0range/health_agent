@@ -211,7 +211,11 @@ def test_telegram_image_inbox_imports_and_uses_stable_receipt(tmp_path: Path) ->
     second = inbox.ingest(provenance, [b"synthetic image"])
     assert first == second
     assert first.status == "received"
-    assert "/review" in first.reply_text
+    assert first.reply_text == (
+        "Медицинское изображение получено и сохранено. Перед использованием данные "
+        "могут потребовать проверки. Используйте /review, чтобы проверить один "
+        "извлечённый показатель. Распознавание текста (OCR) может быть недоступно."
+    )
     assert calls[0]["media_type"] == "image/png"
     assert list((tmp_path / "temporary").iterdir()) == []
 
