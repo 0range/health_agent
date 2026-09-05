@@ -148,7 +148,7 @@ def test_telegram_pdf_inbox_imports_with_profile_provenance_and_is_replay_safe(
     assert list(temporary_root.glob("*")) == []
 
 
-def test_telegram_inbox_fully_consumes_non_pdf_without_importing(tmp_path: Path) -> None:
+def test_telegram_inbox_fully_consumes_voice_without_importing(tmp_path: Path) -> None:
     called = False
 
     def importer(*_args: object, **_kwargs: object) -> ImportReport:
@@ -161,7 +161,7 @@ def test_telegram_inbox_fully_consumes_non_pdf_without_importing(tmp_path: Path)
         yield object()
 
     provenance = _attachment(PROFILE_ID)
-    non_pdf = replace(provenance, validated_media_type="image/jpeg")
+    non_pdf = replace(provenance, validated_media_type="audio/ogg")
     inbox = TelegramMedicalInbox(
         object(),  # type: ignore[arg-type]
         FileVault(tmp_path / "vault"),
@@ -177,6 +177,40 @@ def test_telegram_inbox_fully_consumes_non_pdf_without_importing(tmp_path: Path)
     assert receipt.sha256 == hashlib.sha256(b"not a PDF").hexdigest()
     assert "not imported" in receipt.reply_text
     assert list((tmp_path / "temporary").glob("*")) == []
+
+
+def test_telegram_image_inbox_imports_and_uses_stable_receipt(tmp_path: Path) -> None:
+    calls = []
+
+    def importer(*_args, **kwargs):
+        calls.append(kwargs)
+        return ImportReport(
+            "ocr_required" if len(calls) == 1 else "duplicate",
+            "ocr_required",
+            PROFILE_ID,
+            0,
+            0,
+        )
+
+    @contextmanager
+    def sessions(_engine):
+        yield object()
+
+    inbox = TelegramMedicalInbox(
+        object(),
+        FileVault(tmp_path / "vault"),
+        tmp_path / "temporary",
+        importer=importer,
+        session_scope_factory=sessions,
+    )
+    provenance = replace(_attachment(PROFILE_ID), validated_media_type="image/png")
+    first = inbox.ingest(provenance, [b"synthetic image"])
+    second = inbox.ingest(provenance, [b"synthetic image"])
+    assert first == second
+    assert first.status == "received"
+    assert "/review" in first.reply_text
+    assert calls[0]["media_type"] == "image/png"
+    assert list((tmp_path / "temporary").iterdir()) == []
 
 
 def test_telegram_inbox_rejects_symlinked_temporary_root(tmp_path: Path) -> None:
@@ -200,7 +234,9 @@ def test_telegram_inbox_rejects_symlinked_temporary_root(tmp_path: Path) -> None
     assert list(target.iterdir()) == []
 
 
-def test_telegram_inbox_removes_temporary_bytes_on_invalid_stream(tmp_path: Path) -> None:
+def test_telegram_inbox_removes_temporary_bytes_on_invalid_stream(
+    tmp_path: Path,
+) -> None:
     inbox = TelegramMedicalInbox(
         object(),  # type: ignore[arg-type]
         FileVault(tmp_path / "vault"),
@@ -253,7 +289,6 @@ def test_runtime_composition_verifies_local_credential_without_printing_or_netwo
     registrations: list[tuple[int, str | None]] = []
 
     class State:
-
         def register_bot(self, bot_id: int, username: str | None) -> None:
             registrations.append((bot_id, username))
 

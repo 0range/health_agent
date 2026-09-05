@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from health_agent.images import extract_image
 from health_agent.labs import (
     LabCandidate,
     looks_like_lab_document,
@@ -120,15 +121,33 @@ def import_document(
     source_revision: str | None = None,
     collected_date: date | None = None,
     issued_date: date | None = None,
+    media_type: str | None = None,
 ) -> ImportReport:
-    """Import one PDF as an all-or-nothing database transaction.
+    """Import one PDF/JPEG/PNG as an all-or-nothing database transaction.
 
     The immutable vault write happens first because it is content-addressed and
     safe to retain if PDF extraction or database persistence later fails.
     """
     source_path = Path(source_path)
+    with source_path.open("rb") as stream:
+        signature = stream.read(16)
+    actual_media_type = (
+        "application/pdf"
+        if signature.startswith(b"%PDF-")
+        else "image/png"
+        if signature.startswith(b"\x89PNG\r\n\x1a\n")
+        else "image/jpeg"
+        if signature.startswith(b"\xff\xd8\xff")
+        else None
+    )
+    if actual_media_type is None or media_type not in (None, actual_media_type):
+        raise ValueError("document media type is unsupported or inconsistent")
+    # Images must pass size/dimension/full-decode checks before entering the vault.
+    extracted_image = None
+    if actual_media_type != "application/pdf":
+        _, extracted_image = extract_image(source_path, actual_media_type)
     stored_file = vault.store(source_path)
-    extracted_pdf = extract_pdf(source_path)
+    extracted_pdf = extracted_image or extract_pdf(source_path)
     inferred_collection, inferred_issue = _infer_medical_dates(
         page.text for page in extracted_pdf.pages
     )
@@ -169,7 +188,9 @@ def import_document(
         lab_like = looks_like_lab_document(extracted_pdf.pages)
         processing_status, safe_error_code = _processing_state(
             extracted_pdf.extraction_method,
-            any(page.extraction_method == "ocr_required" for page in extracted_pdf.pages),
+            any(
+                page.extraction_method == "ocr_required" for page in extracted_pdf.pages
+            ),
             bool(candidates),
             lab_like,
         )
@@ -177,7 +198,7 @@ def import_document(
             profile_id=profile_id,
             sha256=stored_file.sha256,
             vault_path=str(stored_file.path),
-            media_type="application/pdf",
+            media_type=actual_media_type,
             document_type=(
                 "laboratory_report" if candidates or lab_like else "unknown_document"
             ),
@@ -507,9 +528,7 @@ def _processing_state(
     return "processed", None
 
 
-def _refresh_document_processing_status(
-    session: Session, document_id: UUID
-) -> None:
+def _refresh_document_processing_status(session: Session, document_id: UUID) -> None:
     document = session.get_one(Document, document_id)
     if document.safe_error_code is not None:
         return

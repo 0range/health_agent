@@ -59,6 +59,53 @@ def test_reimport_is_duplicate(
     assert first.review_count == 1
 
 
+def test_image_import_preserves_original_and_cross_source_dedupe(
+    session: Session, vault: FileVault, tmp_path: Path, monkeypatch
+) -> None:
+    image = tmp_path / "photo.png"
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=300, height=100).get_pixmap().save(image)
+    monkeypatch.setattr(
+        "health_agent.images.recognize_image",
+        lambda _: "Collection date: 2026-09-05\nFerritin 42 ng/mL 30-400",
+    )
+    first = import_document(
+        session,
+        vault,
+        image,
+        None,
+        source_provider="telegram",
+        source_external_id="telegram:1:1:1:p",
+    )
+    second = import_document(
+        session,
+        vault,
+        image,
+        "drive:synthetic",
+        source_provider="google_drive",
+        source_external_id="same-image",
+    )
+    document = session.get_one(Document, first.document_id)
+    assert document.media_type == "image/png"
+    assert Path(document.vault_path).read_bytes() == image.read_bytes()
+    assert first.status == "imported" and second.status == "duplicate"
+    assert second.document_id == first.document_id
+    assert document.collected_date == date(2026, 9, 5)
+    assert document.observations[0].status is ReviewStatus.NEEDS_REVIEW
+    assert document.pages[0].extraction_method == "local_ocr"
+    assert len(document.source_links) == 2
+
+
+def test_invalid_image_is_not_persisted(
+    session: Session, vault: FileVault, tmp_path: Path
+):
+    path = tmp_path / "broken.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\ninvalid")
+    with pytest.raises(ValueError):
+        import_document(session, vault, path, None)
+    assert not vault.root.exists()
+
+
 def test_approval_moves_value_into_verified_view(
     session: Session, vault: FileVault, synthetic_lab_pdf: Path
 ) -> None:
@@ -159,7 +206,9 @@ def test_review_transitions_are_one_way(
 
     assert observation_id is not None
     reject_observation(session, observation_id)
-    assert session.get_one(Document, report.document_id).processing_status == "processed"
+    assert (
+        session.get_one(Document, report.document_id).processing_status == "processed"
+    )
     with pytest.raises(InvalidReviewTransition):
         approve_observation(session, observation_id)
 
@@ -184,7 +233,9 @@ def test_correction_preserves_original_and_creates_verified_successor(
     assert corrected.normalized_value == Decimal("43.5")
     assert corrected.normalized_unit == "ng/mL"
     assert corrected.supersedes_observation_id == original.id
-    assert session.get_one(Document, report.document_id).processing_status == "processed"
+    assert (
+        session.get_one(Document, report.document_id).processing_status == "processed"
+    )
 
 
 def test_invalid_correction_leaves_original_pending(
@@ -275,9 +326,7 @@ def test_identical_bytes_are_deduplicated_only_within_one_profile(
     )
     assert first_observation is not None
     with pytest.raises(NoResultFound):
-        approve_observation(
-            session, first_observation, profile_id=second_profile.id
-        )
+        approve_observation(session, first_observation, profile_id=second_profile.id)
 
 
 def test_chart_excludes_unknown_dates_and_non_default_profiles(
@@ -312,9 +361,7 @@ def test_chart_excludes_unknown_dates_and_non_default_profiles(
         {"document_id": second.document_id},
     )
     assert second_observation is not None
-    approve_observation(
-        session, second_observation, profile_id=second_profile.id
-    )
+    approve_observation(session, second_observation, profile_id=second_profile.id)
 
     assert session.execute(text(LAB_HISTORY_QUERY)).all() == []
 
