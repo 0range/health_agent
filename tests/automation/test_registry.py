@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from health_agent.automation.registry import (
     DriveJobAdapter,
     GmailJobAdapter,
+    LabExtractionJobAdapter,
     SheetsJobAdapter,
     WhoopJobAdapter,
 )
@@ -203,3 +204,14 @@ def test_sheets_profile_is_discovered_and_missing_oauth_is_deferred(
     )
     ready = next(iter(SheetsJobAdapter().discover(settings)))
     assert ready.not_ready_code is None
+def test_discovers_only_enabled_extraction_profiles(clean_database, disposable_postgres):
+    from health_agent.db import session_scope
+    from health_agent.lab_extraction.models import LabExtractionProfile
+    with session_scope(clean_database) as session:
+        session.add(LabExtractionProfile(profile_id=PROFILE_A))
+    jobs = tuple(LabExtractionJobAdapter().discover(disposable_postgres.settings))
+    assert len(jobs) == 1 and not jobs[0].supports_full
+    assert jobs[0].arguments == ("lab-extract", "run", str(PROFILE_A))
+    with session_scope(clean_database) as session:
+        session.get_one(LabExtractionProfile, PROFILE_A).enabled = False
+    assert tuple(LabExtractionJobAdapter().discover(disposable_postgres.settings)) == ()

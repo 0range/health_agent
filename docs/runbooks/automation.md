@@ -2,7 +2,8 @@
 
 ## TL;DR
 
-Один пользовательский LaunchAgent запускает WHOOP, Gmail и Google Drive каждые
+Один пользовательский LaunchAgent запускает WHOOP, Gmail и Google Drive, затем
+включённые profile jobs извлечения лабораторных кандидатов, затем Sheets каждые
 четыре часа. Он не содержит секретов, не смешивает профили и продолжает работу,
 если отдельный источник завершился ошибкой или завис.
 
@@ -83,6 +84,12 @@ OAuth после авторизации и ошибка самого конне�
 
 ## Границы этого этапа
 
+`lab-extract configure PROFILE_UUID` включает отдельный bounded post-sync worker:
+новые Drive/Gmail и уже завершённые Telegram импорты подхватываются на следующем
+прогоне, все кандидаты остаются needs_review. Cloud требует отдельного `--openai`.
+Extraction не имеет full-режима, не вызывает API внутри connector транзакций
+и не сбрасывает budget/retry fences между запусками. См. [lab extraction](../lab-extraction.md).
+
 Автоматизация не запускает OAuth, не устанавливается во время тестов и не
-включает Telegram-daemon. Telegram можно добавить новым адаптером без изменения
-runner, checkpoint, lock или launchd-кода.
+включает Telegram-daemon в этот последовательный runner. Telegram имеет отдельный
+LaunchAgent; см. [интеграцию Telegram](../integrations/telegram.md).

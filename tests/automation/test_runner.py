@@ -375,3 +375,9 @@ def test_malformed_gmail_token_fails_through_real_subprocess_without_leak(
         "gmail", profile_id, "main", "full", "failed", "connector_failed"
     )
     assert "RAW_SECRET" not in result.safe_line()
+def test_extraction_runs_after_all_connectors_before_sheets(tmp_path):
+    jobs = tuple(_job(source, "profile-1", "main") for source in ("sheets", "whoop", "lab_extraction", "drive", "gmail"))
+    executor = FakeExecutor()
+    runner = _runner(tmp_path, [FakeAdapter("drive", jobs)], executor, FakeLock())
+    runner.run()
+    assert [key[0] for key, _ in executor.calls] == ["drive", "gmail", "whoop", "lab_extraction", "sheets"]

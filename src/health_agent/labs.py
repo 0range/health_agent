@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 
+from health_agent.lab_extraction.registry import normalize_registered
 from health_agent.pdf import ExtractedPage
 
 MAX_LAB_TOKEN_CHARACTERS = 64
@@ -275,9 +276,10 @@ def normalize_lab_result(
     unit_key = source_unit.strip().casefold().replace("μ", "µ")
     normalization = _UNIT_NORMALIZATIONS.get((canonical_name, unit_key))
     if normalization is None:
-        raise UnsupportedNormalization(
-            f"Unsupported normalization for {canonical_name!r} and source unit"
-        )
+        try:
+            return normalize_registered(canonical_name, raw_value, source_unit)
+        except ValueError:
+            raise UnsupportedNormalization("Unsupported normalization") from None
     return (
         parse_decimal_token(raw_value) * normalization.factor,
         normalization.canonical_unit,
