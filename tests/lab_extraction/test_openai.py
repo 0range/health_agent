@@ -148,6 +148,13 @@ def test_transport_failure_is_one_call_and_safe():
             "cloud_quota_exhausted",
         ),
         (openai.RateLimitError, 429, {"code": "other"}, "cloud_rate_limited"),
+        (openai.RateLimitError, 429, {"code": []}, "cloud_rate_limited"),
+        (
+            openai.RateLimitError,
+            429,
+            {"error": {"code": {}}},
+            "cloud_rate_limited",
+        ),
         (openai.AuthenticationError, 401, None, "cloud_auth_required"),
         (openai.PermissionDeniedError, 403, None, "cloud_auth_required"),
         (openai.BadRequestError, 400, None, "cloud_request_rejected"),

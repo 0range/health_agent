@@ -80,7 +80,10 @@ def _status_error_code(error: APIStatusError) -> str:
                 detail = body.get("error")
                 if isinstance(detail, dict):
                     provider_code = detail.get("code")
-        if provider_code in {"credit_balance_exhausted", "insufficient_quota"}:
+        if isinstance(provider_code, str) and provider_code in {
+            "credit_balance_exhausted",
+            "insufficient_quota",
+        }:
             return "cloud_quota_exhausted"
         return "cloud_rate_limited"
     if status in {401, 403}:
