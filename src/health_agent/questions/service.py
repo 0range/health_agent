@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
+from health_agent.insights.models import HealthSignal
 from health_agent.questions.models import (
     ContextLimitation,
     EvidenceItem,
@@ -49,7 +50,11 @@ class HealthQuestionResponder(Protocol):
     """Generate text only from an already-bounded health-question context."""
 
     def respond(
-        self, *, profile_id: UUID, question: str, context: HealthQuestionContext,
+        self,
+        *,
+        profile_id: UUID,
+        question: str,
+        context: HealthQuestionContext,
         request_id: str | None = None,
     ) -> str: ...
 
@@ -97,9 +102,12 @@ class HealthQuestionApplicationService:
         except Exception:  # noqa: BLE001 -- persistence details must not cross this boundary
             return _unavailable(QuestionAnswerErrorCode.CONTEXT_UNAVAILABLE)
 
-        if not context.evidence or any(
-            limitation.prevents_entire_answer
-            for limitation in context.limitations
+        snapshot_has_evidence = bool(
+            context.snapshot
+            and any(signal.value is not None for signal in context.snapshot.signals)
+        )
+        if (not context.evidence and not snapshot_has_evidence) or any(
+            limitation.prevents_entire_answer for limitation in context.limitations
         ):
             return QuestionAnswerResult(
                 text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
@@ -116,7 +124,9 @@ class HealthQuestionApplicationService:
                 )
             else:
                 generated = self._responder.respond(
-                    profile_id=profile_id, question=question, context=context,
+                    profile_id=profile_id,
+                    question=question,
+                    context=context,
                     request_id=request_id,
                 )
         except Exception:  # noqa: BLE001 -- never disclose client/provider failure data
@@ -166,6 +176,11 @@ def render_source_footer(context: HealthQuestionContext) -> str:
         lines.extend(_render_evidence(item) for item in context.evidence)
     else:
         lines.append("- В выбранном периоде нет проверенных данных.")
+    if context.snapshot is not None and context.snapshot.signals:
+        lines.extend(("", "Снимок здоровья:"))
+        lines.extend(
+            _render_snapshot_signal(signal) for signal in context.snapshot.signals
+        )
     if context.limitations:
         lines.extend(("", "Ограничения:"))
         lines.extend(f"- {limitation.message}" for limitation in context.limitations)
@@ -181,6 +196,18 @@ def _render_evidence(item: EvidenceItem) -> str:
         else ""
     )
     return f"- {item.citation_label} {when}: {item.metric} — {value}{suffix}"
+
+
+def _render_snapshot_signal(signal: HealthSignal) -> str:
+    """Render the bounded immutable signal without exposing internal source IDs."""
+
+    labels = ", ".join(citation.citation_id for citation in signal.citations)
+    value = f"; {signal.value} {signal.unit or ''}".rstrip() if signal.value else ""
+    reference = f"; референс источника: {signal.reference}" if signal.reference else ""
+    return (
+        f"- {labels} {signal.observed_at.isoformat()}: {signal.title} — "
+        f"{signal.summary}{value}{reference}"
+    )
 
 
 def _with_footer(answer: str, context: HealthQuestionContext) -> str:
@@ -200,6 +227,12 @@ def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bo
     if "[" in remainder or "]" in remainder:
         return False
     allowed = {item.citation_label for item in context.evidence}
+    if context.snapshot is not None:
+        allowed.update(
+            citation.citation_id
+            for signal in context.snapshot.signals
+            for citation in signal.citations
+        )
     return bool(labels & allowed) and labels <= allowed
 
 
