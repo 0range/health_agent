@@ -8,13 +8,14 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from health_agent.insights.models import HealthSignal
 from health_agent.questions.models import (
     ContextLimitation,
     EvidenceItem,
+    EvidenceSource,
     EvidenceTimeSemantics,
     HealthQuestionContext,
 )
+from health_agent.questions.presentation import PresentedSignal, select_presentation
 from health_agent.questions.safety import guard_urgent_question
 
 QUESTION_UNAVAILABLE_TEXT = (
@@ -26,6 +27,13 @@ INSUFFICIENT_EVIDENCE_TEXT = (
 )
 
 _BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]*\]")
+MAX_RENDERED_REFERENCES = 6
+MAX_RENDERED_LIMITATIONS = 3
+MAX_RENDERED_METRIC_CHARACTERS = 160
+MAX_RENDERED_VALUE_CHARACTERS = 80
+MAX_RENDERED_UNIT_CHARACTERS = 32
+MAX_RENDERED_REFERENCE_CHARACTERS = 240
+MAX_RENDERED_SUMMARY_CHARACTERS = 300
 
 
 class QuestionAnswerErrorCode(StrEnum):
@@ -110,7 +118,7 @@ class HealthQuestionApplicationService:
             limitation.prevents_entire_answer for limitation in context.limitations
         ):
             return QuestionAnswerResult(
-                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
+                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context, set()),
                 safe_error_code=None,
                 evidence=context.evidence,
                 limitations=context.limitations,
@@ -144,74 +152,120 @@ class HealthQuestionApplicationService:
             )
         if not _has_only_valid_citations(generated, context):
             return QuestionAnswerResult(
-                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context),
+                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context, set()),
                 safe_error_code=None,
                 evidence=context.evidence,
                 limitations=context.limitations,
             )
         return QuestionAnswerResult(
-            text=_with_footer(generated.strip(), context),
+            text=_with_footer(
+                generated.strip(), context, set(_BRACKETED_TOKEN.findall(generated))
+            ),
             safe_error_code=None,
             evidence=context.evidence,
             limitations=context.limitations,
         )
 
 
-def render_source_footer(context: HealthQuestionContext) -> str:
-    """Render local source provenance in the context's deterministic order."""
+def render_source_footer(
+    context: HealthQuestionContext, cited_labels: set[str] | None = None
+) -> str:
+    """Render only cited facts from the exact prompt selection."""
 
-    lines = [
-        "Источники:",
-        (
-            f"Выбранный период (включительно, UTC): {context.window_start.isoformat()} — "
-            f"{context.window_end.isoformat()}; не более {context.max_items_per_source} "
-            "записей из каждого источника."
-        ),
-        (
-            "Для анализов указана календарная дата; для WHOOP — время наблюдения "
-            "или синхронизации."
-        ),
+    cited_labels = cited_labels or set()
+    presentation = select_presentation(context)
+    references = [
+        _render_evidence(item)
+        for item in presentation.evidence
+        if item.citation_label in cited_labels
     ]
-    if context.evidence:
-        lines.extend(_render_evidence(item) for item in context.evidence)
-    else:
-        lines.append("- В выбранном периоде нет проверенных данных.")
-    if context.snapshot is not None and context.snapshot.signals:
-        lines.extend(("", "Снимок здоровья:"))
-        lines.extend(
-            _render_snapshot_signal(signal) for signal in context.snapshot.signals
-        )
+    references.extend(
+        _render_snapshot_signal(item)
+        for item in presentation.signals
+        if item.citation_label in cited_labels
+    )
+    lines: list[str] = []
+    if references:
+        lines = ["Источники:", *references[:MAX_RENDERED_REFERENCES]]
+        hidden = len(references) - MAX_RENDERED_REFERENCES
+        if hidden > 0:
+            lines.append(f"- Ещё {hidden} процитированных источников указаны в ответе.")
     if context.limitations:
-        lines.extend(("", "Ограничения:"))
-        lines.extend(f"- {limitation.message}" for limitation in context.limitations)
+        if lines:
+            lines.append("")
+        lines.append("Ограничения:")
+        lines.extend(
+            f"- {_display_bound(limitation.message, MAX_RENDERED_REFERENCE_CHARACTERS)}"
+            for limitation in context.limitations[:MAX_RENDERED_LIMITATIONS]
+        )
+        hidden = len(context.limitations) - MAX_RENDERED_LIMITATIONS
+        if hidden > 0:
+            lines.append(f"- Ещё {hidden} ограничений опущены для краткости.")
     return "\n".join(lines)
 
 
 def _render_evidence(item: EvidenceItem) -> str:
     when = item.observed_at.isoformat()
-    value = f"{item.value} {item.unit}" if item.unit else item.value
+    display_value = _display_bound(
+        item.source_value or item.value, MAX_RENDERED_VALUE_CHARACTERS
+    )
+    display_unit = item.source_unit if item.source_value is not None else item.unit
+    display_unit = (
+        _display_bound(display_unit, MAX_RENDERED_UNIT_CHARACTERS)
+        if display_unit
+        else None
+    )
+    value = f"{display_value} {display_unit}" if display_unit else display_value
+    reference = (
+        "; референс источника: "
+        f"{_display_bound(item.source_reference or 'unknown', MAX_RENDERED_REFERENCE_CHARACTERS)}"
+        if item.source is EvidenceSource.LAB
+        else ""
+    )
     suffix = (
         " (на момент синхронизации)"
         if item.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
         else ""
     )
-    return f"- {item.citation_label} {when}: {item.metric} — {value}{suffix}"
+    metric = _display_bound(item.metric, MAX_RENDERED_METRIC_CHARACTERS)
+    return f"- {item.citation_label} {when}: {metric} — {value}{reference}{suffix}"
 
 
-def _render_snapshot_signal(signal: HealthSignal) -> str:
+def _render_snapshot_signal(item: PresentedSignal) -> str:
     """Render the bounded immutable signal without exposing internal source IDs."""
 
-    labels = ", ".join(citation.citation_id for citation in signal.citations)
-    value = f"; {signal.value} {signal.unit or ''}".rstrip() if signal.value else ""
-    reference = f"; референс источника: {signal.reference}" if signal.reference else ""
+    signal = item.signal
+    value = (
+        "; "
+        f"{_display_bound(signal.value, MAX_RENDERED_VALUE_CHARACTERS)} "
+        f"{_display_bound(signal.unit or '', MAX_RENDERED_UNIT_CHARACTERS)}".rstrip()
+        if signal.value
+        else ""
+    )
+    reference = (
+        "; референс источника: "
+        f"{_display_bound(signal.reference, MAX_RENDERED_REFERENCE_CHARACTERS)}"
+        if signal.reference
+        else ""
+    )
+    title = _display_bound(signal.title, MAX_RENDERED_METRIC_CHARACTERS)
+    summary = _display_bound(signal.summary, MAX_RENDERED_SUMMARY_CHARACTERS)
     return (
-        f"- {labels} {signal.observed_at.isoformat()}: {signal.title} — "
-        f"{signal.summary}{value}{reference}"
+        f"- {item.citation_label} {signal.observed_at.isoformat()}: {title} — "
+        f"{summary}{value}{reference}"
     )
 
 
-def _with_footer(answer: str, context: HealthQuestionContext) -> str:
-    return f"{answer}\n\n{render_source_footer(context)}"
+def _display_bound(value: str, maximum: int) -> str:
+    value = " ".join(value.split())
+    return value if len(value) <= maximum else f"{value[: maximum - 1]}…"
+
+
+def _with_footer(
+    answer: str, context: HealthQuestionContext, cited_labels: set[str]
+) -> str:
+    footer = render_source_footer(context, cited_labels)
+    return f"{answer}\n\n{footer}" if footer else answer
 
 
 def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bool:
@@ -226,13 +280,7 @@ def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bo
     remainder = _BRACKETED_TOKEN.sub("", answer)
     if "[" in remainder or "]" in remainder:
         return False
-    allowed = {item.citation_label for item in context.evidence}
-    if context.snapshot is not None:
-        allowed.update(
-            citation.citation_id
-            for signal in context.snapshot.signals
-            for citation in signal.citations
-        )
+    allowed = set(select_presentation(context).allowed_citations)
     return bool(labels & allowed) and labels <= allowed
 
 

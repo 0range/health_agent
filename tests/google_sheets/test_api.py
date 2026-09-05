@@ -42,7 +42,7 @@ def test_replace_uses_one_atomic_batch_update() -> None:
             "token_12345678",
         ),
         (
-            ManagedSheet("Lab history", ("A",), (("one",),)),
+            ManagedSheet("Lab history", ("A",), (("=app-authored-literal",),)),
             ManagedSheet("Needs review", ("Decision",), (("",),), (0,)),
             ManagedSheet("Sources", ("Source",), (("whoop",),)),
         ),
@@ -54,6 +54,30 @@ def test_replace_uses_one_atomic_batch_update() -> None:
     assert {"updateCells", "setDataValidation"} <= keys
     assert next(iter(body["requests"][0])) == "updateSheetProperties"
     assert next(iter(body["requests"][1])) == "updateCells"
+    first_cell = body["requests"][1]["updateCells"]["rows"][1]["values"][0]
+    assert first_cell["userEnteredValue"] == {"stringValue": "=app-authored-literal"}
+    assert "formulaValue" not in first_cell["userEnteredValue"]
+
+
+def test_review_read_rejects_boolean_sheet_id_metadata() -> None:
+    sheets = MagicMock()
+    spreadsheets = sheets.spreadsheets.return_value
+    spreadsheets.get.return_value = _request(
+        {
+            "sheets": [
+                {
+                    "properties": {
+                        "title": "Needs review",
+                        "sheetId": True,
+                        "gridProperties": {"rowCount": 10, "columnCount": 2},
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ReviewGridError, match="metadata mismatch"):
+        GoogleSheetsGateway(sheets, MagicMock()).read_review_rows("spreadsheet_123")
 
 
 def test_review_read_preserves_typed_literals_and_sparse_offsets() -> None:

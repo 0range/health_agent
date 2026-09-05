@@ -355,7 +355,11 @@ class GoogleSheetsGateway:
         assert isinstance(properties, dict)
         grid = properties.get("gridProperties")
         sheet_id = properties.get("sheetId")
-        if not isinstance(grid, dict) or not isinstance(sheet_id, int):
+        if (
+            not isinstance(grid, dict)
+            or not isinstance(sheet_id, int)
+            or isinstance(sheet_id, bool)
+        ):
             raise ReviewGridError("review sheet metadata mismatch")
         row_count = grid.get("rowCount")
         column_count = grid.get("columnCount")
