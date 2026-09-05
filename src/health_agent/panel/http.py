@@ -540,6 +540,8 @@ def _render_card(card: ConnectorCard, profile_id: UUID, index: int) -> str:
 
 
 def _product_status(card: ConnectorCard) -> str:
+    if card.error_code is not None:
+        return "action_required"
     if card.status == "ready":
         if card.last_success_at is not None or card.connector in {
             "telegram",

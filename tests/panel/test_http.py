@@ -162,6 +162,25 @@ def test_profile_page_maps_unsynced_and_action_states_to_human_russian() -> None
     assert "Технический статус: ready" in page
 
 
+def test_safe_error_never_renders_as_connected() -> None:
+    failing = ConnectorCard(
+        "whoop",
+        "ready",
+        "Последняя сохранённая синхронизация доступна.",
+        last_success_at=datetime(2026, 9, 4, tzinfo=UTC),
+        error_code="sync_failed",
+    )
+    app, profile, _ = application(card=failing)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+
+    whoop_card = page.split('<h3 id="connector-0">WHOOP</h3>', 1)[1].split(
+        "</article>", 1
+    )[0]
+    assert "Нужно действие" in whoop_card
+    assert "Подключено" not in whoop_card
+
+
 def test_profile_page_has_semantic_sections_and_collapsed_identifiers() -> None:
     card = ConnectorCard(
         "whoop",
