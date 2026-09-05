@@ -5,7 +5,12 @@ from sqlalchemy.orm import Session
 from health_agent.google_sheets.config import WORKBOOK_SCHEMA_VERSION
 from health_agent.google_sheets.projection import SourceStatusRow, build_projection
 from health_agent.google_sheets.types import WorkbookBinding
-from health_agent.models import DEFAULT_PROFILE_ID, ReviewStatus
+from health_agent.models import (
+    DEFAULT_PROFILE_ID,
+    DocumentSourceRecord,
+    ReviewStatus,
+    SourceRecord,
+)
 
 from .helpers import add_observation, add_profile
 
@@ -66,4 +71,54 @@ def test_projection_marks_missing_medical_date_without_using_import_time(
     history = build_projection(session, DEFAULT_PROFILE_ID, _binding()).workbook.sheets[
         0
     ]
-    assert history.rows[0][0] is None
+    assert history.rows[0][0] == "missing"
+
+
+def test_projection_omits_private_uris_and_canonicalizes_google_links(
+    session: Session,
+) -> None:
+    observation, _ = add_observation(
+        session, DEFAULT_PROFILE_ID, status=ReviewStatus.VERIFIED
+    )
+    private = SourceRecord(
+        profile_id=DEFAULT_PROFILE_ID,
+        provider="local",
+        external_id="private",
+        revision="1",
+        source_uri="file:///Users/me/private/labs.pdf?token=secret",
+    )
+    google = SourceRecord(
+        profile_id=DEFAULT_PROFILE_ID,
+        provider="google_drive",
+        external_id="drive",
+        revision="1",
+        source_uri=(
+            "https://drive.google.com/file/d/safe-resource-id-123/view"
+            "?usp=drivesdk#private"
+        ),
+    )
+    session.add_all((private, google))
+    session.flush()
+    session.add_all(
+        (
+            DocumentSourceRecord(
+                document_id=observation.document_id,
+                source_record_id=private.id,
+                profile_id=DEFAULT_PROFILE_ID,
+            ),
+            DocumentSourceRecord(
+                document_id=observation.document_id,
+                source_record_id=google.id,
+                profile_id=DEFAULT_PROFILE_ID,
+            ),
+        )
+    )
+    session.flush()
+
+    history = build_projection(session, DEFAULT_PROFILE_ID, _binding()).workbook.sheets[
+        0
+    ]
+    assert history.rows[0][9] == (
+        "https://drive.google.com/file/d/safe-resource-id-123/view"
+    )
+    assert "private" not in str(history.rows[0][9])

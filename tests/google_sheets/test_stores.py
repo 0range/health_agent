@@ -47,3 +47,23 @@ def test_stores_refuse_symlinked_files(tmp_path: Path) -> None:
     path.symlink_to(target)
     with pytest.raises(RuntimeError, match="symlinked"):
         store.load(profile_id)
+
+
+def test_stores_refuse_symlinked_parent_directories(tmp_path: Path) -> None:
+    profile_id = str(uuid4())
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+    profiles = LocalSheetsProfileStore(alias / "sheets")
+    tokens = LocalSheetsTokenStore(alias / "sheets")
+
+    with pytest.raises(RuntimeError, match="symlinked"):
+        profiles.save(SheetsProfile.create(profile_id))
+    with pytest.raises(RuntimeError, match="symlinked"):
+        tokens.publish_verified(
+            profile_id,
+            SheetsAccountIdentity("permission-1", "me@example.com"),
+            _token(),
+        )
+    assert not (outside / "sheets").exists()

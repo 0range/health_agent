@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from health_agent.google_drive.config import validate_profile_id
@@ -45,6 +45,9 @@ class SheetsProfile:
     spreadsheet_url: str | None = None
     workbook_token: str | None = None
     projection_initialized: bool = False
+    creation_state: Literal["not_started", "in_flight", "unknown", "created"] = (
+        "not_started"
+    )
 
     @classmethod
     def create(
@@ -75,6 +78,7 @@ class SheetsProfile:
             self.spreadsheet_url,
             self.workbook_token,
             self.projection_initialized,
+            self.creation_state,
         )
 
     def with_workbook(
@@ -93,6 +97,11 @@ class SheetsProfile:
             raise ValueError("spreadsheet URL is invalid")
         if _OPAQUE_ID.fullmatch(workbook_token.strip()) is None:
             raise ValueError("workbook binding token is invalid")
+        if (
+            self.workbook_token is not None
+            and self.workbook_token != workbook_token.strip()
+        ):
+            raise ValueError("created workbook token differs from creation fence")
         return SheetsProfile(
             self.profile_id,
             self.expected_permission_id,
@@ -101,6 +110,43 @@ class SheetsProfile:
             spreadsheet_url.strip(),
             workbook_token.strip(),
             self.projection_initialized,
+            "created",
+        )
+
+    def with_creation_started(self, workbook_token: str) -> SheetsProfile:
+        if self.spreadsheet_id is not None or self.creation_state != "not_started":
+            raise ValueError("workbook creation is already fenced")
+        if _OPAQUE_ID.fullmatch(workbook_token.strip()) is None:
+            raise ValueError("workbook binding token is invalid")
+        return SheetsProfile(
+            self.profile_id,
+            self.expected_permission_id,
+            self.expected_email,
+            workbook_token=workbook_token.strip(),
+            creation_state="in_flight",
+        )
+
+    def with_unknown_creation(self) -> SheetsProfile:
+        if self.spreadsheet_id is not None or self.creation_state != "in_flight":
+            raise ValueError("workbook creation is not in flight")
+        return SheetsProfile(
+            self.profile_id,
+            self.expected_permission_id,
+            self.expected_email,
+            workbook_token=self.workbook_token,
+            creation_state="unknown",
+        )
+
+    def reset_creation_fence(self) -> SheetsProfile:
+        if self.spreadsheet_id is not None or self.creation_state not in {
+            "in_flight",
+            "unknown",
+        }:
+            raise ValueError("workbook creation is not awaiting recovery")
+        return SheetsProfile(
+            self.profile_id,
+            self.expected_permission_id,
+            self.expected_email,
         )
 
     def with_initialized_projection(self) -> SheetsProfile:
@@ -114,6 +160,7 @@ class SheetsProfile:
             self.spreadsheet_url,
             self.workbook_token,
             True,
+            self.creation_state,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -134,11 +181,34 @@ class SheetsProfile:
         initialized = payload.get("projection_initialized", False)
         if not isinstance(initialized, bool):
             raise TypeError("stored projection initialization flag is invalid")
-        if workbook_values == (None, None, None):
+        creation_state = payload.get(
+            "creation_state",
+            "created" if workbook_values[0] is not None else "not_started",
+        )
+        if creation_state not in {"not_started", "in_flight", "unknown", "created"}:
+            raise ValueError("stored workbook creation state is invalid")
+        if workbook_values[:2] == (None, None):
             if initialized:
                 raise ValueError("missing workbook cannot be initialized")
-            return profile
+            token = workbook_values[2]
+            if creation_state == "not_started" and token is None:
+                return profile
+            if creation_state not in {"in_flight", "unknown"} or not isinstance(
+                token, str
+            ):
+                raise ValueError("stored workbook creation fence is invalid")
+            if _OPAQUE_ID.fullmatch(token) is None:
+                raise ValueError("stored workbook binding token is invalid")
+            return SheetsProfile(
+                profile.profile_id,
+                profile.expected_permission_id,
+                profile.expected_email,
+                workbook_token=token,
+                creation_state=creation_state,  # type: ignore[arg-type]
+            )
         if not all(isinstance(value, str) for value in workbook_values):
             raise ValueError("stored workbook binding is incomplete")
+        if creation_state != "created":
+            raise ValueError("stored workbook creation state is invalid")
         configured = profile.with_workbook(*workbook_values)  # type: ignore[arg-type]
         return configured.with_initialized_projection() if initialized else configured

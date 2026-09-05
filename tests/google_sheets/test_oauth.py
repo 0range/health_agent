@@ -96,3 +96,57 @@ def test_load_rejects_extra_scope(tmp_path: Path) -> None:
     )
     with pytest.raises(SheetsOAuthScopeError):
         oauth.load(profile_id)
+
+
+def test_authorize_reloads_profile_after_interactive_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_id = str(uuid4())
+    profiles = LocalSheetsProfileStore(tmp_path / "profiles")
+    tokens = LocalSheetsTokenStore(tmp_path / "tokens")
+    profiles.save(SheetsProfile.create(profile_id))
+    oauth = SheetsOAuth(
+        Path("missing"),
+        profiles,
+        tokens,
+        cast(
+            Callable[[Credentials], SheetsGateway],
+            lambda _: IdentityGateway(
+                SheetsAccountIdentity("permission", "me@example.com")
+            ),
+        ),
+    )
+
+    def stage(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        profiles.save(
+            profiles.load(profile_id)
+            .with_creation_started("token_12345678")
+            .with_workbook(
+                "spreadsheet_123",
+                "https://docs.google.com/spreadsheets/d/spreadsheet_123/edit",
+                "token_12345678",
+            )
+        )
+        return _credentials()
+
+    monkeypatch.setattr(oauth, "stage", stage)
+    oauth.authorize(profile_id, interactive=True)
+    assert profiles.load(profile_id).spreadsheet_id == "spreadsheet_123"
+
+
+def test_client_secrets_refuse_symlinked_parent(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "client.json"
+    secret.write_text("{}")
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+    oauth = SheetsOAuth(
+        alias / "client.json",
+        LocalSheetsProfileStore(tmp_path / "profiles"),
+        LocalSheetsTokenStore(tmp_path / "tokens"),
+        cast(Callable[[Credentials], SheetsGateway], lambda _: None),
+    )
+    with pytest.raises(RuntimeError, match="symlink"):
+        oauth._validate_client_secrets()

@@ -82,23 +82,54 @@ class SheetsService:
         *,
         expected_permission_id: str | None = None,
         expected_email: str | None = None,
+        reset_unknown_creation: bool = False,
+    ) -> SheetsProfile:
+        key = str(profile_id)
+        with self.state.sync_lock(key):
+            return self._configure_locked(
+                profile_id,
+                expected_permission_id=expected_permission_id,
+                expected_email=expected_email,
+                reset_unknown_creation=reset_unknown_creation,
+            )
+
+    def _configure_locked(
+        self,
+        profile_id: UUID,
+        *,
+        expected_permission_id: str | None,
+        expected_email: str | None,
+        reset_unknown_creation: bool,
     ) -> SheetsProfile:
         with self.sessions() as session:
             session.get_one(Profile, profile_id)
         if self.profiles.exists(str(profile_id)):
             existing = self.profiles.load(str(profile_id))
+            if (
+                expected_permission_id is not None
+                and existing.expected_permission_id
+                not in {None, expected_permission_id}
+            ) or (
+                expected_email is not None
+                and existing.expected_email not in {None, expected_email.casefold()}
+            ):
+                raise ValueError("Sheets profile is already bound to another account")
             expected_permission_id = (
                 expected_permission_id or existing.expected_permission_id
             )
             expected_email = expected_email or existing.expected_email
         else:
             existing = None
+        if reset_unknown_creation:
+            if existing is None:
+                raise ValueError("Sheets profile is not configured")
+            existing = existing.reset_creation_fence()
         profile = SheetsProfile.create(
             str(profile_id),
             expected_permission_id=expected_permission_id,
             expected_email=expected_email,
         )
-        if existing is not None and existing.spreadsheet_id is not None:
+        if existing is not None:
             profile = SheetsProfile(
                 profile.profile_id,
                 profile.expected_permission_id,
@@ -107,6 +138,7 @@ class SheetsService:
                 existing.spreadsheet_url,
                 existing.workbook_token,
                 existing.projection_initialized,
+                existing.creation_state,
             )
         self.profiles.save(profile)
         return profile
@@ -114,7 +146,9 @@ class SheetsService:
     def authorize(
         self, profile_id: UUID, *, force: bool = False, interactive: bool = False
     ) -> None:
-        self.oauth.authorize(str(profile_id), force=force, interactive=interactive)
+        key = str(profile_id)
+        with self.state.sync_lock(key):
+            self.oauth.authorize(key, force=force, interactive=interactive)
 
     def sync(self, profile_id: UUID) -> SheetsSyncReport:
         profile_key = str(profile_id)
@@ -162,9 +196,19 @@ class SheetsService:
             raise SheetsSyncFailure("account_mismatch") from error
 
         if profile.spreadsheet_id is None:
+            if profile.creation_state != "not_started":
+                raise SheetsSyncFailure("workbook_creation_unknown")
             token = secrets.token_urlsafe(24)
-            binding = WorkbookBinding(key, WORKBOOK_SCHEMA_VERSION, token)
-            workbook = gateway.create_workbook(f"Health Agent — {key[:8]}", binding)
+            profile = profile.with_creation_started(token)
+            self.profiles.save(profile)
+            binding = WorkbookBinding(key, WORKBOOK_SCHEMA_VERSION, token, False)
+            try:
+                workbook = gateway.create_workbook(
+                    f"Health Agent — {key[:8]} — {token[:8]}", binding
+                )
+            except Exception as error:
+                self.profiles.save(profile.with_unknown_creation())
+                raise SheetsSyncFailure("workbook_creation_unknown") from error
             profile = profile.with_workbook(
                 workbook.spreadsheet_id, workbook.spreadsheet_url, token
             )
@@ -172,7 +216,10 @@ class SheetsService:
         assert profile.spreadsheet_id is not None
         assert profile.workbook_token is not None
         expected_binding = WorkbookBinding(
-            key, WORKBOOK_SCHEMA_VERSION, profile.workbook_token
+            key,
+            WORKBOOK_SCHEMA_VERSION,
+            profile.workbook_token,
+            profile.projection_initialized,
         )
         try:
             actual_binding = gateway.read_binding(profile.spreadsheet_id)
@@ -180,44 +227,61 @@ class SheetsService:
             raise WorkbookOwnershipError(
                 "configured workbook binding is invalid"
             ) from error
-        if actual_binding != expected_binding:
+        if (
+            actual_binding.profile_id != expected_binding.profile_id
+            or actual_binding.schema_version != expected_binding.schema_version
+            or actual_binding.workbook_token != expected_binding.workbook_token
+            or (
+                profile.projection_initialized
+                and not actual_binding.projection_initialized
+            )
+        ):
             raise WorkbookOwnershipError("configured workbook binding mismatch")
+        if actual_binding.projection_initialized and not profile.projection_initialized:
+            profile = profile.with_initialized_projection()
+            self.profiles.save(profile)
+        spreadsheet_id = profile.spreadsheet_id
+        workbook_token = profile.workbook_token
+        assert spreadsheet_id is not None
+        assert workbook_token is not None
 
         decision_report = DecisionReport()
         remote_rows = None
+        projection_binding = WorkbookBinding(
+            key, WORKBOOK_SCHEMA_VERSION, workbook_token, True
+        )
         with self.sessions() as session:
             before = build_projection(
                 session,
                 profile_id,
-                expected_binding,
+                projection_binding,
                 self.source_statuses(session, profile_id),
             )
             if profile.projection_initialized:
-                remote_rows = gateway.read_review_rows(profile.spreadsheet_id)
+                remote_rows = gateway.read_review_rows(spreadsheet_id)
                 decisions = parse_decisions(
                     remote_rows, before.known_reviews, profile_id
                 )
                 decision_report = apply_decisions(
-                    session, profile_id, profile.spreadsheet_id, decisions
+                    session, profile_id, spreadsheet_id, decisions
                 )
 
         with self.sessions() as session:
             projection = build_projection(
                 session,
                 profile_id,
-                expected_binding,
+                projection_binding,
                 self.source_statuses(session, profile_id),
             )
         if (
             remote_rows is not None
-            and gateway.read_review_rows(profile.spreadsheet_id) != remote_rows
+            and gateway.read_review_rows(spreadsheet_id) != remote_rows
         ):
             raise SheetsSyncFailure("review_grid_changed")
-        gateway.replace_managed_tabs(profile.spreadsheet_id, projection.workbook)
+        gateway.replace_managed_tabs(spreadsheet_id, projection.workbook)
         if not profile.projection_initialized:
             profile = profile.with_initialized_projection()
             self.profiles.save(profile)
-        assert profile.spreadsheet_id is not None
         lab_rows, review_rows, source_rows = (
             len(sheet.rows) for sheet in projection.workbook.sheets
         )
@@ -228,7 +292,7 @@ class SheetsService:
             lab_rows,
             review_rows,
             source_rows,
-            profile.spreadsheet_id,
+            spreadsheet_id,
         )
 
     def status(self, profile_id: UUID) -> SheetsStatus:

@@ -29,6 +29,8 @@ from health_agent.google_sheets.types import (
 )
 
 _MANAGED_TITLES = ("Lab history", "Needs review", "Sources", "_HealthAgent")
+_MAX_MANAGED_ROWS = 50_000
+_MAX_MANAGED_CELLS = 500_000
 
 
 def _is_retryable(error: BaseException) -> bool:
@@ -115,6 +117,10 @@ def _binding_rows(binding: WorkbookBinding) -> tuple[tuple[SheetValue, ...], ...
         ("profile_id", binding.profile_id),
         ("schema_version", binding.schema_version),
         ("workbook_token", binding.workbook_token),
+        (
+            "projection_initialized",
+            "true" if binding.projection_initialized else "false",
+        ),
     )
 
 
@@ -190,10 +196,15 @@ class GoogleSheetsGateway:
         payload = _execute(
             self._sheets.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range="'_HealthAgent'!A1:B3")
+            .get(
+                spreadsheetId=spreadsheet_id,
+                range="'_HealthAgent'!A1:B4",
+                valueRenderOption="FORMULA",
+                dateTimeRenderOption="FORMATTED_STRING",
+            )
         )
         rows = payload.get("values")
-        if not isinstance(rows, list) or len(rows) != 3:
+        if not isinstance(rows, list) or len(rows) != 4:
             raise ValueError("invalid workbook binding")
         values: dict[str, str] = {}
         for row in rows:
@@ -203,10 +214,21 @@ class GoogleSheetsGateway:
             if not isinstance(key, str) or not isinstance(value, str) or key in values:
                 raise ValueError("invalid workbook binding")
             values[key] = value
-        if set(values) != {"profile_id", "schema_version", "workbook_token"}:
+        if set(values) != {
+            "profile_id",
+            "schema_version",
+            "workbook_token",
+            "projection_initialized",
+        }:
+            raise ValueError("invalid workbook binding")
+        initialized = values["projection_initialized"]
+        if initialized not in {"true", "false"}:
             raise ValueError("invalid workbook binding")
         return WorkbookBinding(
-            values["profile_id"], values["schema_version"], values["workbook_token"]
+            values["profile_id"],
+            values["schema_version"],
+            values["workbook_token"],
+            initialized == "true",
         )
 
     def read_review_rows(
@@ -215,7 +237,12 @@ class GoogleSheetsGateway:
         payload = _execute(
             self._sheets.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range="'Needs review'!A:Z")
+            .get(
+                spreadsheetId=spreadsheet_id,
+                range="'Needs review'!A:Z",
+                valueRenderOption="FORMULA",
+                dateTimeRenderOption="FORMATTED_STRING",
+            )
         )
         rows = payload.get("values", [])
         if not isinstance(rows, list):
@@ -228,14 +255,17 @@ class GoogleSheetsGateway:
         metadata = _execute(
             self._sheets.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
-                fields="sheets(properties(sheetId,title,hidden))",
+                fields=(
+                    "sheets(properties(sheetId,title,hidden,"
+                    "gridProperties(rowCount,columnCount)))"
+                ),
             )
         )
-        sheet_ids = {
-            str(sheet["properties"]["title"]): int(sheet["properties"]["sheetId"])
+        sheet_properties = {
+            str(sheet["properties"]["title"]): sheet["properties"]
             for sheet in metadata.get("sheets", [])
         }
-        if set(sheet_ids) != set(_MANAGED_TITLES):
+        if set(sheet_properties) != set(_MANAGED_TITLES):
             raise ValueError("managed workbook tabs changed")
         managed = (
             *projection.sheets,
@@ -244,15 +274,20 @@ class GoogleSheetsGateway:
         requests: list[dict[str, Any]] = []
         for sheet in managed:
             rows = (() if not sheet.headers else (sheet.headers,)) + sheet.rows
-            sheet_id = sheet_ids[sheet.title]
-            requests.append(
-                {
-                    "updateCells": {
-                        "range": {"sheetId": sheet_id},
-                        "rows": [_row_data(row) for row in rows],
-                        "fields": "userEnteredValue",
-                    }
-                }
+            required_columns = max((len(row) for row in rows), default=1)
+            if (
+                len(rows) > _MAX_MANAGED_ROWS
+                or len(rows) * required_columns > _MAX_MANAGED_CELLS
+            ):
+                raise ValueError("managed sheet projection exceeds the v0.1 size limit")
+            properties = sheet_properties[sheet.title]
+            sheet_id = int(properties["sheetId"])
+            grid = properties.get("gridProperties") or {}
+            row_count = max(int(grid.get("rowCount", 1)), len(rows), 1)
+            column_count = max(
+                int(grid.get("columnCount", 1)),
+                required_columns,
+                1,
             )
             requests.append(
                 {
@@ -261,10 +296,24 @@ class GoogleSheetsGateway:
                             "sheetId": sheet_id,
                             "hidden": sheet.title == "_HealthAgent",
                             "gridProperties": {
-                                "frozenRowCount": 1 if sheet.headers else 0
+                                "frozenRowCount": 1 if sheet.headers else 0,
+                                "rowCount": row_count,
+                                "columnCount": column_count,
                             },
                         },
-                        "fields": "hidden,gridProperties.frozenRowCount",
+                        "fields": (
+                            "hidden,gridProperties.frozenRowCount,"
+                            "gridProperties.rowCount,gridProperties.columnCount"
+                        ),
+                    }
+                }
+            )
+            requests.append(
+                {
+                    "updateCells": {
+                        "range": {"sheetId": sheet_id},
+                        "rows": [_row_data(row) for row in rows],
+                        "fields": "userEnteredValue",
                     }
                 }
             )

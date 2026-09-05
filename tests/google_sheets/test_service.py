@@ -53,6 +53,8 @@ class FakeGateway:
         self.review_rows: tuple[tuple[SheetValue, ...], ...] = ()
         self.latest: WorkbookProjection | None = None
         self.fail_next_write = False
+        self.fail_next_write_after_accept = False
+        self.fail_create_after_accept = False
 
     def account_identity(self) -> SheetsAccountIdentity:
         return SheetsAccountIdentity("permission-1", "me@example.com")
@@ -61,6 +63,9 @@ class FakeGateway:
         del title
         self.created += 1
         self.binding = binding
+        if self.fail_create_after_accept:
+            self.fail_create_after_accept = False
+            raise TimeoutError("ambiguous create response")
         return CreatedWorkbook(
             "spreadsheet_123",
             "https://docs.google.com/spreadsheets/d/spreadsheet_123/edit",
@@ -85,10 +90,14 @@ class FakeGateway:
             self.fail_next_write = False
             raise RuntimeError("private remote payload")
         self.latest = projection
+        self.binding = projection.binding
         review = next(
             sheet for sheet in projection.sheets if sheet.title == "Needs review"
         )
         self.review_rows = (review.headers, *review.rows)
+        if self.fail_next_write_after_accept:
+            self.fail_next_write_after_accept = False
+            raise TimeoutError("projection accepted but response lost")
 
 
 def _service(tmp_path: Path, engine, gateway: FakeGateway) -> SheetsService:
@@ -147,6 +156,108 @@ def test_first_projection_failure_reuses_workbook_and_initializes_on_restart(
     assert gateway.created == 1
     assert gateway.review_reads == 0
     assert service.profiles.load(str(DEFAULT_PROFILE_ID)).projection_initialized is True
+
+
+def test_remote_projection_marker_recovers_crash_before_local_flag_save(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        observation, _review = add_observation(session, DEFAULT_PROFILE_ID)
+        observation_id = observation.id
+
+    class FailingProfileStore(LocalSheetsProfileStore):
+        fail_initialized_once = False
+
+        def save(self, profile):  # type: ignore[no-untyped-def]
+            if self.fail_initialized_once and profile.projection_initialized:
+                self.fail_initialized_once = False
+                raise OSError("simulated crash before local flag save")
+            super().save(profile)
+
+    gateway = FakeGateway()
+    profiles = FailingProfileStore(tmp_path / "sheets")
+    service = SheetsService(
+        profiles,
+        LocalSheetsStateStore(tmp_path / "sheets"),
+        FakeOAuth(),  # type: ignore[arg-type]
+        lambda credentials: gateway,
+        lambda: session_scope(clean_database),
+        lambda session, profile_id: (),
+    )
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    profiles.fail_initialized_once = True
+    with pytest.raises(SheetsSyncFailure):
+        service.sync(DEFAULT_PROFILE_ID)
+    assert gateway.binding is not None
+    assert gateway.binding.projection_initialized is True
+    assert profiles.load(str(DEFAULT_PROFILE_ID)).projection_initialized is False
+
+    edited = list(gateway.review_rows[1])
+    edited[12] = "approve"
+    gateway.review_rows = (gateway.review_rows[0], tuple(edited))
+    recovered = service.sync(DEFAULT_PROFILE_ID)
+    assert recovered.decisions_applied == 1
+    with session_scope(clean_database) as session:
+        assert (
+            session.get_one(LabObservation, observation_id).status
+            == ReviewStatus.VERIFIED
+        )
+
+
+def test_remote_projection_marker_recovers_accepted_write_with_lost_response(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        observation, _review = add_observation(session, DEFAULT_PROFILE_ID)
+        observation_id = observation.id
+    gateway = FakeGateway()
+    gateway.fail_next_write_after_accept = True
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    with pytest.raises(SheetsSyncFailure):
+        service.sync(DEFAULT_PROFILE_ID)
+    assert gateway.binding is not None
+    assert gateway.binding.projection_initialized is True
+
+    edited = list(gateway.review_rows[1])
+    edited[12] = "approve"
+    gateway.review_rows = (gateway.review_rows[0], tuple(edited))
+    assert service.sync(DEFAULT_PROFILE_ID).decisions_applied == 1
+    with session_scope(clean_database) as session:
+        assert (
+            session.get_one(LabObservation, observation_id).status
+            == ReviewStatus.VERIFIED
+        )
+
+
+def test_ambiguous_create_is_fenced_until_explicit_reset(
+    tmp_path: Path, clean_database
+) -> None:
+    gateway = FakeGateway()
+    gateway.fail_create_after_accept = True
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    with pytest.raises(SheetsSyncFailure, match="workbook_creation_unknown"):
+        service.sync(DEFAULT_PROFILE_ID)
+    with pytest.raises(SheetsSyncFailure, match="workbook_creation_unknown"):
+        service.sync(DEFAULT_PROFILE_ID)
+    assert gateway.created == 1
+
+    service.configure(DEFAULT_PROFILE_ID, reset_unknown_creation=True)
+    assert service.sync(DEFAULT_PROFILE_ID).status == "succeeded"
+    assert gateway.created == 2
 
 
 def test_wrong_workbook_binding_aborts_before_review_or_write(

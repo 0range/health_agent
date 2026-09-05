@@ -34,8 +34,11 @@ closed. A Google account cannot be bound to two local health profiles.
 
 The first successful sync creates one spreadsheet and stores its ID and URL in
 the profile configuration. A hidden `_HealthAgent` tab contains the profile UUID,
-schema version, and a random workbook binding token. Every later sync verifies
-all three before reading decisions or writing data. An existing arbitrary
+schema version, a random workbook binding token, and an initialization marker.
+Every later sync verifies this binding before reading decisions or writing data.
+The marker is committed atomically with the first projection, so a lost response
+or local crash cannot erase a decision on restart. Ambiguous workbook creation is
+durably fenced until explicit operator recovery. An existing arbitrary
 spreadsheet is never adopted implicitly.
 
 ## Published data
@@ -43,7 +46,9 @@ spreadsheet is never adopted implicitly.
 `Lab history` contains only observations with `status=verified`, joined through
 their document to the required profile. It contains the medical date, canonical
 and source names, normalized and source values/units, laboratory reference,
-document UUID, and a source link when available. Rows without a medical date are
+document UUID, and a canonical Drive/Docs source link when safely available.
+Local paths, arbitrary URLs, credentials, query strings, and fragments are
+omitted. Rows without a medical date are
 shown but clearly marked; no import timestamp is substituted. It excludes page
 text, evidence excerpts, vault paths, API payloads, OAuth data, and credentials.
 
@@ -69,13 +74,16 @@ attachment name, or extracted medical text.
 
 ## Synchronization
 
-A profile-level local file lock prevents overlapping Sheets runs. A sync performs
-these steps in order:
+A profile-level local file lock serializes configure, authorization and sync.
+Database row locks serialize every review transition, including non-Sheets
+callers, and the row version is re-rendered under that lock. A sync performs these
+steps in order:
 
 1. verify the local profile, Sheets configuration, OAuth scopes, Google account,
    spreadsheet ID, and hidden workbook binding;
-2. read the complete review grid and validate its schema, uniqueness, ownership,
-   row versions, decisions, and correction shapes without changing the database;
+2. read literal/formula-preserving review cells, reject formulas, and validate
+   the complete grid's schema, uniqueness, ownership, row versions, decisions,
+   and correction shapes without changing the database;
 3. apply the entire valid decision batch in one database transaction through the
    existing approve/correct/reject functions and append immutable audit rows;
 4. rebuild all three projections from committed local data;
@@ -96,8 +104,8 @@ are not imported and are overwritten on the next successful projection.
 
 ## Persistence and audit
 
-Profile configuration, token, workbook binding, lock, and lightweight last-run
-state use the existing private atomic JSON/file-store pattern under
+Profile configuration, token, workbook binding, creation fence, lock, and
+lightweight last-run state use the existing private atomic JSON/file-store pattern under
 `data/google-sheets/PROFILE_ID/` with directories mode `0700` and files mode
 `0600`.
 
@@ -116,6 +124,8 @@ Audit rows never contain document bodies or evidence excerpts.
 The public commands are:
 
 - `health-agent sheets configure PROFILE_ID`;
+- `health-agent sheets configure PROFILE_ID --reset-unknown-creation` after
+  manually checking Drive for an orphaned ambiguous creation;
 - `health-agent sheets authorize PROFILE_ID [--force]`;
 - `health-agent sheets sync PROFILE_ID`;
 - `health-agent sheets status PROFILE_ID`.

@@ -89,9 +89,11 @@ class SheetsOAuth:
         force: bool = False,
         interactive: bool = False,
     ) -> None:
-        profile = self.profiles.load(profile_id)
         credentials = self.stage(profile_id, force=force, interactive=interactive)
         identity = self.gateway_factory(credentials).account_identity()
+        # Interactive OAuth can take minutes. Re-read the profile so a workbook
+        # binding written meanwhile cannot be erased by a stale snapshot.
+        profile = self.profiles.load(profile_id)
         try:
             bound = profile.with_account(identity)
         except ValueError as error:
@@ -127,6 +129,13 @@ class SheetsOAuth:
         return "reauth_required"
 
     def _validate_client_secrets(self) -> None:
+        absolute = (
+            self.client_secrets
+            if self.client_secrets.is_absolute()
+            else Path.cwd() / self.client_secrets
+        )
+        if any(component.is_symlink() for component in (absolute, *absolute.parents)):
+            raise RuntimeError("Google OAuth client path contains a symlink")
         if not self.client_secrets.is_file() or self.client_secrets.is_symlink():
             raise FileNotFoundError("Google OAuth Desktop client file not found")
         self.client_secrets.chmod(0o600)

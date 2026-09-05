@@ -1265,6 +1265,11 @@ def configure_sheets(
     reuse_drive_binding: bool = typer.Option(
         True, "--reuse-drive-binding/--no-reuse-drive-binding"
     ),
+    reset_unknown_creation: bool = typer.Option(
+        False,
+        "--reset-unknown-creation",
+        help="Allow one new workbook create after checking Drive for an orphan.",
+    ),
 ) -> None:
     """Configure one generated spreadsheet for a local health profile."""
     settings = Settings()
@@ -1282,6 +1287,7 @@ def configure_sheets(
             profile_id,
             expected_permission_id=permission_id,
             expected_email=email,
+            reset_unknown_creation=reset_unknown_creation,
         )
     except Exception:  # noqa: BLE001 - local paths/accounts stay private
         typer.echo("status=failed safe_error=sheets_configuration_failed", err=True)

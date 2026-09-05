@@ -19,6 +19,7 @@ class WorkbookBinding:
     profile_id: str
     schema_version: str
     workbook_token: str
+    projection_initialized: bool = False
 
 
 @dataclass(frozen=True, slots=True)

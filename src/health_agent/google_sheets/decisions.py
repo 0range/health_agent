@@ -12,7 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from health_agent.google_sheets.models import SheetsReviewDecisionAudit
-from health_agent.google_sheets.projection import REVIEW_HEADERS, ExpectedReviewRow
+from health_agent.google_sheets.projection import (
+    REVIEW_HEADERS,
+    ExpectedReviewRow,
+    locked_expected_review,
+)
 from health_agent.google_sheets.types import SheetValue
 from health_agent.importer import (
     approve_observation,
@@ -95,6 +99,11 @@ def parse_decisions(
             raise ReviewGridError("review row width mismatch")
         if not any(_text(value) for value in padded):
             continue
+        if any(
+            isinstance(value, str) and value.lstrip().startswith("=")
+            for value in padded
+        ):
+            raise ReviewGridError("formulas are not allowed in the review sheet")
         review_id = _text(padded[0])
         if review_id in seen:
             raise ReviewGridError("duplicate review item")
@@ -149,6 +158,13 @@ def apply_decisions(
     )
     with transaction:
         for decision in decisions:
+            current = locked_expected_review(
+                session,
+                profile_id,
+                decision.review_item_id,
+                decision.observation_id,
+                decision.sheet_row,
+            )
             existing = session.scalar(
                 select(SheetsReviewDecisionAudit).where(
                     SheetsReviewDecisionAudit.profile_id == profile_id,
@@ -160,6 +176,8 @@ def apply_decisions(
                     raise ReviewConflict("review decision conflicts with applied audit")
                 replayed += 1
                 continue
+            if current is None or current.row_version != decision.row_version:
+                raise ReviewConflict("review row changed before decision was applied")
             document_id = session.scalar(
                 select(LabObservation.document_id)
                 .join(Document, LabObservation.document_id == Document.id)

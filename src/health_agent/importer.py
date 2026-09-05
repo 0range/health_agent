@@ -312,7 +312,7 @@ def set_document_medical_dates(
         select(Document).where(
             Document.id == document_id,
             Document.profile_id == profile_id,
-        )
+        ).with_for_update()
     )
     if document is None:
         raise ValueError("document does not exist for this profile")
@@ -430,6 +430,7 @@ def _profile_observation(
             LabObservation.id == observation_id,
             Document.profile_id == profile_id,
         )
+        .with_for_update()
     ).one()
 
 

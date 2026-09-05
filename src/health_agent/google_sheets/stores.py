@@ -19,6 +19,10 @@ from health_agent.google_sheets.types import SheetsAccountIdentity
 
 def _private_directory(path: Path) -> Path:
     path = Path(path)
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    for component in reversed((absolute, *absolute.parents)):
+        if component.is_symlink():
+            raise RuntimeError("unsafe symlinked Sheets connector directory")
     if path.exists():
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
@@ -35,6 +39,7 @@ def _profile_directory(root: Path, profile_id: str) -> Path:
 
 
 def _read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    _private_directory(path.parent)
     if path.is_symlink():
         raise RuntimeError("refusing symlinked Sheets connector file")
     if not path.exists():
