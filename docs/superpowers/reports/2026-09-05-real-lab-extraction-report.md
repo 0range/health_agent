@@ -66,3 +66,24 @@ The full migration roundtrip, metadata comparison, CLI and post-sync integration
 tests are included in this run. Independent whole-branch review requested against
 `.superpowers/sdd/2026-09-05-real-lab-extraction/review-d52fb6f..20811a5.diff`;
 no readiness verdict is claimed until that review returns.
+
+## Whole-review fix round
+
+Whole review b737088 requested two medium fixes (operator attention diagnostics,
+local unknown-analyte mapping), plus one low provenance-label fix. All three
+were reproduced as RED tests and implemented:
+
+- `lab-extract status PROFILE --details [--limit 1..100] [--offset N]` emits bounded,
+  profile-scoped current-version unfinished document/page IDs, state and declared
+  safe codes. Unknown stored codes are redacted. Scheduled-import→unknown-outcome
+  discovery→explicit acknowledged retry is covered without resetting counters.
+- `review correct OBS --profile-id PROFILE --value VALUE --unit UNIT
+  --canonical-name CANONICAL` exposes the existing explicitly verified correction
+  path, retaining source lineage and declared normalization/profile guards.
+  Unsupported mapping and foreign profile fail without changes. Telegram mapping
+  remains intentionally absent; docs direct those users to local CLI or Sheets.
+- Newly recovered page text uses truthful generic `local_text_or_ocr` provenance.
+
+Post-fix full offline gates: **868pytest passed**,5inheritedSWIGwarnings; Ruff clean;
+mypy src/new lab tests109files clean; lock/diff clean. Focused lab suite82passed.
+No live data/config/API/credentials were used. Bounded final re-review is pending.

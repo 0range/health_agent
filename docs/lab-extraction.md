@@ -84,7 +84,25 @@ layer, не результат extractor. Отсутствие кандидат�
 
 ## Ошибки, restart и retry
 
-`status` выводит только config/counts/budget. `run` выводит `status=succeeded`,
+Неизвестный analyte можно явно сопоставить через локальный CLI, просмотрев исходник:
+
+```bash
+uv run health-agent review list --profile-id PROFILE_UUID
+uv run health-agent review correct OBSERVATION_UUID --profile-id PROFILE_UUID --value 5.1 --unit mmol/L --canonical-name glucose
+```
+
+Указывайте только подтверждённый вами supported canonical analyte/unit; неправильная
+пара или чужой профиль отклоняются без изменения фактов. Создаётся отдельная verified
+correction со связью на неизменённый исходник. Telegram `/correct` в v0.1 меняет
+только значение/единицу: для mapping используйте этот CLI или Sheets. Никакого
+сопоставления по свободному тексту и молчаливой medical verification нет.
+
+`status` выводит config/counts/budget; `status PROFILE_UUID --details` добавляет
+до20 незавершённых страниц текущей версии: document UUID, page, extractor version,
+state и фиксированный safe_error. Без текста, имени файла или model output.
+`--limit 1..100 --offset N` позволяет листать backlog. UUID из этой команды
+используется для retry; `cloud_outcome_unknown` требует отдельного acknowledgment.
+`run` выводит `status=succeeded`,
 если обнаруженная очередь разобрана, или `deferred`, если остались queued,
 waiting_cloud/needs_attention. Это не означает, что кандидаты уже подтверждены.
 Cloud opt-in/лимит оставляют страницы waiting_cloud. Плохой исходник, непригодный

@@ -20,6 +20,7 @@ from health_agent.lab_extraction.types import (
     Candidate,
     DocumentSnapshot,
     ExtractionError,
+    declared_safe_code,
 )
 from health_agent.models import (
     Document,
@@ -70,6 +71,15 @@ class QueueStatus:
     completed: int = 0
     daily_budget: int = 0
     cloud_requests_today: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class JobDiagnostic:
+    document_id: UUID
+    page_number: int
+    extractor_version: str
+    state: str
+    safe_error: str
 
 
 def _locked_job(session: Session, claim: Claim) -> LabExtractionJob:
@@ -152,6 +162,36 @@ class ExtractionQueue:
                 counts.get("completed", 0),
                 config.daily_budget,
                 config.cloud_requests_today if config.cloud_day == today else 0,
+            )
+
+    def diagnostics(
+        self, profile_id: UUID, *, limit: int = 20, offset: int = 0
+    ) -> tuple[JobDiagnostic, ...]:
+        if not 1 <= limit <= 100 or not 0 <= offset <= 1_000_000:
+            raise ExtractionError("invalid_status_limit")
+        with session_scope(self.engine) as session:
+            rows = session.scalars(
+                select(LabExtractionJob)
+                .where(
+                    LabExtractionJob.profile_id == profile_id,
+                    LabExtractionJob.extractor_version == EXTRACTOR_VERSION,
+                    LabExtractionJob.status != "completed",
+                )
+                .order_by(LabExtractionJob.document_id, LabExtractionJob.page_number)
+                .limit(limit)
+                .offset(offset)
+            ).all()
+            return tuple(
+                JobDiagnostic(
+                    row.document_id,
+                    row.page_number,
+                    EXTRACTOR_VERSION,
+                    row.status,
+                    declared_safe_code(row.safe_error_code)
+                    if row.safe_error_code
+                    else "none",
+                )
+                for row in rows
             )
 
     def discover_and_recover(self, profile_id: UUID) -> None:
@@ -322,7 +362,10 @@ class ExtractionQueue:
             if not page.extracted_text:
                 if existing:
                     raise ExtractionError("page_evidence_exists")
-                page.extracted_text, page.extraction_method = source_text, "local_ocr"
+                page.extracted_text, page.extraction_method = (
+                    source_text,
+                    "local_text_or_ocr",
+                )
             digest = hashlib.sha256(source_text.encode()).hexdigest()
             if cloud and job.source_text_sha256 != digest:
                 raise ExtractionError("page_evidence_changed")

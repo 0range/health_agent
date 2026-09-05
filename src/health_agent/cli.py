@@ -417,6 +417,7 @@ def correct_review_item(
     value: Annotated[str, typer.Option("--value")],
     unit: Annotated[str, typer.Option("--unit")],
     profile_id: Annotated[UUID, typer.Option("--profile-id")],
+    canonical_name: Annotated[str | None, typer.Option("--canonical-name")] = None,
 ) -> None:
     """Explicitly version one pending value/unit correction; keep source lineage."""
     try:
@@ -425,6 +426,7 @@ def correct_review_item(
             corrected = correct_observation(
                 session, observation_id, source_value=value, source_unit=unit,
                 profile_id=profile_id,
+                canonical_name=canonical_name,
             )
             corrected_id = corrected.id
     except Exception:  # noqa: BLE001 -- local DB/source diagnostics are private

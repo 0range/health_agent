@@ -72,12 +72,25 @@ def run(
 
 
 @app.command()
-def status(profile_id: UUID) -> None:
-    """Show counts/configuration only; never read an API key or vault original."""
+def status(
+    profile_id: UUID,
+    details: bool = False,
+    limit: Annotated[int, typer.Option(min=1, max=100)] = 20,
+    offset: Annotated[int, typer.Option(min=0, max=1_000_000)] = 0,
+) -> None:
+    """Show counts and optional bounded recovery IDs/codes, never source text."""
     report = _call(lambda: build_service().status(profile_id))
     typer.echo(
         " ".join(f"{key}={str(value).lower()}" for key, value in asdict(report).items())
     )
+    if details:
+        rows = _call(
+            lambda: build_service().queue.diagnostics(
+                profile_id, limit=limit, offset=offset
+            )
+        )
+        for row in rows:
+            typer.echo(" ".join(f"{key}={value}" for key, value in asdict(row).items()))
 
 
 @app.command()

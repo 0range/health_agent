@@ -230,6 +230,20 @@ def test_ocr_only_fills_empty_page_and_rejected_rows_never_resurrect(
     assert calls == [document_id]
 
 
+def test_recovered_page_method_does_not_overclaim_ocr(clean_database, tmp_path):
+    add_page(clean_database, "")
+    worker = service(
+        clean_database, tmp_path, local_reader=lambda *args: "Glucose 5.1 mmol/L"
+    )
+    worker.configure(DEFAULT_PROFILE_ID)
+    worker.run(DEFAULT_PROFILE_ID)
+    with session_scope(clean_database) as session:
+        assert (
+            session.scalars(select(DocumentPage)).one().extraction_method
+            == "local_text_or_ocr"
+        )
+
+
 def test_concurrent_worker_and_configuration_are_fenced(clean_database, tmp_path):
     add_page(clean_database)
     worker = service(clean_database, tmp_path)
