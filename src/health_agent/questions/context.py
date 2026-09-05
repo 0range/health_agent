@@ -151,6 +151,9 @@ class HealthContextBuilder:
                 metric=observation.canonical_name,
                 value=_display_number(observation.normalized_value),
                 unit=observation.normalized_unit,
+                source_value=observation.source_value,
+                source_unit=observation.source_unit,
+                source_reference=_lab_reference(observation),
             )
             for observation, observed_at in self._session.execute(statement)
             if observed_at is not None and observation.normalized_value is not None
@@ -366,6 +369,9 @@ def _label_evidence(
                     value=item.value,
                     unit=item.unit,
                     time_semantics=item.time_semantics,
+                    source_value=item.source_value,
+                    source_unit=item.source_unit,
+                    source_reference=item.source_reference,
                 )
             )
     return tuple(labelled)
@@ -398,6 +404,24 @@ def _limitations_for(
 def _display_hours(milliseconds: int | None) -> str:
     assert milliseconds is not None
     return _display_number(Decimal(milliseconds) / Decimal(3_600_000))
+
+
+def _lab_reference(observation: LabObservation) -> str:
+    if observation.reference_text and observation.reference_text.strip():
+        return observation.reference_text.strip()
+    if observation.reference_low is not None or observation.reference_high is not None:
+        low = (
+            _display_number(observation.reference_low)
+            if observation.reference_low is not None
+            else "unknown"
+        )
+        high = (
+            _display_number(observation.reference_high)
+            if observation.reference_high is not None
+            else "unknown"
+        )
+        return f"{low}–{high}"
+    return "unknown"
 
 
 def _display_number(value: Decimal | int | None) -> str:

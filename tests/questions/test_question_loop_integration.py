@@ -17,6 +17,13 @@ from sqlalchemy.orm import Session
 
 from health_agent.db import session_scope
 from health_agent.importer import ImportReport
+from health_agent.insights.models import (
+    HealthSignal,
+    HealthSnapshot,
+    SignalKind,
+    SignalState,
+    SourceCitation,
+)
 from health_agent.models import (
     Document,
     DocumentPage,
@@ -30,6 +37,12 @@ from health_agent.questions.composition import (
     ReadOnlyQuestionCommands,
     TelegramHealthQuestionService,
     TelegramMedicalInbox,
+)
+from health_agent.questions.models import (
+    EvidenceItem,
+    EvidenceSource,
+    HealthQuestionContext,
+    QuestionIntent,
 )
 from health_agent.questions.openai import OpenAIResponsesResponder
 from health_agent.questions.replies import PrivateReplyStore, delivery_request_id
@@ -53,6 +66,61 @@ from health_agent.whoop.repository import (
 
 BOT_ID = 701
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def test_large_context_short_cited_answer_fits_one_telegram_part() -> None:
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+    evidence = tuple(
+        EvidenceItem(
+            f"[LAB{index}]",
+            EvidenceSource.LAB,
+            now - timedelta(days=index % 14),
+            f"Legacy metric {index} with bounded synthetic label",
+            str(index),
+            "u",
+            source_value=f"<{index}",
+            source_unit="source-u",
+            source_reference="unknown",
+        )
+        for index in range(1, 41)
+    )
+    signals = tuple(
+        HealthSignal(
+            SignalKind.WEARABLE,
+            SignalState.OBSERVED,
+            f"Aggregate {index}",
+            "Synthetic 7-versus-28-day comparison",
+            now,
+            tuple(
+                SourceCitation(
+                    f"[AG{index}-{source}]", "whoop", f"source-{index}-{source}"
+                )
+                for source in range(35)
+            ),
+        )
+        for index in range(6)
+    )
+    context = HealthQuestionContext(
+        PROFILE_ID,
+        QuestionIntent.SLEEP_RECOVERY,
+        now - timedelta(days=14),
+        now,
+        evidence,
+        {EvidenceSource.LAB: 40},
+        snapshot=HealthSnapshot(PROFILE_ID, now, (), (), (), signals),
+    )
+    application = HealthQuestionApplicationService(
+        SimpleNamespace(build=lambda *_: context),
+        SimpleNamespace(respond=lambda **_: "Краткий ответ по вопросу [LAB1] [AG0-0]."),
+    )
+
+    answer = application.answer(PROFILE_ID, "Краткий вопрос о сне").text
+
+    assert len(answer) <= 4096
+    assert len(split_message(answer)) == 1
+    assert "Legacy metric 2" not in answer
+    assert "[AG0-1]" not in answer
+    assert len(context.snapshot.signals[0].citations) == 35
 
 
 @pytest.mark.parametrize("deferred_part,restart", ((0, False), (0, True), (1, True)))

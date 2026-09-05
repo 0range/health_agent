@@ -15,13 +15,13 @@ from health_agent.insights.catalog import (
     explain,
 )
 from health_agent.questions.models import EvidenceItem, HealthQuestionContext
+from health_agent.questions.presentation import select_presentation
 from health_agent.questions.service import QuestionResponderError
 
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 DEFAULT_MAX_OUTPUT_TOKENS = 2_000
 MAX_OUTPUT_TOKENS = 8_000
 MAX_QUESTION_CHARACTERS = 4_000
-MAX_EVIDENCE_ITEMS = 60
 MAX_CITATION_LABEL_CHARACTERS = 32
 MAX_METRIC_CHARACTERS = 200
 MAX_VALUE_CHARACTERS = 100
@@ -29,9 +29,7 @@ MAX_UNIT_CHARACTERS = 32
 MAX_LIMITATIONS = 20
 MAX_LIMITATION_CODE_CHARACTERS = 64
 MAX_LIMITATION_MESSAGE_CHARACTERS = 500
-MAX_SNAPSHOT_SIGNALS = 30
 MAX_SNAPSHOT_TEXT_CHARACTERS = 500
-MAX_SIGNAL_CITATIONS = 35
 
 MEDICAL_SAFETY_INSTRUCTIONS = """You are a careful health-information assistant.
 Use only the supplied verified observations; do not invent, retrieve, or assume facts.
@@ -58,12 +56,20 @@ The optional `health_snapshot` is another application-supplied evidence block. I
 patient-specific claims may be used only with the exact citation IDs supplied for that
 signal. Catalogue explanations are general education, never patient evidence. A gap is
 unknown or insufficient data, never a healthy result. Wearable comparisons describe only
-observed direction, never clinical abnormality or causality.
-Respect the exact selected_window and each item's time_semantics. A sync_as_of
+observed direction, never clinical abnormality or causality. For legacy labs, preserve
+the original `source_value`, `source_unit`, and `source_reference` wording in patient-facing
+claims; normalized value/unit fields are conversion context and must not erase qualifiers.
+The `selected_window` applies only to `verified_observations`. The snapshot has its own
+`as_of` and signal dates; you may discuss supplied historical snapshot facts and exact
+7-versus-28-day comparisons even when they predate that legacy retrieval window. Never
+claim an old lab describes today, extrapolate beyond supplied evidence, or change a
+signal's supplied state. A sync_as_of
 timestamp is synchronization time, never a dated body measurement. Do not infer
 weight change when weight_trend_insufficient_history is present, including in mixed
 questions; answer only the other supported portions. Do not extrapolate beyond the
-selected interval or assume the capped observations provide complete history."""
+selected legacy interval or assume the capped observations provide complete history.
+For overview requests, begin with a short TL;DR and show at most five attention
+priorities. For focused questions, answer directly without dumping unrelated metrics."""
 
 
 class ResponsesCreate(Protocol):
@@ -146,6 +152,7 @@ def build_responder_input(
     from a user or an imported record cannot forge an instruction or a new section.
     """
 
+    presentation = select_presentation(context)
     question_payload = {"question": _bounded(question, MAX_QUESTION_CHARACTERS)}
     evidence_payload = {
         "selected_window": {
@@ -157,8 +164,7 @@ def build_responder_input(
             "max_items_per_source": context.max_items_per_source,
         },
         "verified_observations": [
-            _evidence_prompt_data(item)
-            for item in context.evidence[:MAX_EVIDENCE_ITEMS]
+            _evidence_prompt_data(item) for item in presentation.evidence
         ],
         "known_limitations": [
             {
@@ -174,9 +180,9 @@ def build_responder_input(
     }
     if context.snapshot is not None:
         requested_keys = {
-            signal.explanation_key
-            for signal in context.snapshot.signals[:MAX_SNAPSHOT_SIGNALS]
-            if signal.explanation_key
+            item.signal.explanation_key
+            for item in presentation.signals
+            if item.signal.explanation_key
         }
         explanations = [
             item for key in sorted(requested_keys) if (item := explain(key))
@@ -185,28 +191,27 @@ def build_responder_input(
             "as_of": context.snapshot.as_of.isoformat(),
             "signals": [
                 {
-                    "kind": signal.kind.value,
-                    "state": signal.state.value,
-                    "title": _bounded(signal.title, MAX_METRIC_CHARACTERS),
-                    "summary": _bounded(signal.summary, MAX_SNAPSHOT_TEXT_CHARACTERS),
-                    "observed_at": signal.observed_at.isoformat(),
-                    "value": _bounded(signal.value, MAX_VALUE_CHARACTERS)
-                    if signal.value
+                    "kind": item.signal.kind.value,
+                    "state": item.signal.state.value,
+                    "title": _bounded(item.signal.title, MAX_METRIC_CHARACTERS),
+                    "summary": _bounded(
+                        item.signal.summary, MAX_SNAPSHOT_TEXT_CHARACTERS
+                    ),
+                    "observed_at": item.signal.observed_at.isoformat(),
+                    "value": _bounded(item.signal.value, MAX_VALUE_CHARACTERS)
+                    if item.signal.value
                     else None,
-                    "unit": _bounded(signal.unit, MAX_UNIT_CHARACTERS)
-                    if signal.unit
+                    "unit": _bounded(item.signal.unit, MAX_UNIT_CHARACTERS)
+                    if item.signal.unit
                     else None,
                     "reference": _bounded(
-                        signal.reference, MAX_SNAPSHOT_TEXT_CHARACTERS
+                        item.signal.reference, MAX_SNAPSHOT_TEXT_CHARACTERS
                     )
-                    if signal.reference
+                    if item.signal.reference
                     else None,
-                    "citation_ids": [
-                        citation.citation_id
-                        for citation in signal.citations[:MAX_SIGNAL_CITATIONS]
-                    ],
+                    "citation_ids": [item.citation_label],
                 }
-                for signal in context.snapshot.signals[:MAX_SNAPSHOT_SIGNALS]
+                for item in presentation.signals
             ],
             "education_catalogue": {
                 "version": CATALOG_VERSION,
@@ -247,7 +252,7 @@ def hashed_safety_identifier(profile_id: UUID) -> str:
 
 
 def _evidence_prompt_data(evidence: EvidenceItem) -> dict[str, str | None]:
-    return {
+    result = {
         "citation_label": _bounded(
             evidence.citation_label, MAX_CITATION_LABEL_CHARACTERS
         ),
@@ -259,6 +264,17 @@ def _evidence_prompt_data(evidence: EvidenceItem) -> dict[str, str | None]:
         if evidence.unit is not None
         else None,
     }
+    if evidence.source_value is not None:
+        result["source_value"] = _bounded(evidence.source_value, MAX_VALUE_CHARACTERS)
+        result["source_unit"] = (
+            _bounded(evidence.source_unit, MAX_UNIT_CHARACTERS)
+            if evidence.source_unit is not None
+            else None
+        )
+        result["source_reference"] = _bounded(
+            evidence.source_reference or "unknown", MAX_SNAPSHOT_TEXT_CHARACTERS
+        )
+    return result
 
 
 def _bounded(value: str, maximum: int) -> str:

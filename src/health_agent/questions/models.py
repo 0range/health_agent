@@ -72,6 +72,9 @@ class EvidenceItem:
     value: str
     unit: str | None = None
     time_semantics: EvidenceTimeSemantics = EvidenceTimeSemantics.OBSERVED
+    source_value: str | None = None
+    source_unit: str | None = None
+    source_reference: str | None = None
 
     @property
     def citation(self) -> str:

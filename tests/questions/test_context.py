@@ -199,7 +199,7 @@ def test_old_snapshot_lab_flows_prompt_validator_and_footer(session: Session) ->
     ).answer(DEFAULT_PROFILE_ID, "Что было в старых анализах?")
 
     assert "Есть старый результат [SNAP1]." in accepted.text
-    assert "Снимок здоровья:" in accepted.text
+    assert "Источники:" in accepted.text
     assert "[SNAP1]" in accepted.text
     assert rejected.text.startswith("В выбранном периоде недостаточно")
 
@@ -501,6 +501,71 @@ def test_lab_prefers_collection_date_for_window_and_citation(session: Session) -
     context = build_context(session, DEFAULT_PROFILE_ID, "labs", clock=lambda: NOW)
 
     assert context.evidence[0].observed_at == datetime(2026, 8, 5, tzinfo=UTC)
+
+
+def test_legacy_lab_source_display_and_unknown_reference_reach_real_prompt(
+    session: Session,
+) -> None:
+    document = Document(
+        profile_id=DEFAULT_PROFILE_ID,
+        sha256=uuid4().hex + uuid4().hex,
+        vault_path="private",
+        media_type="application/pdf",
+        document_type="lab",
+        collected_date=NOW.date(),
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        DocumentPage(document_id=document.id, page_number=1, extraction_method="text")
+    )
+    session.add_all(
+        [
+            LabObservation(
+                document_id=document.id,
+                page_number=1,
+                canonical_name="Qualified",
+                source_name="Qualified",
+                source_value="<5",
+                parsed_value=Decimal(5),
+                source_unit="mg/L",
+                normalized_value=Decimal("0.5"),
+                normalized_unit="g/L",
+                reference_text="5–10 mg/L",
+                evidence_excerpt="synthetic",
+                confidence=Decimal(1),
+                status=ReviewStatus.VERIFIED,
+            ),
+            LabObservation(
+                document_id=document.id,
+                page_number=1,
+                canonical_name="No reference",
+                source_name="No reference",
+                source_value="7",
+                parsed_value=Decimal(7),
+                source_unit="U/L",
+                normalized_value=Decimal(7),
+                normalized_unit="U/L",
+                evidence_excerpt="synthetic",
+                confidence=Decimal(1),
+                status=ReviewStatus.VERIFIED,
+            ),
+        ]
+    )
+    session.flush()
+
+    context = build_context(session, DEFAULT_PROFILE_ID, "labs", clock=lambda: NOW)
+    message = build_responder_input("labs", context)[0]
+    contents = cast(list[dict[str, str]], message["content"])
+    observations = json.loads(contents[1]["text"])["verified_observations"]
+    by_metric = {item["metric"]: item for item in observations}
+
+    assert by_metric["Qualified"]["source_value"] == "<5"
+    assert by_metric["Qualified"]["source_unit"] == "mg/L"
+    assert by_metric["Qualified"]["value"] == "0.5"
+    assert by_metric["Qualified"]["unit"] == "g/L"
+    assert by_metric["Qualified"]["source_reference"] == "5–10 mg/L"
+    assert by_metric["No reference"]["source_reference"] == "unknown"
 
 
 def test_context_returns_empty_evidence_when_no_safe_records(session: Session) -> None:
