@@ -41,6 +41,7 @@ class ChildProcess(Protocol):
         *,
         cwd: Path,
         environment: dict[str, str],
+        lock_descriptor: int,
     ) -> int: ...
 
 
@@ -71,6 +72,7 @@ class SystemChildProcess:
         *,
         cwd: Path,
         environment: dict[str, str],
+        lock_descriptor: int,
     ) -> int:
         try:
             with (
@@ -83,6 +85,7 @@ class SystemChildProcess:
                     env=environment,
                     stdout=stdout,
                     stderr=stderr,
+                    pass_fds=(lock_descriptor,),
                     shell=False,
                     check=False,
                 )
@@ -176,6 +179,7 @@ class TelegramServiceRunner:
                     "HOME": str(Path.home()),
                     "PATH": _MINIMAL_PATH,
                 },
+                lock_descriptor=self.lock.fileno(),
             )
         finally:
             self.lock.release()

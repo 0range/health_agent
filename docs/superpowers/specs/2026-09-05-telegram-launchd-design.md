@@ -18,7 +18,9 @@ wrapper validates the private `0600` non-symlink environment file, takes a
 Telegram-only non-blocking lock, safely rotates the two logs, and launches the
 existing `telegram run` command with `HEALTH_AGENT_ENV_FILE` set only in the
 child environment. It holds the lock for the child lifetime and returns the
-child exit code. No credential or health content enters arguments or plist.
+child exit code. The child inherits the held lock descriptor, so an unexpected
+wrapper death cannot leave an unfenced orphan poller. No credential or health
+content enters arguments or plist.
 
 ## LaunchAgent and lifecycle contract
 

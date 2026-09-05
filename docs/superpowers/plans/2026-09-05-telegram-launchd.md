@@ -15,7 +15,8 @@
 - Environment file is absolute, regular, non-symlink and exactly `0600`.
 - Managed directories are `0700`; plist/log/lock files are `0600`; logs retain at most one generation above 5 MiB.
 - Rotation occurs only under the Telegram singleton lock.
-- Wrapper invokes the existing `telegram run`; do not change question/capture composition.
+- Wrapper invokes the existing `telegram run`, passes it the held lock descriptor,
+  and does not change question/capture composition.
 - Tests must not call live launchd, Telegram, OpenAI, OAuth, or real credentials.
 
 ---

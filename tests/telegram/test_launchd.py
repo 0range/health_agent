@@ -288,8 +288,10 @@ def test_runner_holds_singleton_uses_minimal_env_and_propagates_exit(tmp_path: P
             *,
             cwd: Path,
             environment: dict[str, str],
+            lock_descriptor: int,
         ) -> int:
             calls.append((arguments, cwd, environment))
+            assert lock_descriptor >= 0
             competing = TelegramServiceRunner(paths, child=self)
             assert competing.run().status == "already_running"
             return 7
@@ -335,6 +337,7 @@ def test_system_child_reopens_active_logs_after_rotation(
     assert captured["stdout_identity"] == (stdout_path.st_dev, stdout_path.st_ino)
     assert captured["stderr_identity"] == (stderr_path.st_dev, stderr_path.st_ino)
     assert captured["shell"] is False
+    assert captured["pass_fds"]
     assert paths.stdout_log.with_name("telegram-stdout.log.1").stat().st_size == (
         TELEGRAM_LOG_ROTATE_BYTES + 1
     )
