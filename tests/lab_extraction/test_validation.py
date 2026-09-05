@@ -159,3 +159,7 @@ def test_both_unknown_name_and_unit_are_retained_review_only():
     assert row.source_unit == "mystery-unit"
     with pytest.raises(ValueError):
         normalize_registered(row.canonical_name, row.source_value, row.source_unit)
+def test_flag_from_unrelated_later_row_is_rejected():
+    text = "ALT 53 U/L 0-41\nOther marker H"
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates({"candidates": [{"source_name": "ALT", "source_value": "53", "source_unit": "U/L", "reference_text": "0-41", "source_flag": "H", "evidence_excerpt": text}]}, text)

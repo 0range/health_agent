@@ -98,15 +98,23 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
         ):
             raise ValueError("candidate_evidence_mismatch")
         gap = excerpt[value_span[1] : unit_span[0]].strip(" \t\r\n|:=")
+        flag_between = flag is not None and gap == flag
         if gap and gap != flag:
             raise ValueError("candidate_evidence_mismatch")
         if reference is not None:
             reference_span = _field_span(reference, excerpt, text, unit_span[1])
             gap = excerpt[unit_span[1] : reference_span[0]].strip(" \t\r\n|:=")
+            flag_between = flag_between or (flag is not None and gap == flag)
             if gap and gap != flag:
                 raise ValueError("candidate_evidence_mismatch")
         if flag is not None:
-            _field_span(flag, excerpt, text, value_span[1])
+            flag_span = _field_span(flag, excerpt, text, value_span[1])
+            tail_start = reference_span[1] if reference is not None else unit_span[1]
+            if not flag_between and (
+                flag_span[0] < tail_start
+                or re.fullmatch(r"[\s|:=]*", excerpt[tail_start:flag_span[0]]) is None
+            ):
+                raise ValueError("candidate_evidence_mismatch")
         qualified = value.startswith(("<", ">", "≤", "≥"))
         parsed = bounded_decimal(value[1:] if qualified else value)
         low, high = _reference_range(reference)
