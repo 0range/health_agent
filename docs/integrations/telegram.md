@@ -109,6 +109,7 @@ sync (`com.orange.health-agent.sync`) и reminders
 - `data/automation/launchd/com.orange.health-agent.telegram.plist`;
 - `~/Library/LaunchAgents/com.orange.health-agent.telegram.plist`;
 - `data/automation/telegram-service.lock`;
+- `~/Library/Application Support/Health Agent/locks/telegram-lifecycle.lock`;
 - `data/automation/logs/telegram-stdout.log`, `telegram-stderr.log` и одной
   приватной ротацией `.1` после 5 МиБ.
 
@@ -116,6 +117,15 @@ Plist содержит только абсолютные пути, не знач
 режим `0600`, каталоги — `0700`. Singleton lock не позволяет второму wrapper
 запустить ещё один poller и сериализует ротацию логов. В логах остаются только
 короткие `status/error` строки CLI без токенов, вопросов и медицинского текста.
+Отдельный lifecycle-lock сериализует `render`, `install`, чтение статуса, `stop`
+и `remove`, в том числе если команды одновременно запущены с разными env-файлами.
+Конкурирующая команда безопасно завершается с `telegram_lifecycle_busy` и не
+изменяет plist активной операции.
+
+При неудачной загрузке нового plist менеджер восстанавливает предыдущий файл и
+проверяет повторную загрузку старого сервиса. Ошибки новой загрузки и ошибки
+самого восстановления имеют разные короткие safe-коды; launchctl output, пути и
+содержимое env в них не попадают.
 
 ## Контракты приложения
 

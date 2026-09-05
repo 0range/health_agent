@@ -39,12 +39,15 @@ stop. Remove unloads and deletes only the Telegram rendered/installed plists.
 Status reports only `loaded` or `unloaded` plus the fixed label.
 
 All plist lifecycle operations use a second Telegram-only advisory lock,
-separate from the poller singleton lock. `render`, `install`, status reads,
-`stop`, and `remove` either hold this lifecycle lock across their complete
-filesystem/launchctl transaction or fail closed with `telegram_lifecycle_busy`.
-Private helpers do not reacquire the lock, so nested install/rollback and
-remove/stop flows remain deadlock-free. A losing concurrent operation cannot
-restore or delete files written by the lock owner.
+separate from the poller singleton lock. It lives under the fixed per-user
+`~/Library/Application Support/Health Agent/locks` root, so managers built from
+different env files or automation roots still serialize access to the same
+installed label. `render`, `install`, status reads, `stop`, and `remove` either
+hold this lifecycle lock across their complete filesystem/launchctl transaction
+or fail closed with `telegram_lifecycle_busy`. Private helpers do not reacquire
+the lock, so nested install/rollback and remove/stop flows remain deadlock-free.
+A losing concurrent operation cannot restore or delete files written by the
+lock owner.
 
 If loading a changed plist fails after the old service was unloaded, install
 first restores the previous plist and then verifies the bootstrap of that
