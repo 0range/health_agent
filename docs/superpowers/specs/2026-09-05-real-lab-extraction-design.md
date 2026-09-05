@@ -41,6 +41,12 @@ retained verbatim but cannot be silently converted. An extensible registry cover
 CBC, liver/kidney/chemistry, electrolytes, inflammation, thyroid/hormones and
 vitamins beyond the existing aliases. Only declared analyte/unit pairs normalize.
 No physiological reference range or sex/age-specific interpretation is invented.
+Unambiguous printed low-high ranges populate the existing numeric reference
+fields; ambiguous ranges stay text-only. A nullable `source_flag` on the source
+observation preserves a printed H/L/arrow/star, never a newly inferred diagnosis.
+Existing explicit review produces normalized values through the registry.
+The downstream insight layer, not extraction, decides how to describe confirmed
+reference comparisons, overall picture, trend significance and safe next steps.
 
 ## Queue, restart and cost
 
