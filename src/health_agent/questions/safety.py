@@ -44,9 +44,9 @@ _URGENT_PATTERNS = tuple(
 )
 
 URGENT_RESPONSE = (
-    "This may need emergency care. Call your local emergency number now or go to "
-    "the nearest emergency department; do not wait for an online answer. "
-    "Если это безопасно, попросите кого-то быть рядом с вами."
+    "Возможно, вам нужна экстренная помощь. Немедленно позвоните по местному номеру "
+    "экстренной помощи или обратитесь в ближайшее отделение неотложной помощи — не "
+    "ждите ответа онлайн. Если это безопасно, попросите кого-то быть рядом с вами."
 )
 
 

@@ -32,6 +32,8 @@ from health_agent.questions.safety import (
 def test_urgent_guard_handles_english_and_russian_red_flags(question: str) -> None:
     assert has_urgent_red_flag(question)
     assert urgent_response(question) == URGENT_RESPONSE
+    assert "местному номеру экстренной помощи" in URGENT_RESPONSE
+    assert "112" not in URGENT_RESPONSE
 
 
 def test_urgent_guard_does_not_intercept_ordinary_questions() -> None:

@@ -56,7 +56,7 @@ def test_question_ask_returns_a_safe_nonzero_error(monkeypatch) -> None:
     )
 
     assert result.exit_code == 1
-    assert "temporarily unavailable" in result.output
+    assert "не удалось ответить" in result.output
     assert "private question" not in result.output
     assert secret not in result.output
 

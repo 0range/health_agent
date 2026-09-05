@@ -17,11 +17,11 @@ from health_agent.questions.models import (
 from health_agent.questions.safety import guard_urgent_question
 
 QUESTION_UNAVAILABLE_TEXT = (
-    "Health-question answering is temporarily unavailable. Please try again later."
+    "Сейчас не удалось ответить на вопрос о здоровье. Попробуйте ещё раз позже."
 )
 INSUFFICIENT_EVIDENCE_TEXT = (
-    "I don't have enough verified health data in the selected window to answer that "
-    "safely."
+    "В выбранном периоде недостаточно проверенных данных о здоровье, чтобы безопасно "
+    "ответить на этот вопрос."
 )
 
 _BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]*\]")
@@ -151,20 +151,23 @@ def render_source_footer(context: HealthQuestionContext) -> str:
     """Render local source provenance in the context's deterministic order."""
 
     lines = [
-        "Sources:",
+        "Источники:",
         (
-            f"Selected window (inclusive, UTC): {context.window_start.isoformat()} to "
-            f"{context.window_end.isoformat()}; up to {context.max_items_per_source} "
-            "items per source."
+            f"Выбранный период (включительно, UTC): {context.window_start.isoformat()} — "
+            f"{context.window_end.isoformat()}; не более {context.max_items_per_source} "
+            "записей из каждого источника."
         ),
-        "Labs use calendar dates; WHOOP uses observation times or explicit sync-as-of times.",
+        (
+            "Для анализов указана календарная дата; для WHOOP — время наблюдения "
+            "или синхронизации."
+        ),
     ]
     if context.evidence:
         lines.extend(_render_evidence(item) for item in context.evidence)
     else:
-        lines.append("- No verified data was available in the selected window.")
+        lines.append("- В выбранном периоде нет проверенных данных.")
     if context.limitations:
-        lines.extend(("", "Limitations:"))
+        lines.extend(("", "Ограничения:"))
         lines.extend(f"- {limitation.message}" for limitation in context.limitations)
     return "\n".join(lines)
 
@@ -172,7 +175,11 @@ def render_source_footer(context: HealthQuestionContext) -> str:
 def _render_evidence(item: EvidenceItem) -> str:
     when = item.observed_at.isoformat()
     value = f"{item.value} {item.unit}" if item.unit else item.value
-    suffix = " (synced as of)" if item.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF else ""
+    suffix = (
+        " (на момент синхронизации)"
+        if item.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
+        else ""
+    )
     return f"- {item.citation_label} {when}: {item.metric} — {value}{suffix}"
 
 

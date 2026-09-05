@@ -79,7 +79,10 @@ def test_commands_are_read_only_and_sync_explicitly_directs_to_existing_cli() ->
     sync = commands.sync(TelegramCommand(_context(PROFILE_ID), "sync"))
 
     assert calls == [PROFILE_ID]
-    assert "lab=2" in status
+    assert status == (
+        "Состояние данных о здоровье: анализы=2 сон=0 восстановление=0 "
+        "циклы=0 тренировки=0 вес=0"
+    )
     assert "health-agent gmail sync" in sync
     assert sync.startswith(SYNC_INSTRUCTIONS)
     assert f"health-agent gmail sync {PROFILE_ID}" in sync
@@ -95,7 +98,7 @@ def test_default_attachment_inbox_is_truthful_needs_attention() -> None:
     assert receipt.status == "needs_attention"
     assert receipt.size_bytes == len(b"firstsecond")
     assert receipt.reply_text == ATTACHMENT_NEEDS_ATTENTION_TEXT
-    assert "not imported" in receipt.reply_text
+    assert "не импортирован" in receipt.reply_text
 
 
 def test_telegram_pdf_inbox_imports_with_profile_provenance_and_is_replay_safe(
@@ -175,7 +178,7 @@ def test_telegram_inbox_fully_consumes_voice_without_importing(tmp_path: Path) -
     assert not called
     assert receipt.status == "needs_attention"
     assert receipt.sha256 == hashlib.sha256(b"not a PDF").hexdigest()
-    assert "not imported" in receipt.reply_text
+    assert "не импортирован" in receipt.reply_text
     assert list((tmp_path / "temporary").glob("*")) == []
 
 
@@ -208,7 +211,11 @@ def test_telegram_image_inbox_imports_and_uses_stable_receipt(tmp_path: Path) ->
     second = inbox.ingest(provenance, [b"synthetic image"])
     assert first == second
     assert first.status == "received"
-    assert "/review" in first.reply_text
+    assert first.reply_text == (
+        "Медицинское изображение получено и сохранено. Перед использованием данные "
+        "могут потребовать проверки. Используйте /review, чтобы проверить один "
+        "извлечённый показатель. Распознавание текста (OCR) может быть недоступно."
+    )
     assert calls[0]["media_type"] == "image/png"
     assert list((tmp_path / "temporary").iterdir()) == []
 

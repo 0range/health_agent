@@ -127,7 +127,7 @@ def test_production_photo_review_confirm_429_restart_question(
     assert service().process_update(confirmation).status == "retryable_error"
     now += timedelta(seconds=2)
     assert service().process_update(confirmation).status == "replied"
-    assert attempted[-1] == attempted[-2] == f"Confirmed item {item_id}."
+    assert attempted[-1] == attempted[-2] == f"Показатель {item_id} подтверждён."
     sent_count = len(sent)
     assert service().process_update(confirmation).terminal
     assert len(sent) == sent_count
