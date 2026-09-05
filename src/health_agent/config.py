@@ -52,6 +52,19 @@ class Settings(BaseSettings):
         le=300,
         validation_alias="GOOGLE_DRIVE_HTTP_TIMEOUT_SECONDS",
     )
+    google_sheets_root: Path = Field(
+        default=Path("data/google-sheets"), validation_alias="GOOGLE_SHEETS_ROOT"
+    )
+    google_sheets_client_secrets: Path = Field(
+        default=Path("data/secrets/google-oauth-client.json"),
+        validation_alias="GOOGLE_SHEETS_CLIENT_SECRETS",
+    )
+    google_sheets_http_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        validation_alias="GOOGLE_SHEETS_HTTP_TIMEOUT_SECONDS",
+    )
     temporary_root: Path = Field(
         default=Path("data/tmp"), validation_alias="TEMPORARY_ROOT"
     )
