@@ -46,6 +46,7 @@ _CONNECTOR_LABELS = {
     "whoop": "WHOOP",
     "drive": "Google Drive",
     "gmail": "Gmail",
+    "sheets": "Google Таблица",
     "telegram": "Telegram",
     "reminders": "Напоминания",
     "database": "Локальная база",
@@ -53,11 +54,17 @@ _CONNECTOR_LABELS = {
 _CONNECTOR_ORDER = {
     connector: index
     for index, connector in enumerate(
-        ("whoop", "drive", "gmail", "telegram", "reminders", "database")
+        ("whoop", "drive", "gmail", "sheets", "telegram", "reminders", "database")
     )
 }
 _AUTH_ERROR_CODES = frozenset(
-    {"OAuthRequired", "credential_invalid", "reauth_required", "token_not_configured"}
+    {
+        "OAuthRequired",
+        "credential_invalid",
+        "oauth_required",
+        "reauth_required",
+        "token_not_configured",
+    }
 )
 _MONTHS = (
     "января",
@@ -589,6 +596,8 @@ def _human_action(card: ConnectorCard) -> str:
         return "Подключите или переподключите WHOOP."
     if card.connector == "gmail":
         return "Подключите или переподключите Gmail."
+    if card.connector == "sheets":
+        return "Подключите или переподключите Google Таблицу."
     if card.connector == "telegram":
         return "Завершите подключение Telegram."
     if card.connector == "reminders":
@@ -602,9 +611,14 @@ def _render_destination(destination: PanelDestination) -> str:
     label = escape(destination.label)
     safe_url = _safe_destination_url(destination)
     if safe_url is not None:
+        location = (
+            "Открыть в Google"
+            if destination.key == "google_sheets"
+            else "Открыть локально"
+        )
         return (
             f'<article class="destination"><a href="{escape(safe_url, quote=True)}" '
-            f'rel="noreferrer">{label} →</a><p>Открыть локально</p></article>'
+            f'rel="noreferrer">{label} →</a><p>{location}</p></article>'
         )
     unavailable = destination.unavailable_text or "Сейчас недоступно"
     return (
@@ -684,6 +698,13 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
             f"выполните в Terminal: health-agent gmail status {profile_id} "
             f"--account-id {account}"
         )
+    if card.connector == "sheets":
+        command = (
+            "authorize"
+            if card.status in {"needs_authorization", "reauth_required"}
+            else "status"
+        )
+        return f"выполните в Terminal: health-agent sheets {command} {profile_id}"
     if card.connector == "telegram":
         if card.status in {"not_configured", "credential_invalid"}:
             return "выполните в Terminal: health-agent telegram configure-token"
