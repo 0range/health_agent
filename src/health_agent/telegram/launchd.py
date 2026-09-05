@@ -175,7 +175,14 @@ class TelegramLaunchdPaths:
             stdout_log=root / "logs" / "telegram-stdout.log",
             stderr_log=root / "logs" / "telegram-stderr.log",
             lock_file=root / "telegram-service.lock",
-            lifecycle_lock_file=root / "telegram-lifecycle.lock",
+            lifecycle_lock_file=(
+                owner_home
+                / "Library"
+                / "Application Support"
+                / "Health Agent"
+                / "locks"
+                / "telegram-lifecycle.lock"
+            ),
         )
 
 

@@ -238,7 +238,7 @@ def test_concurrent_install_loser_cannot_replace_or_remove_winner_plist(
     loser_env.write_text("SAFE=loser\n", encoding="utf-8")
     loser_env.chmod(0o600)
     loser_paths = TelegramLaunchdPaths.resolve(
-        automation_root=winner_paths.automation_root,
+        automation_root=winner_paths.automation_root.parent / "loser-automation",
         executable=winner_paths.executable,
         environment_file=loser_env,
         working_directory=winner_paths.working_directory,
@@ -273,13 +273,16 @@ def test_concurrent_install_loser_cannot_replace_or_remove_winner_plist(
     assert busy.value.safe_code == "telegram_lifecycle_busy"
     assert winner_paths.installed_plist.read_bytes() == installed_by_winner
     assert winner_paths.rendered_plist.read_bytes() == installed_by_winner
+    assert loser_paths.rendered_plist.exists() is False
     assert plistlib.loads(installed_by_winner)["ProgramArguments"][-1] == str(
         winner_paths.environment_file
     )
+    assert winner_paths.lifecycle_lock_file == loser_paths.lifecycle_lock_file
     assert winner_paths.lifecycle_lock_file != winner_paths.lock_file
+    assert winner_paths.lock_file != loser_paths.lock_file
 
 
-def test_stop_and_remove_fail_busy_without_launchctl_or_file_mutation(
+def test_lifecycle_operations_fail_busy_without_launchctl_or_file_mutation(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
@@ -294,7 +297,13 @@ def test_stop_and_remove_fail_busy_without_launchctl_or_file_mutation(
     held = GlobalRunLock(paths.lifecycle_lock_file)
     assert held.acquire()
     try:
-        for operation in (manager.stop, manager.remove):
+        for operation in (
+            manager.render,
+            manager.is_loaded,
+            manager.status,
+            manager.stop,
+            manager.remove,
+        ):
             with pytest.raises(TelegramLaunchdError, match="telegram_lifecycle_busy"):
                 operation()
     finally:
