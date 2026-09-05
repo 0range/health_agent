@@ -21,7 +21,10 @@ from health_agent.google_drive.stores import (
 )
 from health_agent.google_drive.types import DriveAccountIdentity
 from health_agent.google_sheets.config import SheetsProfile
-from health_agent.google_sheets.stores import LocalSheetsProfileStore
+from health_agent.google_sheets.stores import (
+    LocalSheetsProfileStore,
+    LocalSheetsStateStore,
+)
 from health_agent.models import DEFAULT_PROFILE_ID, Profile
 from health_agent.panel.models import (
     ConnectorCard,
@@ -36,6 +39,7 @@ from health_agent.panel.service import (
     PanelService,
     ProfileNotFoundError,
     ReminderStatusReader,
+    SheetsStatusReader,
     SqlAlchemyProfileRepository,
     TelegramStatusReader,
     _local_telegram_status,
@@ -460,6 +464,40 @@ def test_production_panel_exposes_configured_profile_sheet(
     sheets = next(item for item in panel.destinations if item.key == "google_sheets")
     assert sheets.url == sheet_url
     assert sheet_id not in repr(panel.connectors)
+
+
+def test_sheets_status_reader_is_profile_scoped_and_reports_success(tmp_path) -> None:
+    first = DEFAULT_PROFILE_ID
+    second = uuid4()
+    profiles = LocalSheetsProfileStore(tmp_path)
+    state = LocalSheetsStateStore(tmp_path)
+    token = "workbook-token-1234567890"
+    sheet_id = "verified-sheet-id-123456"
+    profile = SheetsProfile.create(str(first)).with_creation_started(token)
+    profiles.save(
+        profile.with_workbook(
+            sheet_id,
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
+            token,
+        )
+    )
+    state.write(
+        str(first),
+        {
+            "last_status": "succeeded",
+            "last_success_at": "2026-09-05T06:00:00+00:00",
+            "safe_error_code": None,
+        },
+    )
+    reader = SheetsStatusReader(profiles, state, lambda _profile_id: "ready")
+
+    ready = reader.cards(first)[0]
+    missing = reader.cards(second)[0]
+
+    assert ready.status == "ready"
+    assert ready.last_success_at == datetime(2026, 9, 5, 6, tzinfo=UTC)
+    assert ready.error_code is None
+    assert missing.status == "not_configured"
 
 
 def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> None:

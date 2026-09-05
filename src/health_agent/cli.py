@@ -17,7 +17,11 @@ from health_agent.automation.launchd import (
 )
 from health_agent.automation.registry import configured_job_adapters
 from health_agent.automation.runner import AutomationRunner, SubprocessJobExecutor
-from health_agent.automation.storage import AutomationState, GlobalRunLock
+from health_agent.automation.storage import (
+    AutomationState,
+    GlobalRunLock,
+    require_private_file,
+)
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.api import GoogleGmailGateway
@@ -98,6 +102,13 @@ from health_agent.staging import (
 )
 from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
 from health_agent.telegram.api import TelegramBotAPI
+from health_agent.telegram.launchd import (
+    TELEGRAM_LABEL,
+    TelegramLaunchdError,
+    TelegramLaunchdManager,
+    TelegramLaunchdPaths,
+    TelegramServiceRunner,
+)
 from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.vault import FileVault
@@ -1212,6 +1223,67 @@ def run_telegram() -> None:
         raise typer.Exit(code=1) from None
 
 
+@telegram_app.command("render")
+def render_telegram_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Render the inspectable always-on Telegram LaunchAgent plist."""
+    _run_telegram_launchd("render", env_file)
+
+
+@telegram_app.command("install")
+def install_telegram_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Install and load the always-on Telegram user LaunchAgent."""
+    _run_telegram_launchd("install", env_file)
+
+
+@telegram_app.command("automation-status")
+def telegram_automation_status(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Report whether the Telegram LaunchAgent is loaded."""
+    _run_telegram_launchd("status", env_file)
+
+
+@telegram_app.command("stop")
+def stop_telegram_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Unload Telegram automation while retaining managed files."""
+    _run_telegram_launchd("stop", env_file)
+
+
+@telegram_app.command("remove")
+def remove_telegram_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Unload Telegram automation and remove only its managed plists."""
+    _run_telegram_launchd("remove", env_file)
+
+
+@telegram_app.command("service-run", hidden=True)
+def run_telegram_service(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Launchd-only singleton wrapper around the existing Telegram runner."""
+    try:
+        result = _telegram_service_runner(env_file).run()
+    except Exception:  # noqa: BLE001 -- paths, settings and child details stay private
+        typer.echo(
+            "status=blocked error=telegram_service_configuration_failed", err=True
+        )
+        raise typer.Exit(code=1) from None
+    if result.status == "already_running":
+        typer.echo("status=skipped safe_error=already_running")
+        return
+    if result.returncode != 0:
+        typer.echo("status=blocked error=telegram_service_failed", err=True)
+        raise typer.Exit(code=result.returncode)
+    typer.echo("status=stopped")
+
+
 @telegram_app.command("bind")
 def bind_telegram_identity(
     profile_id: UUID,
@@ -1336,6 +1408,13 @@ def configure_drive(profile_id: UUID, folders: list[str]) -> None:
         if profiles.exists(profile_key):
             current = profiles.load(profile_key)
             roots_changed = current.root_folder_ids != profile.root_folder_ids
+            if (
+                current.account_permission_id is not None
+                and current.account_email is not None
+            ):
+                profile = profile.with_account(
+                    current.account_permission_id, current.account_email
+                )
         else:
             roots_changed = True
         if roots_changed:
@@ -1350,7 +1429,7 @@ def configure_drive(profile_id: UUID, folders: list[str]) -> None:
 def authorize_drive(profile_id: UUID) -> None:
     """Authorize one Google account using a local Desktop OAuth callback."""
     settings = Settings()
-    profiles, tokens, _ = _drive_stores(settings)
+    profiles, tokens, state = _drive_stores(settings)
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
     profiles.load(profile_key)
@@ -1369,6 +1448,11 @@ def authorize_drive(profile_id: UUID) -> None:
             f"profile {profile_key!r} is already bound to another Google account"
         )
     oauth.publish_verified(profile_key, credentials, identity)
+    with state.sync_lock(profile_key):
+        profile = profiles.load(profile_key).with_account(
+            identity.permission_id, identity.email
+        )
+        profiles.save(profile)
     typer.echo(f"status=authorized profile={profile_key} account={identity.email}")
 
 
@@ -1454,6 +1538,7 @@ def sync_drive(profile_id: UUID, full: bool = False) -> None:
         profile = profiles.load(profile_key).with_account(
             identity.permission_id, identity.email
         )
+        profiles.save(profile)
         service = DriveService(
             profile,
             GoogleDriveGateway.from_credentials(
@@ -1733,6 +1818,56 @@ def _automation_manager_or_exit(env_file: Path) -> LaunchdManager:
     except (RuntimeError, ValueError):
         typer.echo("status=failed safe_error=automation_configuration_failed", err=True)
         raise typer.Exit(code=1) from None
+
+
+def _telegram_launchd_paths(env_file: Path) -> TelegramLaunchdPaths:
+    repository_root = Path(__file__).resolve().parents[2]
+    expanded = env_file.expanduser()
+    require_private_file(expanded)
+    resolved = expanded.resolve()
+    settings = Settings(_env_file=resolved)  # type: ignore[call-arg]
+    automation_root = _repository_relative(
+        repository_root, settings.automation_root
+    )
+    return TelegramLaunchdPaths.resolve(
+        automation_root=automation_root,
+        executable=_current_console_script(),
+        environment_file=resolved,
+        working_directory=repository_root,
+    )
+
+
+def _telegram_launchd_manager(env_file: Path) -> TelegramLaunchdManager:
+    return TelegramLaunchdManager(_telegram_launchd_paths(env_file))
+
+
+def _telegram_service_runner(env_file: Path) -> TelegramServiceRunner:
+    return TelegramServiceRunner(_telegram_launchd_paths(env_file))
+
+
+def _run_telegram_launchd(action: str, env_file: Path) -> None:
+    try:
+        manager = _telegram_launchd_manager(env_file)
+        if action == "render":
+            manager.render()
+            status = "rendered"
+        elif action == "install":
+            status = manager.install()
+        elif action == "status":
+            status = manager.status()
+        elif action == "stop":
+            status = manager.stop()
+        elif action == "remove":
+            status = manager.remove()
+        else:
+            raise ValueError("invalid_launchd_action")
+    except TelegramLaunchdError as error:
+        typer.echo(f"status=failed safe_error={error.safe_code}", err=True)
+        raise typer.Exit(code=1) from None
+    except Exception:  # noqa: BLE001 -- never expose credentials or private paths
+        typer.echo("status=failed safe_error=telegram_launchd_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label={TELEGRAM_LABEL}")
 
 
 def _reminder_engine():

@@ -1,0 +1,1406 @@
+diff --git a/.superpowers/sdd/2026-09-05-telegram-launchd/progress.md b/.superpowers/sdd/2026-09-05-telegram-launchd/progress.md
+new file mode 100644
+index 0000000..3c7350a
+--- /dev/null
++++ b/.superpowers/sdd/2026-09-05-telegram-launchd/progress.md
+@@ -0,0 +1,12 @@
++# SDD ledger — always-on Telegram LaunchAgent
++
++Base: `18d97a3`. Design: `4b0a3c6`. Plan: `8698ce2`.
++
++- Task 1 RED: `health_agent.telegram.launchd` missing during collection.
++- Task 1 GREEN: exact plist/lifecycle/rotation/runner tests passed; Ruff and mypy passed.
++- Task 2 RED: all five lifecycle commands and `service-run` absent.
++- Task 2 GREEN: CLI/runbook integrated; focused and full gates passed.
++- Self-review hardened active-log reopening, hostile managed paths, strict modes,
++  ambiguous launchctl status, and inherited singleton descriptor.
++- Live launchd, Telegram, OpenAI and real credentials remain intentionally untouched.
++- Independent review package is generated after this report commit; approval is not claimed.
+diff --git a/docs/integrations/telegram.md b/docs/integrations/telegram.md
+index 1600785..fe70ad3 100644
+--- a/docs/integrations/telegram.md
++++ b/docs/integrations/telegram.md
+@@ -5,9 +5,9 @@
+ Коннектор работает через long polling на локальном Mac, принимает только явно
+ привязанные личные чаты и всегда передаёт `profile_id` в Health Agent или
+ медицинский inbox. Текст вопросов и содержимое файлов не сохраняются в его
+-техническом журнале. Сейчас готова инфраструктурная основа; для запуска живого
+-бота её нужно скомпоновать с реальными `HealthQuestionService`,
+-`HealthCommandService` и `MedicalInbox` приложения.
++техническом журнале. Для запуска живого бота используется готовая
++production-композиция `telegram run`; отдельный LaunchAgent может держать её
++включённой после входа пользователя в Mac.
+ 
+ ## Что уже реализовано
+ 
+@@ -77,6 +77,46 @@ identity/update/delivery keys; старый namespace сохраняется. С
+ файл требует повторного `configure-token`, а legacy SQLite безопасно переносится
+ в неактивный bot-0 namespace.
+ 
++## Всегда включённый режим на Mac
++
++Подготовьте абсолютный путь к приватному env-файлу и установите режим `0600`.
++Сам Telegram token остаётся в отдельном token-файле и в env/plist не копируется.
++
++```bash
++chmod 600 /absolute/path/health-agent/.env
++uv run health-agent telegram render --env-file /absolute/path/health-agent/.env
++uv run health-agent telegram install --env-file /absolute/path/health-agent/.env
++uv run health-agent telegram automation-status --env-file /absolute/path/health-agent/.env
++```
++
++`render` только создаёт проверяемый plist. `install` загружает user LaunchAgent
++`com.orange.health-agent.telegram`: он запускается при загрузке, остаётся
++включённым, а после неожиданного завершения повторяет старт не чаще чем раз в 30
++секунд. Настроенный webhook по-прежнему блокирует сам `telegram run`; локальный
++HTTP listener не создаётся.
++
++Штатная остановка выгружает label, поэтому `KeepAlive` его не перезапускает:
++
++```bash
++uv run health-agent telegram stop --env-file /absolute/path/health-agent/.env
++uv run health-agent telegram remove --env-file /absolute/path/health-agent/.env
++```
++
++`stop` сохраняет файлы, `remove` удаляет только два Telegram plist. Connector
++sync (`com.orange.health-agent.sync`) и reminders
++(`com.orange.health-agent.reminders`) не затрагиваются. Telegram владеет только:
++
++- `data/automation/launchd/com.orange.health-agent.telegram.plist`;
++- `~/Library/LaunchAgents/com.orange.health-agent.telegram.plist`;
++- `data/automation/telegram-service.lock`;
++- `data/automation/logs/telegram-stdout.log`, `telegram-stderr.log` и одной
++  приватной ротацией `.1` после 5 МиБ.
++
++Plist содержит только абсолютные пути, не значения env. Managed-файлы имеют
++режим `0600`, каталоги — `0700`. Singleton lock не позволяет второму wrapper
++запустить ещё один poller и сериализует ротацию логов. В логах остаются только
++короткие `status/error` строки CLI без токенов, вопросов и медицинского текста.
++
+ ## Контракты приложения
+ 
+ ```text
+@@ -128,11 +168,12 @@ webhook state и свежесть heartbeat; наличие файла токе
+ 
+ ## Что нужно для живого запуска
+ 
+-- реальная реализация `HealthQuestionService`, использующая профильные данные;
+-- реализация `HealthCommandService` для статуса источников и запуска sync;
+-- `MedicalInbox`, который сохраняет поток и вызывает медицинский importer;
+-- небольшой composition root/launchd job, создающий эти сервисы и запускающий
+-  `TelegramLongPoller.run_forever()`.
++До установки должны быть готовы локальная БД/миграции, verified bot token,
++profile binding и OpenAI responder configuration. Сначала полезно один раз
++вручную запустить `uv run health-agent telegram run`, проверить `status=running`
++и ответ в тестовом личном чате, затем остановить процесс и выполнить `install`.
++Это live-проверка владельца: автоматические тесты не читают реальные credentials,
++не загружают LaunchAgent и не обращаются к Telegram/OpenAI.
+ 
+ В тестах эти границы полностью замоканы: тестовый suite не обращается к Telegram,
+ боту, модели или живой медицинской базе.
+diff --git a/docs/superpowers/plans/2026-09-05-telegram-launchd.md b/docs/superpowers/plans/2026-09-05-telegram-launchd.md
+new file mode 100644
+index 0000000..35e9526
+--- /dev/null
++++ b/docs/superpowers/plans/2026-09-05-telegram-launchd.md
+@@ -0,0 +1,74 @@
++# Always-on Telegram LaunchAgent Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Run the existing Telegram long-poller continuously as an isolated, restart-safe macOS user LaunchAgent.
++
++**Architecture:** Add a Telegram-specific plist/lifecycle manager that reuses private filesystem and lock primitives. A hidden CLI wrapper holds the Telegram-only lock, rotates safe logs, and starts the existing `telegram run` command as a child with the selected private env file.
++
++**Tech Stack:** Python 3.13, Typer, plistlib, launchctl, subprocess, fcntl, pytest.
++
++## Global Constraints
++
++- Label is exactly `com.orange.health-agent.telegram`, separate from sync and reminder labels.
++- Plist uses absolute paths, `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=30`, and no secrets or health text.
++- Environment file is absolute, regular, non-symlink and exactly `0600`.
++- Managed directories are `0700`; plist/log/lock files are `0600`; logs retain at most one generation above 5 MiB.
++- Rotation occurs only under the Telegram singleton lock.
++- Wrapper invokes the existing `telegram run`, passes it the held lock descriptor,
++  and does not change question/capture composition.
++- Tests must not call live launchd, Telegram, OpenAI, OAuth, or real credentials.
++
++---
++
++### Task 1: Telegram-specific LaunchAgent lifecycle
++
++**Files:**
++- Create: `src/health_agent/telegram/launchd.py`
++- Create: `tests/telegram/test_launchd.py`
++
++**Interfaces:**
++- Consumes: `atomic_private_write`, `private_directory`, `reject_symlink_components`, `require_private_file`, and `GlobalRunLock` from `health_agent.automation.storage`.
++- Produces: `TELEGRAM_LABEL`, `TelegramLaunchdPaths.resolve(...)`, `TelegramLaunchdManager.render/install/status/stop/remove`, and `rotate_telegram_logs(paths)`.
++
++- [ ] Write failing tests that parse the exact plist, assert distinct label/path ownership, modes and no env content, and exercise fake-launchctl install/idempotency/reload/rollback/stop/remove.
++
++```python
++payload = plistlib.loads(manager.render().read_bytes())
++assert payload["ProgramArguments"] == [str(executable), "telegram", "service-run", "--env-file", str(env_file)]
++assert payload["KeepAlive"] is True
++assert payload["ThrottleInterval"] == 30
++assert TELEGRAM_LABEL not in {LABEL, REMINDER_LABEL}
++```
++
++- [ ] Run `uv run --offline pytest -q tests/telegram/test_launchd.py` and confirm collection fails because the module is absent.
++- [ ] Implement absolute path resolution, exact secret-free plist rendering, atomic private installed writes, exact-label launchctl lifecycle, changed-config rollback, lock-serialized log rotation, and symlink/non-regular rejection.
++- [ ] Add boundary tests for relative/public/symlink env files, hostile managed targets, lock contention, and one-generation rotation.
++- [ ] Run the focused tests, `uv run --offline ruff check src/health_agent/telegram/launchd.py tests/telegram/test_launchd.py`, and `uv run --offline mypy src`; commit.
++
++### Task 2: CLI wrapper, runbook, and complete gates
++
++**Files:**
++- Modify: `src/health_agent/cli.py`
++- Create: `tests/telegram/test_launchd_cli.py`
++- Modify: `docs/integrations/telegram.md`
++- Create: `docs/superpowers/reports/2026-09-05-telegram-launchd-report.md`
++
++**Interfaces:**
++- Consumes: Task 1 paths, manager, rotation and the existing `_current_console_script()`.
++- Produces: `telegram render/install/automation-status/stop/remove --env-file PATH` and hidden `telegram service-run --env-file PATH`.
++
++- [ ] Write failing CLI tests using fake manager, fake lock, and fake subprocess. Verify lifecycle routing, exact safe output, no live launchctl, singleton skip, private env validation, child arguments/cwd/env, lock release, and child failure propagation.
++
++```python
++result = runner.invoke(app, ["telegram", "service-run", "--env-file", str(env_file)])
++assert child.arguments == (str(executable), "telegram", "run")
++assert child.environment["HEALTH_AGENT_ENV_FILE"] == str(env_file)
++assert "SECRET" not in result.output
++```
++
++- [ ] Run `uv run --offline pytest -q tests/telegram/test_launchd_cli.py` and confirm the commands are absent.
++- [ ] Implement thin safe CLI composition. Pass an explicit child environment and cwd with `shell=False`; hold/release the singleton lock around rotation and the entire child lifetime. Map configuration, launchctl and child failures to bounded content-free messages.
++- [ ] Update the Telegram runbook with the five operator commands, owned files, restart/stop semantics, live-only validation, and distinction from connector/reminder LaunchAgents.
++- [ ] Run focused Telegram/automation/reminder tests, then full `uv run --offline pytest -q`, `uv run --offline ruff check .`, `uv run --offline mypy src`, `uv lock --check`, `git diff --check`, CLI help and plist parse smokes. Do not run install or the service wrapper outside fakes.
++- [ ] Write the implementation report, generate `.superpowers/sdd/2026-09-05-telegram-launchd/review-18d97a3..<HEAD>.diff`, self-review, and commit the final documentation/package.
+diff --git a/docs/superpowers/reports/2026-09-05-telegram-launchd-report.md b/docs/superpowers/reports/2026-09-05-telegram-launchd-report.md
+new file mode 100644
+index 0000000..d5f3bd7
+--- /dev/null
++++ b/docs/superpowers/reports/2026-09-05-telegram-launchd-report.md
+@@ -0,0 +1,51 @@
++# Always-on Telegram LaunchAgent v0.1 — implementation report
++
++Branch: `codex/v1-telegram-launchd`, base `18d97a3`.
++
++## Delivered
++
++- Dedicated `com.orange.health-agent.telegram` user LaunchAgent with
++  `RunAtLoad`, unconditional `KeepAlive`, 30-second launchd throttle, restrictive
++  umask, and absolute executable/repository/env/log paths.
++- `telegram render`, `install`, `automation-status`, `stop`, and `remove` manage
++  only the Telegram plist. Changed loaded configuration is reloaded with previous
++  plist/service rollback on failure; non-macOS and ambiguous launchctl status fail
++  with content-free errors.
++- Hidden `telegram service-run --env-file ABS` wrapper validates the private env,
++  takes a Telegram-only lock, rotates private logs, and runs the unchanged
++  existing `telegram run` using a minimal child environment. The child inherits
++  the lock descriptor, preventing an orphan child from overlapping a restart.
++- Active logs are reopened explicitly after rotation instead of inheriting the
++  pre-rotation launchd descriptor. Rotation retains one generation above 5 MiB,
++  refuses symlink/non-regular targets, and cannot race the running poller.
++- Installed/rendered plists, logs and lock are `0600`; managed roots are `0700`.
++  Plists contain no env values, token, health text, or webhook configuration.
++- Telegram long-poll composition, private binding, question/capture behavior and
++  its existing startup webhook refusal were not changed.
++
++## Verification
++
++All tests used fake launchctl/subprocess adapters, synthetic private files,
++temporary homes and the disposable test database. No real LaunchAgent, bot,
++Telegram/OpenAI request, token, OAuth, or personal health data was touched.
++
++| Gate | Result |
++| --- | --- |
++| Focused launchd/CLI tests | 16 passed |
++| Related Telegram/automation/reminder regressions | 64 passed before final hardening |
++| `uv run --offline pytest -q` | 648 passed, five existing SWIG warnings |
++| `uv run --offline ruff check .` | PASS |
++| `uv run --offline mypy src` | PASS |
++| mypy `src` plus changed tests | PASS |
++| `uv lock --check` | PASS |
++| `uv run --offline alembic heads` | one head, `0006_health_reminders` |
++| `git diff --check 18d97a3..HEAD` | PASS |
++| `health-agent telegram --help` | five lifecycle commands registered; internal wrapper hidden |
++
++## Live-only handoff
++
++After integration, the owner must use a test bot/chat for the first live smoke:
++run `telegram run` once, stop it, render and inspect the plist, install it, and
++check both `telegram automation-status` and the existing heartbeat-oriented
++`telegram status`. Stop/remove semantics were tested only through fake launchctl.
++No merge, push or live installation was performed here.
+diff --git a/docs/superpowers/specs/2026-09-05-telegram-launchd-design.md b/docs/superpowers/specs/2026-09-05-telegram-launchd-design.md
+new file mode 100644
+index 0000000..42dab04
+--- /dev/null
++++ b/docs/superpowers/specs/2026-09-05-telegram-launchd-design.md
+@@ -0,0 +1,55 @@
++# Always-on Telegram LaunchAgent v0.1
++
++Date: September 5, 2026. This slice makes the existing `health-agent telegram
++run` long-poller an explicit, always-on macOS user service. It does not change
++question answering, capture, Telegram authentication, or webhook policy.
++
++## Chosen architecture
++
++Use a dedicated `com.orange.health-agent.telegram` LaunchAgent rather than the
++four-hour connector or one-minute reminder jobs. A narrow Telegram launchd
++module owns its plist, logs, lock, and lifecycle. It reuses the existing private
++filesystem and advisory-lock primitives but cannot start, stop, or remove the
++other managed labels.
++
++The plist invokes a hidden `telegram service-run --env-file ABSOLUTE_PATH`
++wrapper through the absolute installed `health-agent` console script. The
++wrapper validates the private `0600` non-symlink environment file, takes a
++Telegram-only non-blocking lock, safely rotates the two logs, and launches the
++existing `telegram run` command with `HEALTH_AGENT_ENV_FILE` set only in the
++child environment. It holds the lock for the child lifetime and returns the
++child exit code. The child inherits the held lock descriptor, so an unexpected
++wrapper death cannot leave an unfenced orphan poller. No credential or health
++content enters arguments or plist.
++
++## LaunchAgent and lifecycle contract
++
++The plist contains only absolute executable, repository, environment-file and
++log paths. It uses `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=30`,
++`ProcessType=Background`, and `Umask=63`. `telegram run` already performs
++`getMe` identity validation and refuses configured webhooks; this slice opens no
++listener and does not weaken its bound-private-chat routing.
++
++`telegram render`, `install`, `automation-status`, `stop`, and `remove` require
++an absolute private `--env-file`. Render is inspectable and never loads a job.
++Install is idempotent, reloads changed configuration, and restores the previous
++plist/service if reload fails. Stop unloads the exact Telegram label while
++retaining files; launchd therefore does not restart it after an intentional
++stop. Remove unloads and deletes only the Telegram rendered/installed plists.
++Status reports only `loaded` or `unloaded` plus the fixed label.
++
++Rendered roots are `0700`; plist, lock, active logs and one rotated generation
++are regular `0600` files. Logs rotate above 5 MiB only while the service lock is
++held, so rotation cannot race a running poller. Runtime output remains the
++existing bounded content-free status/error lines. Symlink or non-regular
++managed targets fail closed.
++
++## Verification and exclusions
++
++Tests parse the plist and use fake launchctl/subprocess adapters, temporary
++homes, private synthetic env files, and lock contention. They cover label
++isolation, absolute paths, no secret leakage, KeepAlive/backoff, idempotent
++install/reload/rollback, stop/remove, private rotation, single instance, safe
++child environment and exit propagation. Tests never load launchd, call Telegram,
++read real credentials, or run the long-poller. Live install and delivery remain
++an explicit owner smoke test after merge.
+diff --git a/src/health_agent/automation/storage.py b/src/health_agent/automation/storage.py
+index 09eebf7..85dafd0 100644
+--- a/src/health_agent/automation/storage.py
++++ b/src/health_agent/automation/storage.py
+@@ -145,3 +145,9 @@ class GlobalRunLock:
+         fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+         os.close(self._descriptor)
+         self._descriptor = None
++
++    def fileno(self) -> int:
++        """Expose the held descriptor so a supervised child can retain the lock."""
++        if self._descriptor is None:
++            raise RuntimeError("lock_not_acquired")
++        return self._descriptor
+diff --git a/src/health_agent/cli.py b/src/health_agent/cli.py
+index ce6ca6c..aa8dbe3 100644
+--- a/src/health_agent/cli.py
++++ b/src/health_agent/cli.py
+@@ -17,7 +17,11 @@ from health_agent.automation.launchd import (
+ )
+ from health_agent.automation.registry import configured_job_adapters
+ from health_agent.automation.runner import AutomationRunner, SubprocessJobExecutor
+-from health_agent.automation.storage import AutomationState, GlobalRunLock
++from health_agent.automation.storage import (
++    AutomationState,
++    GlobalRunLock,
++    require_private_file,
++)
+ from health_agent.config import Settings
+ from health_agent.db import build_engine, session_scope
+ from health_agent.gmail.api import GoogleGmailGateway
+@@ -84,6 +88,12 @@ from health_agent.staging import (
+ )
+ from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
+ from health_agent.telegram.api import TelegramBotAPI
++from health_agent.telegram.launchd import (
++    TELEGRAM_LABEL,
++    TelegramLaunchdManager,
++    TelegramLaunchdPaths,
++    TelegramServiceRunner,
++)
+ from health_agent.telegram.messenger import TelegramMessenger
+ from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
+ from health_agent.vault import FileVault
+@@ -1171,6 +1181,67 @@ def run_telegram() -> None:
+         raise typer.Exit(code=1) from None
+ 
+ 
++@telegram_app.command("render")
++def render_telegram_automation(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Render the inspectable always-on Telegram LaunchAgent plist."""
++    _run_telegram_launchd("render", env_file)
++
++
++@telegram_app.command("install")
++def install_telegram_automation(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Install and load the always-on Telegram user LaunchAgent."""
++    _run_telegram_launchd("install", env_file)
++
++
++@telegram_app.command("automation-status")
++def telegram_automation_status(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Report whether the Telegram LaunchAgent is loaded."""
++    _run_telegram_launchd("status", env_file)
++
++
++@telegram_app.command("stop")
++def stop_telegram_automation(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Unload Telegram automation while retaining managed files."""
++    _run_telegram_launchd("stop", env_file)
++
++
++@telegram_app.command("remove")
++def remove_telegram_automation(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Unload Telegram automation and remove only its managed plists."""
++    _run_telegram_launchd("remove", env_file)
++
++
++@telegram_app.command("service-run", hidden=True)
++def run_telegram_service(
++    env_file: Annotated[Path, typer.Option("--env-file")],
++) -> None:
++    """Launchd-only singleton wrapper around the existing Telegram runner."""
++    try:
++        result = _telegram_service_runner(env_file).run()
++    except Exception:  # noqa: BLE001 -- paths, settings and child details stay private
++        typer.echo(
++            "status=blocked error=telegram_service_configuration_failed", err=True
++        )
++        raise typer.Exit(code=1) from None
++    if result.status == "already_running":
++        typer.echo("status=skipped safe_error=already_running")
++        return
++    if result.returncode != 0:
++        typer.echo("status=blocked error=telegram_service_failed", err=True)
++        raise typer.Exit(code=result.returncode)
++    typer.echo("status=stopped")
++
++
+ @telegram_app.command("bind")
+ def bind_telegram_identity(
+     profile_id: UUID,
+@@ -1554,6 +1625,53 @@ def _automation_manager_or_exit(env_file: Path) -> LaunchdManager:
+         raise typer.Exit(code=1) from None
+ 
+ 
++def _telegram_launchd_paths(env_file: Path) -> TelegramLaunchdPaths:
++    repository_root = Path(__file__).resolve().parents[2]
++    expanded = env_file.expanduser()
++    require_private_file(expanded)
++    resolved = expanded.resolve()
++    settings = Settings(_env_file=resolved)  # type: ignore[call-arg]
++    automation_root = _repository_relative(
++        repository_root, settings.automation_root
++    )
++    return TelegramLaunchdPaths.resolve(
++        automation_root=automation_root,
++        executable=_current_console_script(),
++        environment_file=resolved,
++        working_directory=repository_root,
++    )
++
++
++def _telegram_launchd_manager(env_file: Path) -> TelegramLaunchdManager:
++    return TelegramLaunchdManager(_telegram_launchd_paths(env_file))
++
++
++def _telegram_service_runner(env_file: Path) -> TelegramServiceRunner:
++    return TelegramServiceRunner(_telegram_launchd_paths(env_file))
++
++
++def _run_telegram_launchd(action: str, env_file: Path) -> None:
++    try:
++        manager = _telegram_launchd_manager(env_file)
++        if action == "render":
++            manager.render()
++            status = "rendered"
++        elif action == "install":
++            status = manager.install()
++        elif action == "status":
++            status = manager.status()
++        elif action == "stop":
++            status = manager.stop()
++        elif action == "remove":
++            status = manager.remove()
++        else:
++            raise ValueError("invalid_launchd_action")
++    except Exception:  # noqa: BLE001 -- never expose credentials or private paths
++        typer.echo("status=failed safe_error=telegram_launchd_failed", err=True)
++        raise typer.Exit(code=1) from None
++    typer.echo(f"status={status} label={TELEGRAM_LABEL}")
++
++
+ def _reminder_engine():
+     return build_engine(Settings())
+ 
+diff --git a/src/health_agent/telegram/launchd.py b/src/health_agent/telegram/launchd.py
+new file mode 100644
+index 0000000..5d2f032
+--- /dev/null
++++ b/src/health_agent/telegram/launchd.py
+@@ -0,0 +1,410 @@
++"""Always-on, narrowly-owned macOS LaunchAgent for the Telegram poller."""
++
++from __future__ import annotations
++
++import os
++import plistlib
++import stat
++import subprocess
++import sys
++import tempfile
++from dataclasses import dataclass
++from pathlib import Path
++from typing import BinaryIO, Literal, Protocol
++
++from health_agent.automation.storage import (
++    GlobalRunLock,
++    atomic_private_write,
++    private_directory,
++    reject_symlink_components,
++    require_private_file,
++)
++
++TELEGRAM_LABEL = "com.orange.health-agent.telegram"
++TELEGRAM_THROTTLE_SECONDS = 30
++TELEGRAM_LOG_ROTATE_BYTES = 5_242_880
++_MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
++
++
++class TelegramLaunchdError(RuntimeError):
++    """Content-free launchd/service failure safe for the CLI boundary."""
++
++
++class Launchctl(Protocol):
++    def run(self, arguments: tuple[str, ...]) -> int: ...
++
++
++class ChildProcess(Protocol):
++    def run(
++        self,
++        arguments: tuple[str, ...],
++        *,
++        cwd: Path,
++        environment: dict[str, str],
++        lock_descriptor: int,
++    ) -> int: ...
++
++
++class SystemLaunchctl:
++    def run(self, arguments: tuple[str, ...]) -> int:
++        try:
++            completed = subprocess.run(
++                ("launchctl", *arguments),
++                shell=False,
++                capture_output=True,
++                text=True,
++                check=False,
++            )
++        except OSError as error:
++            raise TelegramLaunchdError("launchctl_unavailable") from error
++        return completed.returncode
++
++
++class SystemChildProcess:
++    """Run the existing safe CLI against the post-rotation active log files."""
++
++    def __init__(self, paths: TelegramLaunchdPaths) -> None:
++        self.paths = paths
++
++    def run(
++        self,
++        arguments: tuple[str, ...],
++        *,
++        cwd: Path,
++        environment: dict[str, str],
++        lock_descriptor: int,
++    ) -> int:
++        try:
++            with (
++                _open_private_log(self.paths.stdout_log) as stdout,
++                _open_private_log(self.paths.stderr_log) as stderr,
++            ):
++                completed = subprocess.run(
++                    arguments,
++                    cwd=cwd,
++                    env=environment,
++                    stdout=stdout,
++                    stderr=stderr,
++                    pass_fds=(lock_descriptor,),
++                    shell=False,
++                    check=False,
++                )
++        except OSError as error:
++            raise TelegramLaunchdError("telegram_child_unavailable") from error
++        return completed.returncode
++
++
++@dataclass(frozen=True, slots=True)
++class TelegramLaunchdPaths:
++    automation_root: Path
++    executable: Path
++    environment_file: Path
++    working_directory: Path
++    rendered_plist: Path
++    installed_plist: Path
++    stdout_log: Path
++    stderr_log: Path
++    lock_file: Path
++
++    @classmethod
++    def resolve(
++        cls,
++        *,
++        automation_root: Path,
++        executable: Path,
++        environment_file: Path,
++        working_directory: Path,
++        home: Path | None = None,
++    ) -> TelegramLaunchdPaths:
++        expanded_root = automation_root.expanduser()
++        reject_symlink_components(expanded_root)
++        root = expanded_root.resolve()
++        executable_path = executable.expanduser().resolve()
++        environment = require_private_file(environment_file.expanduser()).resolve()
++        working = working_directory.expanduser().resolve()
++        if (
++            not executable_path.is_absolute()
++            or not executable_path.is_file()
++            or not os.access(executable_path, os.X_OK)
++        ):
++            raise ValueError("executable_unavailable")
++        if not working.is_absolute() or not working.is_dir():
++            raise ValueError("working_directory_unavailable")
++        owner_home = (home or Path.home()).expanduser().resolve()
++        return cls(
++            automation_root=root,
++            executable=executable_path,
++            environment_file=environment,
++            working_directory=working,
++            rendered_plist=root / "launchd" / f"{TELEGRAM_LABEL}.plist",
++            installed_plist=(
++                owner_home / "Library" / "LaunchAgents" / f"{TELEGRAM_LABEL}.plist"
++            ),
++            stdout_log=root / "logs" / "telegram-stdout.log",
++            stderr_log=root / "logs" / "telegram-stderr.log",
++            lock_file=root / "telegram-service.lock",
++        )
++
++
++@dataclass(frozen=True, slots=True)
++class TelegramServiceResult:
++    status: Literal["stopped", "failed", "already_running"]
++    returncode: int
++
++
++class TelegramServiceRunner:
++    """Hold the singleton lock while the existing `telegram run` child lives."""
++
++    def __init__(
++        self,
++        paths: TelegramLaunchdPaths,
++        *,
++        child: ChildProcess | None = None,
++        lock: GlobalRunLock | None = None,
++    ) -> None:
++        self.paths = paths
++        self.child = child or SystemChildProcess(paths)
++        self.lock = lock or GlobalRunLock(paths.lock_file)
++
++    def run(self) -> TelegramServiceResult:
++        if not self.lock.acquire():
++            return TelegramServiceResult("already_running", 0)
++        try:
++            _rotate_telegram_logs_locked(self.paths)
++            returncode = self.child.run(
++                (str(self.paths.executable), "telegram", "run"),
++                cwd=self.paths.working_directory,
++                environment={
++                    "HEALTH_AGENT_ENV_FILE": str(self.paths.environment_file),
++                    "HOME": str(Path.home()),
++                    "PATH": _MINIMAL_PATH,
++                },
++                lock_descriptor=self.lock.fileno(),
++            )
++        finally:
++            self.lock.release()
++        status: Literal["stopped", "failed"] = (
++            "stopped" if returncode == 0 else "failed"
++        )
++        return TelegramServiceResult(status, returncode)
++
++
++class TelegramLaunchdManager:
++    def __init__(
++        self,
++        paths: TelegramLaunchdPaths,
++        *,
++        launchctl: Launchctl | None = None,
++        platform: str | None = None,
++        uid: int | None = None,
++    ) -> None:
++        self.paths = paths
++        self.launchctl = launchctl or SystemLaunchctl()
++        self.platform = platform or sys.platform
++        self.uid = os.getuid() if uid is None else uid
++
++    @property
++    def domain(self) -> str:
++        return f"gui/{self.uid}"
++
++    @property
++    def service(self) -> str:
++        return f"{self.domain}/{TELEGRAM_LABEL}"
++
++    def render(self) -> Path:
++        private_directory(self.paths.automation_root)
++        private_directory(self.paths.rendered_plist.parent)
++        private_directory(self.paths.stdout_log.parent)
++        payload = {
++            "KeepAlive": True,
++            "Label": TELEGRAM_LABEL,
++            "ProcessType": "Background",
++            "ProgramArguments": [
++                str(self.paths.executable),
++                "telegram",
++                "service-run",
++                "--env-file",
++                str(self.paths.environment_file),
++            ],
++            "RunAtLoad": True,
++            "StandardErrorPath": str(self.paths.stderr_log),
++            "StandardOutPath": str(self.paths.stdout_log),
++            "ThrottleInterval": TELEGRAM_THROTTLE_SECONDS,
++            "Umask": 0o077,
++            "WorkingDirectory": str(self.paths.working_directory),
++        }
++        atomic_private_write(
++            self.paths.rendered_plist,
++            plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True),
++        )
++        return self.paths.rendered_plist
++
++    def is_loaded(self) -> bool:
++        self._require_macos()
++        result = self.launchctl.run(("print", self.service))
++        if result == 0:
++            return True
++        if result == 113:
++            return False
++        raise TelegramLaunchdError("launchctl_status_failed")
++
++    def install(self) -> str:
++        self._require_macos()
++        rendered = self.render()
++        content = rendered.read_bytes()
++        previous = self._installed_bytes()
++        loaded = self.is_loaded()
++        if loaded and previous == content:
++            return "installed"
++        _write_installed(self.paths.installed_plist, content)
++        if loaded and self.launchctl.run(("bootout", self.service)) != 0:
++            self._restore(previous)
++            raise TelegramLaunchdError("launchctl_bootout_failed")
++        try:
++            rotate_telegram_logs(self.paths)
++        except Exception:
++            self._rollback(previous, loaded)
++            raise
++        if (
++            self.launchctl.run(
++                ("bootstrap", self.domain, str(self.paths.installed_plist))
++            )
++            != 0
++        ):
++            self._rollback(previous, loaded)
++            raise TelegramLaunchdError("launchctl_bootstrap_failed")
++        return "installed"
++
++    def status(self) -> str:
++        return "loaded" if self.is_loaded() else "unloaded"
++
++    def stop(self) -> str:
++        self._require_macos()
++        if not self.is_loaded():
++            return "stopped"
++        if self.launchctl.run(("bootout", self.service)) != 0:
++            raise TelegramLaunchdError("launchctl_bootout_failed")
++        return "stopped"
++
++    def remove(self) -> str:
++        self._require_macos()
++        for path in (self.paths.installed_plist, self.paths.rendered_plist):
++            reject_symlink_components(path)
++            if path.is_symlink() or (path.exists() and not path.is_file()):
++                raise TelegramLaunchdError("unsafe_plist_path")
++        self.stop()
++        for path in (self.paths.installed_plist, self.paths.rendered_plist):
++            path.unlink(missing_ok=True)
++        return "removed"
++
++    def _require_macos(self) -> None:
++        if self.platform != "darwin":
++            raise TelegramLaunchdError("launchd_requires_macos")
++
++    def _installed_bytes(self) -> bytes | None:
++        path = self.paths.installed_plist
++        reject_symlink_components(path)
++        if path.is_symlink() or (path.exists() and not path.is_file()):
++            raise TelegramLaunchdError("unsafe_plist_path")
++        if not path.exists():
++            return None
++        if stat.S_IMODE(path.stat().st_mode) != 0o600:
++            raise TelegramLaunchdError("unsafe_plist_path")
++        return path.read_bytes()
++
++    def _restore(self, content: bytes | None) -> None:
++        path = self.paths.installed_plist
++        if content is None:
++            if path.exists() and path.is_file() and not path.is_symlink():
++                path.unlink()
++            return
++        _write_installed(path, content)
++
++    def _rollback(self, previous: bytes | None, was_loaded: bool) -> None:
++        self._restore(previous)
++        if was_loaded and previous is not None:
++            self.launchctl.run(
++                ("bootstrap", self.domain, str(self.paths.installed_plist))
++            )
++
++
++def rotate_telegram_logs(paths: TelegramLaunchdPaths) -> None:
++    """Rotate only after acquiring the same lock held for the poller's lifetime."""
++
++    lock = GlobalRunLock(paths.lock_file)
++    if not lock.acquire():
++        raise TelegramLaunchdError("telegram_service_already_running")
++    try:
++        _rotate_telegram_logs_locked(paths)
++    finally:
++        lock.release()
++
++
++def _rotate_telegram_logs_locked(paths: TelegramLaunchdPaths) -> None:
++    private_directory(paths.stdout_log.parent)
++    for path in (paths.stdout_log, paths.stderr_log):
++        rotated = path.with_name(f"{path.name}.1")
++        for candidate in (path, rotated):
++            if candidate.is_symlink() or (
++                candidate.exists() and not candidate.is_file()
++            ):
++                raise TelegramLaunchdError("unsafe_log_path")
++        if rotated.exists():
++            rotated.chmod(0o600)
++        if path.exists() and path.stat().st_size > TELEGRAM_LOG_ROTATE_BYTES:
++            if rotated.exists():
++                rotated.unlink()
++            os.replace(path, rotated)
++            rotated.chmod(0o600)
++        _create_private_log(path)
++
++
++def _create_private_log(path: Path) -> None:
++    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
++    if hasattr(os, "O_NOFOLLOW"):
++        flags |= os.O_NOFOLLOW
++    try:
++        descriptor = os.open(path, flags, 0o600)
++    except OSError as error:
++        raise TelegramLaunchdError("unsafe_log_path") from error
++    try:
++        os.fchmod(descriptor, 0o600)
++    finally:
++        os.close(descriptor)
++
++
++def _open_private_log(path: Path) -> BinaryIO:
++    flags = os.O_APPEND | os.O_WRONLY
++    if hasattr(os, "O_NOFOLLOW"):
++        flags |= os.O_NOFOLLOW
++    try:
++        descriptor = os.open(path, flags)
++        info = os.fstat(descriptor)
++        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
++            raise TelegramLaunchdError("unsafe_log_path")
++        return os.fdopen(descriptor, "ab")
++    except BaseException:
++        if "descriptor" in locals():
++            os.close(descriptor)
++        raise
++
++
++def _write_installed(path: Path, content: bytes) -> None:
++    reject_symlink_components(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    if path.exists() or path.is_symlink():
++        info = path.lstat()
++        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
++            raise TelegramLaunchdError("unsafe_plist_path")
++    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
++    temporary = Path(name)
++    try:
++        os.fchmod(descriptor, 0o600)
++        with os.fdopen(descriptor, "wb") as handle:
++            handle.write(content)
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.replace(temporary, path)
++        path.chmod(0o600)
++    finally:
++        temporary.unlink(missing_ok=True)
+diff --git a/tests/telegram/test_launchd.py b/tests/telegram/test_launchd.py
+new file mode 100644
+index 0000000..0d84b56
+--- /dev/null
++++ b/tests/telegram/test_launchd.py
+@@ -0,0 +1,359 @@
++from __future__ import annotations
++
++import os
++import plistlib
++import stat
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from health_agent.automation.launchd import LABEL as CONNECTOR_LABEL
++from health_agent.automation.storage import GlobalRunLock
++from health_agent.reminders.launchd import REMINDER_LABEL
++from health_agent.telegram.launchd import (
++    TELEGRAM_LABEL,
++    TELEGRAM_LOG_ROTATE_BYTES,
++    TelegramLaunchdError,
++    TelegramLaunchdManager,
++    TelegramLaunchdPaths,
++    TelegramServiceRunner,
++    rotate_telegram_logs,
++)
++
++
++class FakeLaunchctl:
++    def __init__(self, *, loaded: bool = False) -> None:
++        self.loaded = loaded
++        self.calls: list[tuple[str, ...]] = []
++        self.fail_bootstrap = False
++        self.fail_bootout = False
++        self.status_code: int | None = None
++
++    def run(self, arguments: tuple[str, ...]) -> int:
++        self.calls.append(arguments)
++        if arguments[0] == "print":
++            return self.status_code if self.status_code is not None else (0 if self.loaded else 113)
++        if arguments[0] == "bootstrap":
++            if self.fail_bootstrap:
++                return 5
++            self.loaded = True
++            return 0
++        if arguments[0] == "bootout":
++            if self.fail_bootout:
++                return 5
++            self.loaded = False
++            return 0
++        return 1
++
++
++def _paths(tmp_path: Path, *, env_name: str = "private.env") -> TelegramLaunchdPaths:
++    executable = tmp_path / "bin" / "health-agent"
++    executable.parent.mkdir(parents=True, exist_ok=True)
++    executable.write_text("executable", encoding="utf-8")
++    executable.chmod(0o700)
++    environment_file = tmp_path / env_name
++    environment_file.write_text("OPENAI_API_KEY=SECRET\n", encoding="utf-8")
++    environment_file.chmod(0o600)
++    working_directory = tmp_path / "repo"
++    working_directory.mkdir(exist_ok=True)
++    home = tmp_path / "home"
++    home.mkdir(exist_ok=True)
++    return TelegramLaunchdPaths.resolve(
++        automation_root=working_directory / "data" / "automation",
++        executable=executable,
++        environment_file=environment_file,
++        working_directory=working_directory,
++        home=home,
++    )
++
++
++def test_render_is_exact_private_secret_free_and_isolated(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    rendered = TelegramLaunchdManager(paths, platform="darwin", uid=501).render()
++    payload = plistlib.loads(rendered.read_bytes())
++
++    assert payload == {
++        "KeepAlive": True,
++        "Label": TELEGRAM_LABEL,
++        "ProcessType": "Background",
++        "ProgramArguments": [
++            str(paths.executable),
++            "telegram",
++            "service-run",
++            "--env-file",
++            str(paths.environment_file),
++        ],
++        "RunAtLoad": True,
++        "StandardErrorPath": str(paths.stderr_log),
++        "StandardOutPath": str(paths.stdout_log),
++        "ThrottleInterval": 30,
++        "Umask": 0o077,
++        "WorkingDirectory": str(paths.working_directory),
++    }
++    assert TELEGRAM_LABEL not in {CONNECTOR_LABEL, REMINDER_LABEL}
++    assert b"SECRET" not in rendered.read_bytes()
++    assert stat.S_IMODE(rendered.stat().st_mode) == 0o600
++    assert stat.S_IMODE(paths.automation_root.stat().st_mode) == 0o700
++    assert paths.lock_file.name == "telegram-service.lock"
++    assert paths.stdout_log.name == "telegram-stdout.log"
++
++
++def test_install_status_stop_remove_are_idempotent_and_narrow(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    launchctl = FakeLaunchctl()
++    manager = TelegramLaunchdManager(
++        paths, launchctl=launchctl, platform="darwin", uid=501
++    )
++    neighbor = paths.installed_plist.parent / f"{REMINDER_LABEL}.plist"
++    neighbor.parent.mkdir(parents=True)
++    neighbor.write_text("keep", encoding="utf-8")
++
++    assert manager.install() == "installed"
++    assert manager.install() == "installed"
++    assert [call[0] for call in launchctl.calls].count("bootstrap") == 1
++    assert manager.status() == "loaded"
++    assert stat.S_IMODE(paths.installed_plist.stat().st_mode) == 0o600
++    assert manager.stop() == "stopped"
++    assert manager.status() == "unloaded"
++    assert manager.remove() == "removed"
++    assert not paths.rendered_plist.exists()
++    assert not paths.installed_plist.exists()
++    assert neighbor.read_text(encoding="utf-8") == "keep"
++
++
++def test_changed_loaded_configuration_reloads(tmp_path: Path) -> None:
++    launchctl = FakeLaunchctl()
++    first = _paths(tmp_path, env_name="first.env")
++    TelegramLaunchdManager(first, launchctl=launchctl, platform="darwin").install()
++    second_env = tmp_path / "second.env"
++    second_env.write_text("SAFE=1\n", encoding="utf-8")
++    second_env.chmod(0o600)
++    second = TelegramLaunchdPaths.resolve(
++        automation_root=first.automation_root,
++        executable=first.executable,
++        environment_file=second_env,
++        working_directory=first.working_directory,
++        home=tmp_path / "home",
++    )
++
++    TelegramLaunchdManager(second, launchctl=launchctl, platform="darwin").install()
++
++    assert [call[0] for call in launchctl.calls].count("bootout") == 1
++    assert [call[0] for call in launchctl.calls].count("bootstrap") == 2
++    assert plistlib.loads(second.installed_plist.read_bytes())["ProgramArguments"][-1] == str(second_env)
++
++
++def test_failed_changed_reload_restores_previous_loaded_service(tmp_path: Path) -> None:
++    launchctl = FakeLaunchctl()
++    first = _paths(tmp_path, env_name="first.env")
++    manager = TelegramLaunchdManager(first, launchctl=launchctl, platform="darwin")
++    manager.install()
++    previous = first.installed_plist.read_bytes()
++    second_env = tmp_path / "second.env"
++    second_env.write_text("SAFE=1\n", encoding="utf-8")
++    second_env.chmod(0o600)
++    second = TelegramLaunchdPaths.resolve(
++        automation_root=first.automation_root,
++        executable=first.executable,
++        environment_file=second_env,
++        working_directory=first.working_directory,
++        home=tmp_path / "home",
++    )
++    failing = TelegramLaunchdManager(second, launchctl=launchctl, platform="darwin")
++    original_run = launchctl.run
++    bootstrap_attempts = 0
++
++    def fail_new_bootstrap(arguments: tuple[str, ...]) -> int:
++        nonlocal bootstrap_attempts
++        if arguments[0] == "bootstrap":
++            bootstrap_attempts += 1
++            if bootstrap_attempts == 1:
++                return 5
++        return original_run(arguments)
++
++    launchctl.run = fail_new_bootstrap  # type: ignore[method-assign]
++    with pytest.raises(TelegramLaunchdError, match="launchctl_bootstrap_failed"):
++        failing.install()
++
++    assert first.installed_plist.read_bytes() == previous
++    assert launchctl.loaded
++
++
++def test_status_unknown_failure_and_platform_errors_are_not_masked(tmp_path: Path) -> None:
++    launchctl = FakeLaunchctl()
++    launchctl.status_code = 5
++    manager = TelegramLaunchdManager(
++        _paths(tmp_path), launchctl=launchctl, platform="darwin"
++    )
++    with pytest.raises(TelegramLaunchdError, match="launchctl_status_failed"):
++        manager.status()
++    linux = TelegramLaunchdManager(_paths(tmp_path / "linux"), platform="linux")
++    assert linux.render().exists()
++    with pytest.raises(TelegramLaunchdError, match="launchd_requires_macos"):
++        linux.install()
++
++
++def test_paths_reject_relative_public_and_symlinked_environment(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    public = tmp_path / "public.env"
++    public.write_text("SECRET=1", encoding="utf-8")
++    public.chmod(0o644)
++    linked = tmp_path / "linked.env"
++    linked.symlink_to(paths.environment_file)
++    common = {
++        "automation_root": paths.automation_root,
++        "executable": paths.executable,
++        "working_directory": paths.working_directory,
++    }
++    with pytest.raises(ValueError, match="env_file_not_absolute"):
++        TelegramLaunchdPaths.resolve(environment_file=Path("relative.env"), **common)
++    with pytest.raises(ValueError, match="env_file_must_be_private"):
++        TelegramLaunchdPaths.resolve(environment_file=public, **common)
++    with pytest.raises((RuntimeError, ValueError), match="unsafe_path"):
++        TelegramLaunchdPaths.resolve(environment_file=linked, **common)
++
++
++def test_managed_plists_and_logs_fail_closed_on_hostile_targets(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    outside = tmp_path / "outside"
++    outside.write_text("keep", encoding="utf-8")
++    paths.rendered_plist.parent.mkdir(parents=True)
++    paths.rendered_plist.symlink_to(outside)
++    with pytest.raises(RuntimeError, match="unsafe_path"):
++        TelegramLaunchdManager(paths, platform="darwin").render()
++    paths.rendered_plist.unlink()
++    paths.stdout_log.parent.mkdir(parents=True, exist_ok=True)
++    paths.stdout_log.symlink_to(outside)
++    with pytest.raises(TelegramLaunchdError, match="unsafe_log_path"):
++        rotate_telegram_logs(paths)
++    assert outside.read_text(encoding="utf-8") == "keep"
++
++
++def test_loaded_install_rejects_non_private_managed_plist(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    launchctl = FakeLaunchctl()
++    manager = TelegramLaunchdManager(
++        paths, launchctl=launchctl, platform="darwin"
++    )
++    manager.install()
++    paths.installed_plist.chmod(0o644)
++
++    with pytest.raises(TelegramLaunchdError, match="unsafe_plist_path"):
++        manager.install()
++
++
++def test_log_rotation_is_private_bounded_and_refuses_running_service(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    paths.stdout_log.parent.mkdir(parents=True)
++    paths.stdout_log.write_bytes(b"x" * (TELEGRAM_LOG_ROTATE_BYTES + 1))
++    paths.stderr_log.write_bytes(b"small")
++    old = paths.stdout_log.with_name("telegram-stdout.log.1")
++    old.write_text("old", encoding="utf-8")
++    paths.stderr_log.with_name("telegram-stderr.log.1").write_text(
++        "old", encoding="utf-8"
++    )
++    paths.stderr_log.with_name("telegram-stderr.log.1").chmod(0o644)
++
++    rotate_telegram_logs(paths)
++
++    assert paths.stdout_log.stat().st_size == 0
++    assert old.stat().st_size == TELEGRAM_LOG_ROTATE_BYTES + 1
++    assert paths.stderr_log.read_bytes() == b"small"
++    for path in (
++        paths.stdout_log,
++        paths.stderr_log,
++        old,
++        paths.stderr_log.with_name("telegram-stderr.log.1"),
++        paths.lock_file,
++    ):
++        assert stat.S_IMODE(path.stat().st_mode) == 0o600
++    held = GlobalRunLock(paths.lock_file)
++    assert held.acquire()
++    try:
++        with pytest.raises(TelegramLaunchdError, match="telegram_service_already_running"):
++            rotate_telegram_logs(paths)
++    finally:
++        held.release()
++
++
++def test_runner_holds_singleton_uses_minimal_env_and_propagates_exit(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++    calls: list[tuple[tuple[str, ...], Path, dict[str, str]]] = []
++
++    class Child:
++        def run(
++            self,
++            arguments: tuple[str, ...],
++            *,
++            cwd: Path,
++            environment: dict[str, str],
++            lock_descriptor: int,
++        ) -> int:
++            calls.append((arguments, cwd, environment))
++            assert lock_descriptor >= 0
++            competing = TelegramServiceRunner(paths, child=self)
++            assert competing.run().status == "already_running"
++            return 7
++
++    result = TelegramServiceRunner(paths, child=Child()).run()
++
++    assert result.status == "failed" and result.returncode == 7
++    arguments, cwd, environment = calls[0]
++    assert arguments == (str(paths.executable), "telegram", "run")
++    assert cwd == paths.working_directory
++    assert environment == {
++        "HEALTH_AGENT_ENV_FILE": str(paths.environment_file),
++        "HOME": str(Path.home()),
++        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
++    }
++    retry = TelegramServiceRunner(paths, child=Child()).run()
++    assert retry.status == "failed"
++
++
++def test_system_child_reopens_active_logs_after_rotation(
++    tmp_path: Path, monkeypatch
++) -> None:
++    paths = _paths(tmp_path)
++    paths.stdout_log.parent.mkdir(parents=True)
++    paths.stdout_log.write_bytes(b"x" * (TELEGRAM_LOG_ROTATE_BYTES + 1))
++    captured: dict[str, object] = {}
++
++    def run(*arguments, **kwargs):
++        captured["arguments"] = arguments
++        captured.update(kwargs)
++        stdout_info = os.fstat(kwargs["stdout"].fileno())
++        stderr_info = os.fstat(kwargs["stderr"].fileno())
++        captured["stdout_identity"] = (stdout_info.st_dev, stdout_info.st_ino)
++        captured["stderr_identity"] = (stderr_info.st_dev, stderr_info.st_ino)
++        return SimpleNamespace(returncode=0)
++
++    monkeypatch.setattr("health_agent.telegram.launchd.subprocess.run", run)
++    result = TelegramServiceRunner(paths).run()
++
++    assert result.status == "stopped"
++    stdout_path = paths.stdout_log.stat()
++    stderr_path = paths.stderr_log.stat()
++    assert captured["stdout_identity"] == (stdout_path.st_dev, stdout_path.st_ino)
++    assert captured["stderr_identity"] == (stderr_path.st_dev, stderr_path.st_ino)
++    assert captured["shell"] is False
++    assert captured["pass_fds"]
++    assert paths.stdout_log.with_name("telegram-stdout.log.1").stat().st_size == (
++        TELEGRAM_LOG_ROTATE_BYTES + 1
++    )
++
++
++def test_runner_releases_lock_when_child_raises(tmp_path: Path) -> None:
++    paths = _paths(tmp_path)
++
++    class FailingChild:
++        def run(self, *_args, **_kwargs) -> int:
++            raise OSError("private child details")
++
++    class SuccessfulChild:
++        def run(self, *_args, **_kwargs) -> int:
++            return 0
++
++    with pytest.raises(OSError, match="private child details"):
++        TelegramServiceRunner(paths, child=FailingChild()).run()
++    assert TelegramServiceRunner(paths, child=SuccessfulChild()).run().status == "stopped"
+diff --git a/tests/telegram/test_launchd_cli.py b/tests/telegram/test_launchd_cli.py
+new file mode 100644
+index 0000000..e216cb5
+--- /dev/null
++++ b/tests/telegram/test_launchd_cli.py
+@@ -0,0 +1,155 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from typer.testing import CliRunner
++
++from health_agent import cli
++from health_agent.telegram.launchd import TELEGRAM_LABEL, TelegramServiceResult
++
++
++class Manager:
++    def __init__(self, tmp_path: Path) -> None:
++        self.tmp_path = tmp_path
++        self.calls: list[str] = []
++
++    def render(self) -> Path:
++        self.calls.append("render")
++        return self.tmp_path / f"{TELEGRAM_LABEL}.plist"
++
++    def install(self) -> str:
++        self.calls.append("install")
++        return "installed"
++
++    def status(self) -> str:
++        self.calls.append("status")
++        return "loaded"
++
++    def stop(self) -> str:
++        self.calls.append("stop")
++        return "stopped"
++
++    def remove(self) -> str:
++        self.calls.append("remove")
++        return "removed"
++
++
++def test_launchd_commands_route_to_exact_manager_without_live_launchctl(
++    monkeypatch, tmp_path: Path
++) -> None:
++    manager = Manager(tmp_path)
++    received: list[Path] = []
++
++    def build(path: Path) -> Manager:
++        received.append(path)
++        return manager
++
++    monkeypatch.setattr(cli, "_telegram_launchd_manager", build, raising=False)
++    runner = CliRunner()
++    for command, expected in (
++        ("render", "rendered"),
++        ("install", "installed"),
++        ("automation-status", "loaded"),
++        ("stop", "stopped"),
++        ("remove", "removed"),
++    ):
++        result = runner.invoke(
++            cli.app,
++            ["telegram", command, "--env-file", str(tmp_path / "private.env")],
++        )
++        assert result.exit_code == 0, result.output
++        assert result.stdout.strip() == f"status={expected} label={TELEGRAM_LABEL}"
++    assert manager.calls == ["render", "install", "status", "stop", "remove"]
++    assert received == [tmp_path / "private.env"] * 5
++
++
++def test_service_run_reports_singleton_and_safe_child_outcomes(
++    monkeypatch, tmp_path: Path
++) -> None:
++    results = iter(
++        (
++            TelegramServiceResult("already_running", 0),
++            TelegramServiceResult("stopped", 0),
++            TelegramServiceResult("failed", 7),
++        )
++    )
++    received: list[Path] = []
++
++    class Service:
++        def run(self) -> TelegramServiceResult:
++            return next(results)
++
++    def build(path: Path) -> Service:
++        received.append(path)
++        return Service()
++
++    monkeypatch.setattr(cli, "_telegram_service_runner", build, raising=False)
++    runner = CliRunner()
++    command = [
++        "telegram",
++        "service-run",
++        "--env-file",
++        str(tmp_path / "private.env"),
++    ]
++
++    duplicate = runner.invoke(cli.app, command)
++    stopped = runner.invoke(cli.app, command)
++    failed = runner.invoke(cli.app, command)
++
++    assert duplicate.exit_code == 0
++    assert duplicate.stdout.strip() == "status=skipped safe_error=already_running"
++    assert stopped.exit_code == 0 and stopped.stdout.strip() == "status=stopped"
++    assert failed.exit_code == 7
++    assert failed.stderr.strip() == "status=blocked error=telegram_service_failed"
++    assert received == [tmp_path / "private.env"] * 3
++
++
++def test_configuration_and_lifecycle_failures_are_content_free(
++    monkeypatch, tmp_path: Path
++) -> None:
++    secret = "private-token-and-medical-text"
++
++    def fail(*_args, **_kwargs):
++        raise ValueError(secret)
++
++    monkeypatch.setattr(cli, "_telegram_launchd_manager", fail, raising=False)
++    monkeypatch.setattr(cli, "_telegram_service_runner", fail, raising=False)
++    runner = CliRunner()
++    env_file = tmp_path / "private.env"
++    for command, expected in (
++        ("render", "status=failed safe_error=telegram_launchd_failed"),
++        ("service-run", "status=blocked error=telegram_service_configuration_failed"),
++    ):
++        result = runner.invoke(
++            cli.app,
++            ["telegram", command, "--env-file", str(env_file)],
++        )
++        assert result.exit_code == 1
++        assert expected in result.stderr
++        assert secret not in result.output
++
++
++def test_real_component_builder_rejects_relative_or_public_env_before_child(
++    monkeypatch, tmp_path: Path
++) -> None:
++    executable = tmp_path / "health-agent"
++    executable.write_text("x", encoding="utf-8")
++    executable.chmod(0o700)
++    monkeypatch.setattr(cli, "_current_console_script", lambda: executable)
++    runner = CliRunner()
++
++    relative = runner.invoke(
++        cli.app, ["telegram", "service-run", "--env-file", "private.env"]
++    )
++    public = tmp_path / "public.env"
++    public.write_text("OPENAI_API_KEY=SECRET\n", encoding="utf-8")
++    public.chmod(0o644)
++    non_private = runner.invoke(
++        cli.app,
++        ["telegram", "service-run", "--env-file", str(public)],
++    )
++
++    assert relative.exit_code == non_private.exit_code == 1
++    assert "telegram_service_configuration_failed" in relative.stderr
++    assert "telegram_service_configuration_failed" in non_private.stderr
++    assert "SECRET" not in non_private.output

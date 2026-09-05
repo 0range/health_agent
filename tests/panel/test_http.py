@@ -328,6 +328,8 @@ def test_destination_renderer_accepts_only_verified_google_sheet_shape() -> None
 
     assert f'href="{sheet_url}"' in page
     assert 'rel="noreferrer"' in page
+    assert "Открыть в Google" in page
+    assert "Открыть локально" not in page
 
 
 def test_profile_page_renders_telegram_status_with_the_profile_option() -> None:

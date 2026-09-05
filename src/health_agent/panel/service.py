@@ -26,7 +26,13 @@ from health_agent.google_drive.stores import (
     LocalSyncStateStore,
     LocalTokenStore,
 )
-from health_agent.google_sheets.stores import LocalSheetsProfileStore
+from health_agent.google_sheets.api import GoogleSheetsGateway
+from health_agent.google_sheets.oauth import SheetsOAuth
+from health_agent.google_sheets.stores import (
+    LocalSheetsProfileStore,
+    LocalSheetsStateStore,
+    LocalSheetsTokenStore,
+)
 from health_agent.models import Profile
 from health_agent.panel.models import (
     ConnectorCard,
@@ -54,6 +60,22 @@ _GMAIL_ERROR_CODES = frozenset(
     }
 )
 _TELEGRAM_ERROR_CODES = frozenset({"credential_invalid", "token_not_configured"})
+_SHEETS_ERROR_CODES = frozenset(
+    {
+        "account_mismatch",
+        "google_unavailable",
+        "oauth_required",
+        "permission_denied",
+        "rate_limited",
+        "review_grid_changed",
+        "review_grid_invalid",
+        "sheets_request_failed",
+        "sheets_sync_failed",
+        "workbook_creation_unknown",
+        "workbook_mismatch",
+        "workbook_not_found",
+    }
+)
 
 
 class ProfileRepository(Protocol):
@@ -229,6 +251,68 @@ class TelegramStatusReader:
                 # Telegram's poll timestamp is bot-global, never profile-scoped.
                 None,
                 _panel_error_code("telegram", status.last_error_code),
+            ),
+        )
+
+
+class SheetsStatusReader:
+    """Read one profile's local Sheets state without remote API calls."""
+
+    connector = "sheets"
+
+    def __init__(
+        self,
+        profiles: LocalSheetsProfileStore,
+        state: LocalSheetsStateStore,
+        oauth_status: Callable[[str], str],
+    ) -> None:
+        self._profiles = profiles
+        self._state = state
+        self._oauth_status = oauth_status
+
+    def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]:
+        profile_key = str(profile_id)
+        if not self._profiles.exists(profile_key):
+            return (
+                ConnectorCard(
+                    self.connector,
+                    "not_configured",
+                    "Для этого профиля не настроена Google Таблица.",
+                ),
+            )
+        profile = self._profiles.load(profile_key)
+        oauth_status = self._oauth_status(profile_key)
+        state = self._state.read(profile_key)
+        raw_success = state.get("last_success_at")
+        last_success = (
+            _parse_datetime(raw_success) if isinstance(raw_success, str) else None
+        )
+        raw_error = state.get("safe_error_code")
+        error_code = _panel_error_code(
+            self.connector, raw_error if isinstance(raw_error, str) else None
+        )
+        if oauth_status in {"missing", "invalid", "reauth_required"}:
+            status = (
+                "needs_authorization"
+                if oauth_status == "missing"
+                else "reauth_required"
+            )
+        elif profile.spreadsheet_id is None:
+            status = "configured"
+        else:
+            status = "ready"
+        detail = (
+            "Google Таблица создана для этого профиля."
+            if profile.spreadsheet_id is not None
+            else "Google Таблица создастся при первой синхронизации."
+        )
+        return (
+            ConnectorCard(
+                self.connector,
+                status,
+                detail,
+                last_success,
+                error_code,
             ),
         )
 
@@ -464,6 +548,22 @@ def build_panel_service(settings: Settings) -> PanelService:
     drive_tokens = LocalTokenStore(settings.google_drive_root)
     drive_state = LocalSyncStateStore(settings.google_drive_root)
     sheets_profiles = LocalSheetsProfileStore(settings.google_sheets_root)
+    sheets_tokens = LocalSheetsTokenStore(settings.google_sheets_root)
+    sheets_state = LocalSheetsStateStore(settings.google_sheets_root)
+
+    def sheets_gateway(credentials):  # type: ignore[no-untyped-def]
+        return GoogleSheetsGateway.from_credentials(
+            credentials,
+            timeout_seconds=settings.google_sheets_http_timeout_seconds,
+        )
+
+    sheets_oauth = SheetsOAuth(
+        settings.google_sheets_client_secrets,
+        sheets_profiles,
+        sheets_tokens,
+        sheets_gateway,
+        timeout_seconds=settings.google_sheets_http_timeout_seconds,
+    )
 
     def sheets_destination(profile_id: UUID) -> tuple[PanelDestination, ...]:
         profile_key = str(profile_id)
@@ -491,6 +591,7 @@ def build_panel_service(settings: Settings) -> PanelService:
         (
             WhoopStatusReader(sessions, TokenStore(settings.whoop_token_root)),
             GmailStatusReader(gmail_profiles, gmail_state, gmail_oauth.local_status),
+            SheetsStatusReader(sheets_profiles, sheets_state, sheets_oauth.local_status),
             TelegramStatusReader(telegram_status),
             ReminderStatusReader(sessions),
             DatabaseStatusReader(sessions),
@@ -610,6 +711,7 @@ def _panel_error_code(connector: str, value: str | None) -> str | None:
         "whoop": _WHOOP_ERROR_CODES,
         "gmail": _GMAIL_ERROR_CODES,
         "telegram": _TELEGRAM_ERROR_CODES,
+        "sheets": _SHEETS_ERROR_CODES,
     }[connector]
     return value if value in allowed else f"{connector}_status_error"
 

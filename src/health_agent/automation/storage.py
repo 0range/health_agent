@@ -145,3 +145,9 @@ class GlobalRunLock:
         fcntl.flock(self._descriptor, fcntl.LOCK_UN)
         os.close(self._descriptor)
         self._descriptor = None
+
+    def fileno(self) -> int:
+        """Expose the held descriptor so a supervised child can retain the lock."""
+        if self._descriptor is None:
+            raise RuntimeError("lock_not_acquired")
+        return self._descriptor
