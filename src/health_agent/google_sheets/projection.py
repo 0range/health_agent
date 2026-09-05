@@ -127,6 +127,10 @@ def _render(value: object) -> SheetValue:
     return str(value)
 
 
+def _decimal_text(value: object) -> str:
+    return format(Decimal(str(value)).normalize(), "f")
+
+
 def _medical_date(document: Document) -> date | None:
     return document.collected_date or document.issued_date
 
@@ -219,7 +223,7 @@ def _expected_review(
         observation.source_unit,
         observation.reference_text,
         medical_date.isoformat() if medical_date is not None else "missing",
-        str(observation.confidence),
+        _decimal_text(observation.confidence),
         review.reason_code,
         _source_link(session, observation.document_id),
     )
@@ -249,6 +253,7 @@ def locked_expected_review(
             LabObservation.id == observation_id,
             Document.profile_id == profile_id,
         )
+        .execution_options(populate_existing=True)
         .with_for_update(of=(LabObservation, ReviewItem, Document))
     ).one_or_none()
     if result is None:

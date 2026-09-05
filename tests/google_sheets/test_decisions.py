@@ -222,6 +222,48 @@ def test_concurrent_core_rejection_cannot_be_overwritten_by_sheet_decision(
         assert verify.scalars(select(SheetsReviewDecisionAudit)).all() == []
 
 
+def test_retained_identity_map_state_cannot_overwrite_committed_rejection(
+    clean_database,
+) -> None:
+    with Session(clean_database) as setup, setup.begin():
+        observation, _review = add_observation(setup, DEFAULT_PROFILE_ID)
+        observation_id = observation.id
+
+    stale = Session(clean_database)
+    try:
+        retained = stale.get_one(LabObservation, observation_id)
+        bundle = _bundle(stale)
+        decisions = parse_decisions(
+            _grid(bundle, (("approve", None, None, None),)),
+            bundle.known_reviews,
+            DEFAULT_PROFILE_ID,
+        )
+        assert retained.status == ReviewStatus.NEEDS_REVIEW
+
+        with Session(clean_database) as concurrent, concurrent.begin():
+            reject_observation(
+                concurrent, observation_id, profile_id=DEFAULT_PROFILE_ID
+            )
+
+        with pytest.raises(ReviewConflict):
+            apply_decisions(
+                stale,
+                DEFAULT_PROFILE_ID,
+                "spreadsheet_123",
+                decisions,
+            )
+        stale.rollback()
+    finally:
+        stale.close()
+
+    with Session(clean_database) as verify:
+        assert (
+            verify.get_one(LabObservation, observation_id).status
+            == ReviewStatus.REJECTED
+        )
+        assert verify.scalars(select(SheetsReviewDecisionAudit)).all() == []
+
+
 def test_stale_medical_date_rolls_back_entire_decision_batch(session: Session) -> None:
     first, _ = add_observation(session, DEFAULT_PROFILE_ID, value="11")
     second, _ = add_observation(session, DEFAULT_PROFILE_ID, value="22")
