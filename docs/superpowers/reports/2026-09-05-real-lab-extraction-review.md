@@ -175,3 +175,47 @@ projection boundaries.
 Resolve R1 and R2 and add their focused offline regressions before another whole-branch
 readiness review. R3 can be corrected in the same round without changing the extraction
 safety model. Live acceptance remains a separate, explicitly authorized operator step.
+
+## Final remediation review — `6f86c4e`
+
+This disposition supersedes the initial verdict at the top of this report.
+
+**SPEC PASS**
+
+**QUALITY APPROVED**
+
+**OVERALL READY**
+
+The bounded `b737088..6f86c4e` remediation resolves R1, R2, and R3 without
+expanding the privacy or trust boundary:
+
+- `lab-extract status --details` returns only current-extractor-version unfinished
+  jobs belonging to the requested profile. Its default and maximum page sizes are
+  bounded, offset is bounded, ordering is deterministic, and the row contains only
+  document UUID, page number, extractor version, constrained state, and an
+  allowlisted safe code. Unknown stored codes become `extraction_failed`; page text,
+  evidence, filenames, model output, key paths, and exception strings are not emitted.
+- The scheduled-import regression reaches an unknown cloud outcome and discovers it
+  through the content-free CLI view. The explicit acknowledgment/retry path is then
+  exercised without resetting the first durable request, and the subsequent attempt
+  consumes the next daily and page-lifetime request as intended.
+- Local `review correct --canonical-name` delegates to the existing locked correction
+  transaction. Cross-profile and unsupported analyte/unit requests fail without a
+  committed change. A successful mapping creates a separate verified row linked by
+  `supersedes_observation_id`; the extracted source name, evidence, references, flag,
+  document, and page remain in the correction lineage. Telegram's narrower correction
+  grammar is now explicitly documented with CLI/Sheets as the mapping route.
+- Empty-page local recovery now records the truthful generic
+  `local_text_or_ocr` page method, covering both recoverable digital PDF text and
+  native OCR without claiming which reader produced an otherwise untyped string.
+
+The author reports that all three defects were first reproduced by failing tests and
+then passed directly; the focused lab suite reports 82 passed. The post-fix integrated
+gate reports 868 pytest tests passed with the same five inherited SWIG warnings, plus
+clean Ruff, source/new-test mypy over 109 files, and offline lock/diff checks. This
+bounded review inspected the remediation diff and relevant existing interfaces but did
+not rerun those gates or any live service.
+
+No new high- or medium-priority finding remains in Task 4 or the integrated branch.
+The live-only and operational concerns above remain acceptance caveats rather than
+code-release blockers.
