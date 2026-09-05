@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python, SQLAlchemy, existing stdlib HTTP panel, pytest, Ruff, mypy.
 
+**Status:** Tasks 1–4 and controller integration are complete at `c48c2f5`; independent final review READY. Exact checks, accepted minor and outstanding full-v0.1 work: [integration report](../reports/2026-09-05-useful-overview-integration.md). The original checklists below are retained as the implementation specification.
+
 ## Global Constraints
 
 - No real credentials, real patient medical values, or real raw provider errors in test fixtures, logs, reports, or commits. Invented synthetic medical values are required and allowed for tests.
