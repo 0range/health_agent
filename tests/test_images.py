@@ -97,3 +97,41 @@ def test_recognizer_failure_does_not_expose_details(synthetic_image, monkeypatch
 
     monkeypatch.setattr("health_agent.images.subprocess.run", run)
     assert recognize_image(synthetic_image) is None
+
+
+@pytest.mark.parametrize("failure", ["timeout", "failed", "too_long"])
+def test_recognizer_failures_are_bounded(synthetic_image, monkeypatch, failure):
+    import subprocess
+
+    def run(*_args, **_kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("private-path", 30)
+        return SimpleNamespace(
+            returncode=1 if failure == "failed" else 0,
+            stdout="X" * 100_002,
+            stderr="private diagnostic",
+        )
+
+    monkeypatch.setattr("health_agent.images.sys.platform", "darwin")
+    monkeypatch.setattr("health_agent.images.subprocess.run", run)
+    assert recognize_image(synthetic_image) is None
+
+
+def test_animation_and_checksum_rejected(synthetic_image, monkeypatch):
+    import zlib
+
+    original = synthetic_image.read_bytes()
+    kind_payload = b"acTL" + (2).to_bytes(4, "big") + bytes(4)
+    chunk = (
+        (8).to_bytes(4, "big")
+        + kind_payload
+        + zlib.crc32(kind_payload).to_bytes(4, "big")
+    )
+    synthetic_image.write_bytes(original[:33] + chunk + original[33:])
+    with pytest.raises(ValueError):
+        extract_image(synthetic_image)
+    corrupt = bytearray(original)
+    corrupt[-1] ^= 1
+    synthetic_image.write_bytes(corrupt)
+    with pytest.raises(ValueError):
+        extract_image(synthetic_image)

@@ -35,8 +35,13 @@ from health_agent.questions.service import (
     HealthQuestionResponder,
     QuestionAnswerResult,
 )
+from health_agent.telegram.actions import (
+    CompositeTelegramTextActions,
+    PreparedTelegramTextActions,
+)
 from health_agent.telegram.api import MAX_DOWNLOAD_BYTES, TelegramBotAPI
 from health_agent.telegram.messenger import TelegramMessenger
+from health_agent.telegram.review import TelegramReviewActions
 from health_agent.telegram.service import TelegramLongPoller, TelegramUpdateService
 from health_agent.telegram.stores import (
     PrivateBotTokenStore,
@@ -387,15 +392,18 @@ def build_telegram_question_runtime(
     state.register_bot(credential.bot_id, credential.username)
     gateway = gateway_factory(credential.token)
     application = question_application_factory(settings)
-    question_service = TelegramHealthQuestionService(
-        application, PrivateReplyStore(settings.telegram_root / "prepared-replies")
+    reply_store = PrivateReplyStore(settings.telegram_root / "prepared-replies")
+    question_service = TelegramHealthQuestionService(application, reply_store)
+    engine = engine_factory(settings)
+    text_actions = PreparedTelegramTextActions(
+        CompositeTelegramTextActions((TelegramReviewActions(engine),)), reply_store
     )
     commands = ReadOnlyQuestionCommands(
         status_reader or (lambda profile_id: question_status(settings, profile_id))
     )
     messenger = messenger_factory(credential.bot_id, gateway, state)
     inbox = medical_inbox or TelegramMedicalInbox(
-        engine_factory(settings),
+        engine,
         FileVault(settings.vault_root),
         settings.temporary_root,
     )
@@ -408,6 +416,7 @@ def build_telegram_question_runtime(
         commands,
         inbox,
         staging_root=settings.telegram_staging_root,
+        text_actions=text_actions,
     )
     return TelegramQuestionRuntime(
         poller_factory(credential.bot_id, gateway, state, updates)

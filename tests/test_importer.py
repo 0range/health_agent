@@ -77,6 +77,11 @@ def test_image_import_preserves_original_and_cross_source_dedupe(
         source_provider="telegram",
         source_external_id="telegram:1:1:1:p",
     )
+
+    def repeated_ocr(_path):
+        raise AssertionError("duplicate image must not be re-OCRed")
+
+    monkeypatch.setattr("health_agent.images.recognize_image", repeated_ocr)
     second = import_document(
         session,
         vault,

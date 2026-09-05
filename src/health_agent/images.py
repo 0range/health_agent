@@ -43,6 +43,14 @@ def extract_image(
     path: Path, expected_media_type: str | None = None
 ) -> tuple[str, ExtractedPdf]:
     """Validate before decoding/persisting; OCR output always needs human review."""
+    media_type = validate_image(path, expected_media_type)
+    text = recognize_image(path) or ""
+    method: ExtractionMethod = "local_ocr" if text.strip() else "ocr_required"
+    return media_type, ExtractedPdf((ExtractedPage(1, text, method),), method)
+
+
+def validate_image(path: Path, expected_media_type: str | None = None) -> str:
+    """Validate bounded bytes without starting OCR (including on duplicate imports)."""
     if not 0 < path.stat().st_size <= MAX_IMAGE_BYTES:
         raise ValueError("image size is not supported")
     with path.open("rb") as stream:
@@ -70,9 +78,7 @@ def extract_image(
             raise ValueError("image dimensions are inconsistent")
     except Exception:  # noqa: BLE001 -- native decoder diagnostics are private
         raise ValueError("image is invalid or exceeds decoding limits") from None
-    text = recognize_image(path) or ""
-    method: ExtractionMethod = "local_ocr" if text.strip() else "ocr_required"
-    return media_type, ExtractedPdf((ExtractedPage(1, text, method),), method)
+    return media_type
 
 
 def image_dimensions(data: bytes, media_type: str) -> tuple[int, int]:

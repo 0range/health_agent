@@ -13,7 +13,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from health_agent.images import extract_image
+from health_agent.images import extract_image, validate_image
 from health_agent.labs import (
     LabCandidate,
     looks_like_lab_document,
@@ -143,13 +143,16 @@ def import_document(
     if actual_media_type is None or media_type not in (None, actual_media_type):
         raise ValueError("document media type is unsupported or inconsistent")
     # Images must pass size/dimension/full-decode checks before entering the vault.
-    extracted_image = None
     if actual_media_type != "application/pdf":
-        _, extracted_image = extract_image(source_path, actual_media_type)
+        validate_image(source_path, actual_media_type)
     stored_file = vault.store(source_path)
-    extracted_pdf = extracted_image or extract_pdf(source_path)
-    inferred_collection, inferred_issue = _infer_medical_dates(
-        page.text for page in extracted_pdf.pages
+    extracted_pdf = (
+        extract_pdf(source_path) if actual_media_type == "application/pdf" else None
+    )
+    inferred_collection, inferred_issue = (
+        _infer_medical_dates(page.text for page in extracted_pdf.pages if page.text)
+        if extracted_pdf is not None
+        else (None, None)
     )
     collected_date = collected_date or inferred_collection
     issued_date = issued_date or inferred_issue
@@ -184,6 +187,15 @@ def import_document(
                 review_count=0,
             )
 
+        if extracted_pdf is None:
+            # Deduplication precedes OCR: retries cannot change inferred dates or
+            # candidate values when local recognition changes/becomes unavailable.
+            _, extracted_pdf = extract_image(source_path, actual_media_type)
+            inferred_collection, inferred_issue = _infer_medical_dates(
+                page.text for page in extracted_pdf.pages
+            )
+            collected_date = collected_date or inferred_collection
+            issued_date = issued_date or inferred_issue
         candidates = parse_lab_candidates(extracted_pdf.pages)
         lab_like = looks_like_lab_document(extracted_pdf.pages)
         processing_status, safe_error_code = _processing_state(

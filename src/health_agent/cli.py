@@ -44,6 +44,7 @@ from health_agent.google_drive.stores import (
 )
 from health_agent.importer import (
     approve_observation,
+    correct_observation,
     import_document,
     reject_observation,
     set_document_medical_dates,
@@ -259,7 +260,7 @@ def import_file(
     issued_date: str | None = None,
     profile_id: UUID = DEFAULT_PROFILE_ID,
 ) -> None:
-    """Store and extract one local PDF."""
+    """Store and extract one local PDF, JPEG or PNG."""
     settings = Settings()
     with session_scope(build_engine(settings)) as session:
         report = import_document(
@@ -365,6 +366,31 @@ def reject_review_item(
     with session_scope(build_engine(settings)) as session:
         reject_observation(session, observation_id, profile_id=profile_id)
     typer.echo(f"status=rejected observation_id={observation_id}")
+
+
+@review_app.command("correct")
+def correct_review_item(
+    observation_id: UUID,
+    value: Annotated[str, typer.Option("--value")],
+    unit: Annotated[str, typer.Option("--unit")],
+    profile_id: Annotated[UUID, typer.Option("--profile-id")],
+) -> None:
+    """Explicitly version one pending value/unit correction; keep source lineage."""
+    try:
+        settings = Settings()
+        with session_scope(build_engine(settings)) as session:
+            corrected = correct_observation(
+                session, observation_id, source_value=value, source_unit=unit,
+                profile_id=profile_id,
+            )
+            corrected_id = corrected.id
+    except Exception:  # noqa: BLE001 -- local DB/source diagnostics are private
+        typer.echo("Correction not applied. Check the pending item, value, unit and profile.")
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"status=corrected observation_id={observation_id} "
+        f"corrected_observation_id={corrected_id}"
+    )
 
 
 @review_app.command("set-date")

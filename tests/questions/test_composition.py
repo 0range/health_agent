@@ -197,7 +197,7 @@ def test_telegram_image_inbox_imports_and_uses_stable_receipt(tmp_path: Path) ->
         yield object()
 
     inbox = TelegramMedicalInbox(
-        object(),
+        object(),  # type: ignore[arg-type]
         FileVault(tmp_path / "vault"),
         tmp_path / "temporary",
         importer=importer,
