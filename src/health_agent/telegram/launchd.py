@@ -10,7 +10,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import BinaryIO, Literal, Protocol
 
 from health_agent.automation.storage import (
     GlobalRunLock,
@@ -60,7 +60,10 @@ class SystemLaunchctl:
 
 
 class SystemChildProcess:
-    """Run the existing safe CLI while inheriting the LaunchAgent log streams."""
+    """Run the existing safe CLI against the post-rotation active log files."""
+
+    def __init__(self, paths: TelegramLaunchdPaths) -> None:
+        self.paths = paths
 
     def run(
         self,
@@ -70,13 +73,19 @@ class SystemChildProcess:
         environment: dict[str, str],
     ) -> int:
         try:
-            completed = subprocess.run(
-                arguments,
-                cwd=cwd,
-                env=environment,
-                shell=False,
-                check=False,
-            )
+            with (
+                _open_private_log(self.paths.stdout_log) as stdout,
+                _open_private_log(self.paths.stderr_log) as stderr,
+            ):
+                completed = subprocess.run(
+                    arguments,
+                    cwd=cwd,
+                    env=environment,
+                    stdout=stdout,
+                    stderr=stderr,
+                    shell=False,
+                    check=False,
+                )
         except OSError as error:
             raise TelegramLaunchdError("telegram_child_unavailable") from error
         return completed.returncode
@@ -151,7 +160,7 @@ class TelegramServiceRunner:
         lock: GlobalRunLock | None = None,
     ) -> None:
         self.paths = paths
-        self.child = child or SystemChildProcess()
+        self.child = child or SystemChildProcess(paths)
         self.lock = lock or GlobalRunLock(paths.lock_file)
 
     def run(self) -> TelegramServiceResult:
@@ -352,6 +361,22 @@ def _create_private_log(path: Path) -> None:
         os.close(descriptor)
 
 
+def _open_private_log(path: Path) -> BinaryIO:
+    flags = os.O_APPEND | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+            raise TelegramLaunchdError("unsafe_log_path")
+        return os.fdopen(descriptor, "ab")
+    except BaseException:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise
+
+
 def _write_installed(path: Path, content: bytes) -> None:
     reject_symlink_components(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,4 +396,3 @@ def _write_installed(path: Path, content: bytes) -> None:
         path.chmod(0o600)
     finally:
         temporary.unlink(missing_ok=True)
-

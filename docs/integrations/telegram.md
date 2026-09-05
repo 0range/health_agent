@@ -5,9 +5,9 @@
 Коннектор работает через long polling на локальном Mac, принимает только явно
 привязанные личные чаты и всегда передаёт `profile_id` в Health Agent или
 медицинский inbox. Текст вопросов и содержимое файлов не сохраняются в его
-техническом журнале. Сейчас готова инфраструктурная основа; для запуска живого
-бота её нужно скомпоновать с реальными `HealthQuestionService`,
-`HealthCommandService` и `MedicalInbox` приложения.
+техническом журнале. Для запуска живого бота используется готовая
+production-композиция `telegram run`; отдельный LaunchAgent может держать её
+включённой после входа пользователя в Mac.
 
 ## Что уже реализовано
 
@@ -77,6 +77,46 @@ identity/update/delivery keys; старый namespace сохраняется. С
 файл требует повторного `configure-token`, а legacy SQLite безопасно переносится
 в неактивный bot-0 namespace.
 
+## Всегда включённый режим на Mac
+
+Подготовьте абсолютный путь к приватному env-файлу и установите режим `0600`.
+Сам Telegram token остаётся в отдельном token-файле и в env/plist не копируется.
+
+```bash
+chmod 600 /absolute/path/health-agent/.env
+uv run health-agent telegram render --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram install --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram automation-status --env-file /absolute/path/health-agent/.env
+```
+
+`render` только создаёт проверяемый plist. `install` загружает user LaunchAgent
+`com.orange.health-agent.telegram`: он запускается при загрузке, остаётся
+включённым, а после неожиданного завершения повторяет старт не чаще чем раз в 30
+секунд. Настроенный webhook по-прежнему блокирует сам `telegram run`; локальный
+HTTP listener не создаётся.
+
+Штатная остановка выгружает label, поэтому `KeepAlive` его не перезапускает:
+
+```bash
+uv run health-agent telegram stop --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram remove --env-file /absolute/path/health-agent/.env
+```
+
+`stop` сохраняет файлы, `remove` удаляет только два Telegram plist. Connector
+sync (`com.orange.health-agent.sync`) и reminders
+(`com.orange.health-agent.reminders`) не затрагиваются. Telegram владеет только:
+
+- `data/automation/launchd/com.orange.health-agent.telegram.plist`;
+- `~/Library/LaunchAgents/com.orange.health-agent.telegram.plist`;
+- `data/automation/telegram-service.lock`;
+- `data/automation/logs/telegram-stdout.log`, `telegram-stderr.log` и одной
+  приватной ротацией `.1` после 5 МиБ.
+
+Plist содержит только абсолютные пути, не значения env. Managed-файлы имеют
+режим `0600`, каталоги — `0700`. Singleton lock не позволяет второму wrapper
+запустить ещё один poller и сериализует ротацию логов. В логах остаются только
+короткие `status/error` строки CLI без токенов, вопросов и медицинского текста.
+
 ## Контракты приложения
 
 ```text
@@ -128,11 +168,12 @@ webhook state и свежесть heartbeat; наличие файла токе�
 
 ## Что нужно для живого запуска
 
-- реальная реализация `HealthQuestionService`, использующая профильные данные;
-- реализация `HealthCommandService` для статуса источников и запуска sync;
-- `MedicalInbox`, который сохраняет поток и вызывает медицинский importer;
-- небольшой composition root/launchd job, создающий эти сервисы и запускающий
-  `TelegramLongPoller.run_forever()`.
+До установки должны быть готовы локальная БД/миграции, verified bot token,
+profile binding и OpenAI responder configuration. Сначала полезно один раз
+вручную запустить `uv run health-agent telegram run`, проверить `status=running`
+и ответ в тестовом личном чате, затем остановить процесс и выполнить `install`.
+Это live-проверка владельца: автоматические тесты не читают реальные credentials,
+не загружают LaunchAgent и не обращаются к Telegram/OpenAI.
 
 В тестах эти границы полностью замоканы: тестовый suite не обращается к Telegram,
 боту, модели или живой медицинской базе.

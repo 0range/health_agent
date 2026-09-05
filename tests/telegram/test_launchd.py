@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -267,3 +269,33 @@ def test_runner_holds_singleton_uses_minimal_env_and_propagates_exit(tmp_path: P
     retry = TelegramServiceRunner(paths, child=Child()).run()
     assert retry.status == "failed"
 
+
+def test_system_child_reopens_active_logs_after_rotation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = _paths(tmp_path)
+    paths.stdout_log.parent.mkdir(parents=True)
+    paths.stdout_log.write_bytes(b"x" * (TELEGRAM_LOG_ROTATE_BYTES + 1))
+    captured: dict[str, object] = {}
+
+    def run(*arguments, **kwargs):
+        captured["arguments"] = arguments
+        captured.update(kwargs)
+        stdout_info = os.fstat(kwargs["stdout"].fileno())
+        stderr_info = os.fstat(kwargs["stderr"].fileno())
+        captured["stdout_identity"] = (stdout_info.st_dev, stdout_info.st_ino)
+        captured["stderr_identity"] = (stderr_info.st_dev, stderr_info.st_ino)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("health_agent.telegram.launchd.subprocess.run", run)
+    result = TelegramServiceRunner(paths).run()
+
+    assert result.status == "stopped"
+    stdout_path = paths.stdout_log.stat()
+    stderr_path = paths.stderr_log.stat()
+    assert captured["stdout_identity"] == (stdout_path.st_dev, stdout_path.st_ino)
+    assert captured["stderr_identity"] == (stderr_path.st_dev, stderr_path.st_ino)
+    assert captured["shell"] is False
+    assert paths.stdout_log.with_name("telegram-stdout.log.1").stat().st_size == (
+        TELEGRAM_LOG_ROTATE_BYTES + 1
+    )
