@@ -26,6 +26,7 @@ from health_agent.google_drive.stores import (
     LocalSyncStateStore,
     LocalTokenStore,
 )
+from health_agent.google_sheets.stores import LocalSheetsProfileStore
 from health_agent.models import Profile
 from health_agent.panel.models import (
     ConnectorCard,
@@ -41,6 +42,7 @@ from health_agent.whoop.status import WhoopStatus, get_whoop_status
 from health_agent.whoop.tokens import TokenStore
 
 SessionScopeFactory = Callable[[], AbstractContextManager[Session]]
+DestinationFactory = Callable[[UUID], tuple[PanelDestination, ...]]
 
 _WHOOP_ERROR_CODES = frozenset({"reauth_required", "rate_limited", "sync_failed"})
 _GMAIL_ERROR_CODES = frozenset(
@@ -366,11 +368,13 @@ class PanelService:
         *,
         drive: DriveConfigurationPort | None = None,
         destinations: tuple[PanelDestination, ...] = (),
+        destination_factory: DestinationFactory | None = None,
     ) -> None:
         self._profiles = profiles
         self._readers = tuple(readers)
         self._drive = drive
         self._destinations = destinations
+        self._destination_factory = destination_factory
 
     def list_profiles(self) -> tuple[ProfileSummary, ...]:
         return self._profiles.list()
@@ -397,11 +401,25 @@ class PanelService:
                 drive_folder_ids = self._drive.folder_ids(profile_id)
             except Exception:  # noqa: BLE001 - keep local state failures off the page.
                 drive_folder_ids = ()
+        destinations = self._destinations
+        if self._destination_factory is not None:
+            try:
+                destinations = (*destinations, *self._destination_factory(profile_id))
+            except Exception:  # noqa: BLE001 - local state details stay off the page.
+                destinations = (
+                    *destinations,
+                    PanelDestination(
+                        "google_sheets",
+                        "Google Таблица",
+                        None,
+                        "Статус Google Таблицы временно недоступен",
+                    ),
+                )
         return ProfilePanel(
             profile=profile,
             connectors=(*cards, *drive_cards),
             drive_folder_ids=drive_folder_ids,
-            destinations=self._destinations,
+            destinations=destinations,
         )
 
     def configure_drive(self, profile_id: UUID, folders: list[str]) -> None:
@@ -445,6 +463,29 @@ def build_panel_service(settings: Settings) -> PanelService:
     drive_profiles = LocalProfileStore(settings.google_drive_root)
     drive_tokens = LocalTokenStore(settings.google_drive_root)
     drive_state = LocalSyncStateStore(settings.google_drive_root)
+    sheets_profiles = LocalSheetsProfileStore(settings.google_sheets_root)
+
+    def sheets_destination(profile_id: UUID) -> tuple[PanelDestination, ...]:
+        profile_key = str(profile_id)
+        if not sheets_profiles.exists(profile_key):
+            return (
+                PanelDestination(
+                    "google_sheets",
+                    "Google Таблица",
+                    None,
+                    "Появится после подключения Google Таблицы",
+                ),
+            )
+        profile = sheets_profiles.load(profile_key)
+        return (
+            PanelDestination(
+                "google_sheets",
+                "Google Таблица",
+                profile.spreadsheet_url,
+                "Таблица создастся при первой синхронизации",
+            ),
+        )
+
     return PanelService(
         SqlAlchemyProfileRepository(sessions),
         (
@@ -457,13 +498,8 @@ def build_panel_service(settings: Settings) -> PanelService:
         drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
         destinations=(
             PanelDestination("metabase", "Дашборды", settings.metabase_url),
-            PanelDestination(
-                "google_sheets",
-                "Google Таблица",
-                None,
-                "Появится после подключения Google Таблицы",
-            ),
         ),
+        destination_factory=sheets_destination,
     )
 
 

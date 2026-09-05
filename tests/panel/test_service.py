@@ -20,6 +20,8 @@ from health_agent.google_drive.stores import (
     LocalTokenStore,
 )
 from health_agent.google_drive.types import DriveAccountIdentity
+from health_agent.google_sheets.config import SheetsProfile
+from health_agent.google_sheets.stores import LocalSheetsProfileStore
 from health_agent.models import DEFAULT_PROFILE_ID, Profile
 from health_agent.panel.models import (
     ConnectorCard,
@@ -430,6 +432,34 @@ def test_production_panel_construction_does_not_create_telegram_state(tmp_path) 
     assert state_path.exists() is False
     assert state_path.parent.exists() is False
     assert (tmp_path / "drive").exists() is False
+
+
+def test_production_panel_exposes_configured_profile_sheet(
+    tmp_path, clean_database: Engine
+) -> None:
+    sheets_root = tmp_path / "sheets"
+    token = "workbook-token-1234567890"
+    sheet_id = "verified-sheet-id-123456"
+    sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    profile = SheetsProfile.create(str(DEFAULT_PROFILE_ID)).with_creation_started(token)
+    LocalSheetsProfileStore(sheets_root).save(
+        profile.with_workbook(sheet_id, sheet_url, token)
+    )
+    settings = Settings(
+        database_url=clean_database.url.render_as_string(hide_password=False),
+        gmail_root=tmp_path / "gmail",
+        whoop_token_root=tmp_path / "whoop",
+        telegram_token_file=tmp_path / "telegram" / "bot-token",
+        telegram_state_path=tmp_path / "telegram" / "state.sqlite3",
+        google_drive_root=tmp_path / "drive",
+        google_sheets_root=sheets_root,
+    )
+
+    panel = build_panel_service(settings).profile(DEFAULT_PROFILE_ID)
+
+    sheets = next(item for item in panel.destinations if item.key == "google_sheets")
+    assert sheets.url == sheet_url
+    assert sheet_id not in repr(panel.connectors)
 
 
 def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> None:
