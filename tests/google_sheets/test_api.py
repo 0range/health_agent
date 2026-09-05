@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from googleapiclient.errors import HttpError
 
 from health_agent.google_sheets.api import GoogleSheetsGateway, safe_sheets_error_code
+from health_agent.google_sheets.decisions import ReviewGridError
 from health_agent.google_sheets.types import (
     ManagedSheet,
     WorkbookBinding,
@@ -54,13 +56,120 @@ def test_replace_uses_one_atomic_batch_update() -> None:
     assert next(iter(body["requests"][1])) == "updateCells"
 
 
-def test_review_read_requests_formula_source_not_calculated_values() -> None:
+def test_review_read_preserves_typed_literals_and_sparse_offsets() -> None:
     sheets = MagicMock()
-    values = sheets.spreadsheets.return_value.values.return_value
-    values.get.return_value = _request({"values": [["Decision"], ["=1+1"]]})
+    spreadsheets = sheets.spreadsheets.return_value
+    spreadsheets.get.side_effect = (
+        _request(
+            {
+                "sheets": [
+                    {
+                        "properties": {
+                            "title": "Needs review",
+                            "sheetId": 17,
+                            "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                        }
+                    }
+                ]
+            }
+        ),
+        _request(
+            {
+                "sheets": [
+                    {
+                        "properties": {"title": "Needs review", "sheetId": 17},
+                        "data": [
+                            {
+                                "startRow": 1,
+                                "startColumn": 2,
+                                "rowData": [
+                                    {
+                                        "values": [
+                                            {
+                                                "userEnteredValue": {
+                                                    "stringValue": "=literal"
+                                                }
+                                            },
+                                            {},
+                                            {"userEnteredValue": {"numberValue": 12.5}},
+                                            {"userEnteredValue": {"boolValue": True}},
+                                        ]
+                                    },
+                                    {},
+                                    {
+                                        "values": [
+                                            {
+                                                "userEnteredValue": {
+                                                    "stringValue": "tail"
+                                                }
+                                            }
+                                        ]
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+    )
     gateway = GoogleSheetsGateway(sheets, MagicMock())
-    assert gateway.read_review_rows("spreadsheet_123")[1][0] == "=1+1"
-    assert values.get.call_args.kwargs["valueRenderOption"] == "FORMULA"
+    assert gateway.read_review_rows("spreadsheet_123") == (
+        (),
+        (None, None, "=literal", None, 12.5, True),
+        (),
+        (None, None, "tail"),
+    )
+    native_read = spreadsheets.get.call_args_list[1].kwargs
+    assert native_read["ranges"] == ["'Needs review'!A1:Z1000"]
+    assert native_read["includeGridData"] is True
+
+
+def test_review_read_rejects_actual_formula_with_same_text_as_literal() -> None:
+    sheets = MagicMock()
+    spreadsheets = sheets.spreadsheets.return_value
+    spreadsheets.get.side_effect = (
+        _request(
+            {
+                "sheets": [
+                    {
+                        "properties": {
+                            "title": "Needs review",
+                            "sheetId": 17,
+                            "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                        }
+                    }
+                ]
+            }
+        ),
+        _request(
+            {
+                "sheets": [
+                    {
+                        "properties": {"title": "Needs review", "sheetId": 17},
+                        "data": [
+                            {
+                                "rowData": [
+                                    {
+                                        "values": [
+                                            {
+                                                "userEnteredValue": {
+                                                    "formulaValue": "=literal"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+    )
+    gateway = GoogleSheetsGateway(sheets, MagicMock())
+    with pytest.raises(ReviewGridError, match="formulas"):
+        gateway.read_review_rows("spreadsheet_123")
 
 
 def test_binding_read_requests_formula_source_not_calculated_values() -> None:

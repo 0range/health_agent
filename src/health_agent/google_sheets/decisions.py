@@ -101,7 +101,7 @@ def parse_decisions(
             continue
         if any(
             isinstance(value, str) and value.lstrip().startswith("=")
-            for value in padded
+            for value in padded[12:]
         ):
             raise ReviewGridError("formulas are not allowed in the review sheet")
         review_id = _text(padded[0])

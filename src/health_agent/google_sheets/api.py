@@ -19,6 +19,7 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from health_agent.google_sheets.decisions import ReviewGridError
 from health_agent.google_sheets.types import (
     CreatedWorkbook,
     ManagedSheet,
@@ -31,6 +32,99 @@ from health_agent.google_sheets.types import (
 _MANAGED_TITLES = ("Lab history", "Needs review", "Sources", "_HealthAgent")
 _MAX_MANAGED_ROWS = 50_000
 _MAX_MANAGED_CELLS = 500_000
+
+
+def _column_name(column_count: int) -> str:
+    name = ""
+    remaining = column_count
+    while remaining:
+        remaining, offset = divmod(remaining - 1, 26)
+        name = chr(ord("A") + offset) + name
+    return name
+
+
+def _native_cell_value(cell: object) -> tuple[bool, SheetValue]:
+    if not isinstance(cell, dict):
+        raise ReviewGridError("invalid native review cell")
+    entered = cell.get("userEnteredValue")
+    if entered is None:
+        return False, None
+    if not isinstance(entered, dict) or len(entered) != 1:
+        raise ReviewGridError("invalid native review cell")
+    kind, value = next(iter(entered.items()))
+    if kind == "formulaValue":
+        raise ReviewGridError("formulas are not allowed in the review sheet")
+    if kind == "stringValue" and isinstance(value, str):
+        return True, value
+    if kind == "boolValue" and isinstance(value, bool):
+        return True, value
+    if (
+        kind == "numberValue"
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return True, value
+    raise ReviewGridError("invalid native review cell")
+
+
+def _native_review_rows(
+    payload: dict[str, Any], *, sheet_id: int, row_count: int, column_count: int
+) -> tuple[tuple[SheetValue, ...], ...]:
+    sheets = payload.get("sheets")
+    if not isinstance(sheets, list) or len(sheets) != 1:
+        raise ReviewGridError("invalid native review grid")
+    sheet = sheets[0]
+    if not isinstance(sheet, dict):
+        raise ReviewGridError("invalid native review grid")
+    properties = sheet.get("properties")
+    if (
+        not isinstance(properties, dict)
+        or properties.get("title") != "Needs review"
+        or properties.get("sheetId") != sheet_id
+    ):
+        raise ReviewGridError("invalid native review grid")
+    data = sheet.get("data", [])
+    if not isinstance(data, list):
+        raise ReviewGridError("invalid native review grid")
+    rows: dict[int, list[SheetValue]] = {}
+    last_row = -1
+    for grid in data:
+        if not isinstance(grid, dict):
+            raise ReviewGridError("invalid native review grid")
+        start_row = grid.get("startRow", 0)
+        start_column = grid.get("startColumn", 0)
+        row_data = grid.get("rowData", [])
+        if (
+            not isinstance(start_row, int)
+            or isinstance(start_row, bool)
+            or not isinstance(start_column, int)
+            or isinstance(start_column, bool)
+            or start_row < 0
+            or start_column < 0
+            or not isinstance(row_data, list)
+            or start_row + len(row_data) > row_count
+        ):
+            raise ReviewGridError("invalid native review grid")
+        for row_offset, row in enumerate(row_data):
+            row_index = start_row + row_offset
+            last_row = max(last_row, row_index)
+            if not isinstance(row, dict):
+                raise ReviewGridError("invalid native review grid")
+            cells = row.get("values", [])
+            if not isinstance(cells, list) or start_column + len(cells) > column_count:
+                raise ReviewGridError("invalid native review grid")
+            if not cells:
+                continue
+            values = rows.setdefault(row_index, [])
+            required_width = start_column + len(cells)
+            values.extend([None] * (required_width - len(values)))
+            for cell_offset, cell in enumerate(cells):
+                present, value = _native_cell_value(cell)
+                if present:
+                    values[start_column + cell_offset] = value
+    if last_row < 0:
+        return ()
+    return tuple(tuple(rows.get(row_index, ())) for row_index in range(last_row + 1))
 
 
 def _is_retryable(error: BaseException) -> bool:
@@ -234,20 +328,66 @@ class GoogleSheetsGateway:
     def read_review_rows(
         self, spreadsheet_id: str
     ) -> tuple[tuple[SheetValue, ...], ...]:
-        payload = _execute(
-            self._sheets.spreadsheets()
-            .values()
-            .get(
+        metadata = _execute(
+            self._sheets.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
-                range="'Needs review'!A:Z",
-                valueRenderOption="FORMULA",
-                dateTimeRenderOption="FORMATTED_STRING",
+                fields=(
+                    "sheets(properties(sheetId,title,"
+                    "gridProperties(rowCount,columnCount)))"
+                ),
             )
         )
-        rows = payload.get("values", [])
-        if not isinstance(rows, list):
-            raise TypeError("invalid review grid")
-        return tuple(tuple(cast(SheetValue, value) for value in row) for row in rows)
+        raw_sheets = metadata.get("sheets", [])
+        matches = (
+            [
+                sheet.get("properties")
+                for sheet in raw_sheets
+                if isinstance(sheet, dict)
+                and isinstance(sheet.get("properties"), dict)
+                and sheet["properties"].get("title") == "Needs review"
+            ]
+            if isinstance(raw_sheets, list)
+            else []
+        )
+        if len(matches) != 1:
+            raise ReviewGridError("review sheet metadata mismatch")
+        properties = matches[0]
+        assert isinstance(properties, dict)
+        grid = properties.get("gridProperties")
+        sheet_id = properties.get("sheetId")
+        if not isinstance(grid, dict) or not isinstance(sheet_id, int):
+            raise ReviewGridError("review sheet metadata mismatch")
+        row_count = grid.get("rowCount")
+        column_count = grid.get("columnCount")
+        if (
+            not isinstance(row_count, int)
+            or isinstance(row_count, bool)
+            or not isinstance(column_count, int)
+            or isinstance(column_count, bool)
+            or row_count < 1
+            or column_count < 1
+            or row_count > _MAX_MANAGED_ROWS
+            or row_count * column_count > _MAX_MANAGED_CELLS
+        ):
+            raise ReviewGridError("review sheet grid exceeds the v0.1 size limit")
+        review_range = f"'Needs review'!A1:{_column_name(column_count)}{row_count}"
+        payload = _execute(
+            self._sheets.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                ranges=[review_range],
+                includeGridData=True,
+                fields=(
+                    "sheets(properties(sheetId,title),"
+                    "data(startRow,startColumn,rowData(values(userEnteredValue))))"
+                ),
+            )
+        )
+        return _native_review_rows(
+            payload,
+            sheet_id=sheet_id,
+            row_count=row_count,
+            column_count=column_count,
+        )
 
     def replace_managed_tabs(
         self, spreadsheet_id: str, projection: WorkbookProjection
