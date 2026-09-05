@@ -135,3 +135,74 @@ def test_animation_and_checksum_rejected(synthetic_image, monkeypatch):
     synthetic_image.write_bytes(corrupt)
     with pytest.raises(ValueError):
         extract_image(synthetic_image)
+
+
+@pytest.fixture
+def synthetic_jpeg(tmp_path: Path) -> Path:
+    path = tmp_path / "photo.jpg"
+    with pymupdf.open() as document:
+        page = document.new_page(width=300, height=100)
+        page.insert_text((20, 30), "Ferritin 42 ng/mL")
+        path.write_bytes(page.get_pixmap().tobytes("jpeg"))
+    return path
+
+
+def test_single_complete_jpeg_accepts_marker_bytes_inside_metadata(
+    synthetic_jpeg, monkeypatch
+):
+    original = synthetic_jpeg.read_bytes()
+    payload = b"metadata with embedded markers \xff\xd8\xff\xd9"
+    comment = b"\xff\xfe" + (len(payload) + 2).to_bytes(2, "big") + payload
+    synthetic_jpeg.write_bytes(original[:2] + comment + original[2:])
+    monkeypatch.setattr("health_agent.images.recognize_image", lambda _: None)
+    assert extract_image(synthetic_jpeg)[0] == "image/jpeg"
+
+
+@pytest.mark.parametrize("suffix", ["second_jpeg", "trailing_payload", "extra_eoi"])
+def test_jpeg_rejects_trailing_stream_before_decode_or_ocr(
+    synthetic_jpeg, monkeypatch, suffix
+):
+    original = synthetic_jpeg.read_bytes()
+    trailing = {
+        "second_jpeg": original,
+        "trailing_payload": b"private appended payload\xff\xd9",
+        "extra_eoi": b"\xff\xd9",
+    }[suffix]
+    synthetic_jpeg.write_bytes(original + trailing)
+    calls = []
+    monkeypatch.setattr(
+        "health_agent.images.pymupdf.Pixmap", lambda _: calls.append("decode")
+    )
+    monkeypatch.setattr(
+        "health_agent.images.recognize_image", lambda _: calls.append("ocr")
+    )
+    with pytest.raises(ValueError):
+        extract_image(synthetic_jpeg)
+    assert calls == []
+
+
+@pytest.mark.parametrize("variant", ["mpf_after_frame", "second_frame", "missing_eoi"])
+def test_jpeg_checks_past_first_frame_header(synthetic_jpeg, variant, monkeypatch):
+    original = synthetic_jpeg.read_bytes()
+    scan_start = original.index(b"\xff\xda")
+    frame_start = next(
+        original.index(marker)
+        for marker in (b"\xff\xc0", b"\xff\xc1", b"\xff\xc2")
+        if marker in original
+    )
+    frame_length = (
+        int.from_bytes(original[frame_start + 2 : frame_start + 4], "big") + 2
+    )
+    bad_data = {
+        "mpf_after_frame": original[:scan_start]
+        + b"\xff\xe2\x00\x06MPF\x00"
+        + original[scan_start:],
+        "second_frame": original[:scan_start]
+        + original[frame_start : frame_start + frame_length]
+        + original[scan_start:],
+        "missing_eoi": original[:-2],
+    }[variant]
+    synthetic_jpeg.write_bytes(bad_data)
+    monkeypatch.setattr("health_agent.images.recognize_image", lambda _: None)
+    with pytest.raises(ValueError):
+        extract_image(synthetic_jpeg)

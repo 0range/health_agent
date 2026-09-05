@@ -111,6 +111,33 @@ def test_invalid_image_is_not_persisted(
     assert not vault.root.exists()
 
 
+@pytest.mark.parametrize("suffix", ["jpeg", "payload"])
+def test_appended_jpeg_data_is_not_persisted(session, vault, tmp_path, suffix):
+    path = tmp_path / "polyglot.jpg"
+    with pymupdf.open() as pdf:
+        original = pdf.new_page(width=50, height=50).get_pixmap().tobytes("jpeg")
+    path.write_bytes(original + (original if suffix == "jpeg" else b"payload\xff\xd9"))
+    with pytest.raises(ValueError):
+        import_document(session, vault, path, None)
+    assert not vault.root.exists()
+    assert session.scalar(text("SELECT count(*) FROM documents")) == 0
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "1e999999", "1e-999999"])
+def test_approve_rejects_unbounded_legacy_candidate(
+    session, vault, synthetic_lab_pdf, value
+):
+    report = import_document(session, vault, synthetic_lab_pdf, None)
+    observation = session.get_one(Document, report.document_id).observations[0]
+    observation.source_value = value
+    session.flush()
+    with pytest.raises(ValueError):
+        approve_observation(session, observation.id)
+    assert observation.status is ReviewStatus.NEEDS_REVIEW
+    assert observation.normalized_value is None
+    assert observation.review_item.decision is None
+
+
 def test_approval_moves_value_into_verified_view(
     session: Session, vault: FileVault, synthetic_lab_pdf: Path
 ) -> None:

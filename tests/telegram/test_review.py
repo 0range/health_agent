@@ -139,6 +139,28 @@ def test_reject_and_invalid_correction_are_safe(session, tmp_path):
     assert actions.handle(CONTEXT, "/other") is None
 
 
+@pytest.mark.parametrize(
+    "value", ["NaN", "Infinity", "-Infinity", "1e999999", "1e-999999", "1e13"]
+)
+def test_invalid_numeric_correction_never_publishes(session, tmp_path, value):
+    item = candidate(session, tmp_path)
+    actions = TelegramReviewActions(session.get_bind())
+    reply = actions.handle(CONTEXT, f"/correct {item} {value} ng/mL")
+    assert reply == "Decision not applied. Check the value/unit and use /review."
+    session.expire_all()
+    original = session.get_one(LabObservation, item)
+    assert original.status is ReviewStatus.NEEDS_REVIEW
+    assert original.review_item.decision is None
+    assert (
+        session.scalar(
+            select(LabObservation.id).where(
+                LabObservation.supersedes_observation_id == item
+            )
+        )
+        is None
+    )
+
+
 def test_review_failure_hides_database_details(tmp_path):
     class Unavailable:
         def connect(self):

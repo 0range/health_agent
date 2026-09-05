@@ -25,6 +25,9 @@ signature, not extension, determines MIME. Image metadata and complete decoding
 must agree with the expected MIME. Image input is bounded to 20 MiB, 25 million
 pixels, and one frame/page. Unsupported, malformed, or oversized images fail
 before vault persistence. PDF behavior remains on the existing extraction path.
+JPEG validation walks metadata segments and all entropy-coded scans through the
+single terminal EOI; appended payloads, concatenated images, additional frames
+and MPF containers are rejected before decoding or OCR.
 
 Images use a local Apple Vision recognizer invoked by `/usr/bin/swift` with a
 fixed script and an argument list, never a shell. Recognition is bounded by a
@@ -65,6 +68,12 @@ retain the original source and create the existing superseding observation.
 Already-resolved values are immutable. Repeating the same decision returns the
 same acknowledgement; conflicting decisions report that the item was already
 resolved and make no change. Unknown/foreign UUIDs share one generic response.
+The shared numeric parser refuses NaN/infinities and bounded-format violations
+before any verified-state mutation: at most 64 input characters, 28 significant
+digits, stored decimal exponent -12 through 12 and absolute value at most 10^12.
+These are technical bounds, not claims about medically normal ranges; a value
+outside them remains pending and requires local investigation. Ordinary signed
+decimals, comma decimals and bounded scientific notation remain supported.
 
 Upload receipts use stable, truthful text and direct the user to `/review`, so
 queue changes do not alter a deferred upload acknowledgement. Command replies

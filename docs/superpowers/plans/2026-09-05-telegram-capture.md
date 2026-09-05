@@ -91,3 +91,10 @@ assert after.evidence[0].value == "42"
 - [ ] Add an integration test through real Telegram state/messenger: upload/import fixture, pending item, explicit command, cited question evidence, first-send 429 and restart replay. Preserve existing PDF retry tests.
 - [ ] Run `uv run --offline pytest -q`, `uv run --offline ruff check .`, `uv run --offline mypy .`; verify disposable `tests/whoop/test_schema.py::test_whoop_migration_matches_sqlalchemy_metadata` runs in the suite. Record precise results and live-only limits.
 - [ ] Perform self-review and independent task/whole-branch review when an agent slot is available; commit implementation and final report. Return exact delivered scope, exclusions, commits, verification, and no merge/push.
+
+### Independent-review fix round 1
+
+- [x] Add RED regressions for concatenated/trailing JPEG data and non-finite or extreme correction values through normalization, Telegram and CLI.
+- [x] Enforce one complete JPEG marker/scan stream ending at EOF; preserve legal metadata marker bytes, reject MPF and extra frames, retain dimension/full-decode limits.
+- [x] Bound the shared decimal parser before arithmetic and review mutation; preserve valid comma/scientific decimals, reject exceptional values with safe errors and unchanged pending state.
+- [x] Run full offline tests, Ruff, mypy, lock and diff checks; append exact evidence and request independent re-review.

@@ -4,12 +4,14 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import Engine
+import pymupdf
+import pytest
+from sqlalchemy import Engine, select
 from typer.testing import CliRunner
 
 from health_agent import cli
 from health_agent.db import session_scope
-from health_agent.importer import ImportReport
+from health_agent.importer import ImportReport, import_document
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
     Document,
@@ -19,6 +21,7 @@ from health_agent.models import (
     ReviewStatus,
     SourceRecord,
 )
+from health_agent.vault import FileVault
 
 
 def test_import_output_contains_only_safe_counts(monkeypatch, tmp_path: Path) -> None:
@@ -175,3 +178,49 @@ def test_import_output_surfaces_ocr_required(monkeypatch, tmp_path: Path) -> Non
     assert "status=ocr_required" in result.stdout
     assert "processing_status=ocr_required" in result.stdout
     assert "candidates=0 review_items=0" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "1e999999", "1e-999999", "1e13"])
+def test_cli_invalid_numeric_correction_does_not_publish(
+    session, tmp_path, monkeypatch, value
+):
+    path = tmp_path / "synthetic.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "Ferritin 42 ng/mL")
+        pdf.save(path)
+    report = import_document(session, FileVault(tmp_path / "vault"), path, None)
+    item = session.scalars(
+        select(LabObservation).where(LabObservation.document_id == report.document_id)
+    ).one()
+    item_id = item.id
+    session.commit()
+    monkeypatch.setattr(cli, "build_engine", lambda _: session.get_bind())
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "review",
+            "correct",
+            str(item_id),
+            "--value",
+            value,
+            "--unit",
+            "ng/mL",
+            "--profile-id",
+            str(DEFAULT_PROFILE_ID),
+        ],
+    )
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "Correction not applied. Check the pending item, value, unit and profile.\n"
+    )
+    session.expire_all()
+    assert session.get_one(LabObservation, item_id).status is ReviewStatus.NEEDS_REVIEW
+    assert (
+        session.scalar(
+            select(LabObservation.id).where(
+                LabObservation.supersedes_observation_id == item_id
+            )
+        )
+        is None
+    )

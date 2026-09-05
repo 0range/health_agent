@@ -62,8 +62,6 @@ def validate_image(path: Path, expected_media_type: str | None = None) -> str:
         _check_single_png(data)
     elif data.startswith(b"\xff\xd8\xff"):
         media_type = "image/jpeg"
-        if not data.endswith(b"\xff\xd9"):
-            raise ValueError("JPEG is incomplete")
     else:
         raise ValueError("image format is not supported")
     if expected_media_type is not None and expected_media_type != media_type:
@@ -87,8 +85,21 @@ def image_dimensions(data: bytes, media_type: str) -> tuple[int, int]:
         if data[8:16] != b"\x00\x00\x00\rIHDR" or len(data) < 33:
             raise ValueError("PNG header is invalid")
         return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    return _single_jpeg_dimensions(data)
+
+
+def _single_jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    """Walk segments and entropy scans through the one final EOI, not just SOF.
+
+    Metadata may itself contain marker bytes. Entropy scans escape FF bytes and
+    may contain restart markers; progressive images may have several scans.
+    """
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("JPEG header is invalid")
     offset = 2
-    while offset + 4 <= len(data):
+    dimensions: tuple[int, int] | None = None
+    saw_scan = False
+    while offset < len(data):
         if data[offset] != 0xFF:
             break
         while offset < len(data) and data[offset] == 0xFF:
@@ -97,9 +108,13 @@ def image_dimensions(data: bytes, media_type: str) -> tuple[int, int]:
             break
         marker = data[offset]
         offset += 1
-        if marker in (0xD9, 0xDA):
+        if marker == 0xD9:
+            if offset == len(data) and saw_scan and dimensions is not None:
+                return dimensions
+            raise ValueError("incomplete or trailing JPEG data is not supported")
+        if marker in (0x00, 0xD8, *range(0xD0, 0xD8)):
             break
-        if marker in (0x01, *range(0xD0, 0xD9)):
+        if marker == 0x01:
             continue
         length = int.from_bytes(data[offset : offset + 2], "big")
         if length < 2 or offset + length > len(data):
@@ -107,14 +122,46 @@ def image_dimensions(data: bytes, media_type: str) -> tuple[int, int]:
         if marker == 0xE2 and data[offset + 2 : offset + 6] == b"MPF\x00":
             raise ValueError("multi-picture JPEG is not supported")
         if marker in (0xC0, 0xC1, 0xC2):
-            if length < 8:
+            if dimensions is not None or length < 8:
                 break
-            return (
+            components = data[offset + 7]
+            if not 1 <= components <= 4 or length != 8 + 3 * components:
+                break
+            dimensions = (
                 int.from_bytes(data[offset + 5 : offset + 7], "big"),
                 int.from_bytes(data[offset + 3 : offset + 5], "big"),
             )
+        elif marker in (0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            raise ValueError("JPEG frame type is not supported")
+        if marker == 0xDA and (
+            dimensions is None
+            or length < 6
+            or not 1 <= data[offset + 2] <= 4
+            or length != 6 + 2 * data[offset + 2]
+        ):
+            break
         offset += length
-    raise ValueError("JPEG header is invalid or unsupported")
+        if marker == 0xDA:
+            saw_scan = True
+            offset = _jpeg_scan_end(data, offset)
+    raise ValueError("JPEG is incomplete, invalid or unsupported")
+
+
+def _jpeg_scan_end(data: bytes, offset: int) -> int:
+    while offset < len(data):
+        start = data.find(b"\xff", offset)
+        if start == -1:
+            return len(data)
+        offset = start + 1
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset == len(data):
+            return offset
+        if data[offset] == 0x00 or 0xD0 <= data[offset] <= 0xD7:
+            offset += 1
+            continue
+        return start
+    return offset
 
 
 def _check_single_png(data: bytes) -> None:

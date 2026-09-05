@@ -46,3 +46,49 @@ Brainstorming and writing-plans produced the scoped design/plan before implement
 No real token, personal data, live bot, cloud service or actual OCR invocation was used. Owner must separately verify installed Swift/Apple Vision availability, recognition accuracy and orientation/language behavior with non-sensitive photos, plus actual Telegram photo/document delivery and the existing OpenAI account configuration. Local OCR timeout may include Swift startup/compilation. OCR-derived values and dates must be checked against the original before relying on them.
 
 No merge or push to main performed. To combine reminders, compose `TelegramReviewActions(engine)` and `DatabaseReminderCommands(engine)` in one `CompositeTelegramTextActions`, wrapped once by `PreparedTelegramTextActions` using the same question reply store.
+
+## Independent-review fix round 1 — September 5, 2026
+
+Two independent-review blockers were addressed; independent re-review is requested,
+not presumed approved:
+
+1. `images.py` now walks all JPEG segments/scans through one terminal EOI at EOF,
+   rejecting concatenated images, trailing payload, multiple frames and MPF even
+   after the first SOF. Metadata lengths are respected (embedded marker bytes are
+   legal), escaped entropy bytes/restart markers and progressive scans are handled,
+   and pixel limits plus full native decoding remain in force before OCR/vault.
+2. The shared `labs.py` decimal parser rejects NaN, infinities and extreme tokens
+   before arithmetic or state changes. Technical limits: 64 characters, 28
+   significant digits, stored exponent -12 through 12, absolute value <=10^12.
+   Comma decimals and bounded scientific notation are retained. Telegram and CLI
+   regressions assert safe refusal, unchanged pending state and no successor;
+   legacy invalid-candidate approval is refused too. No physiological range is
+   inferred and no existing verified data is rewritten.
+
+TDD RED: `uv run --offline pytest -q tests/test_images.py tests/test_labs.py
+tests/telegram/test_review.py tests/test_review_cli.py` produced **22 failed,
+37 passed** before implementation: trailing JPEG reached decoding, normalization
+accepted exceptional values or raised unsafe decimal errors, and Telegram/CLI
+published NaN/Infinity/extreme corrections. GREEN: the same focused command passed
+**59 tests**; adding importer/legacy-approval checks passed **81 tests**.
+An additional JPEG fixture initially assumed baseline SOF; PyMuPDF emits a
+supported non-baseline SOF, so the fixture was corrected to select C0/C1/C2.
+
+Final gates on the complete fix:
+
+- `uv run --offline pytest -q`: **670 passed**, five inherited PyMuPDF/SWIG
+  deprecation warnings (plus shutdown SWIG warning); not claimed warning-free.
+- `uv run --offline ruff check .`: PASS.
+- `uv run --offline mypy src tests/test_images.py tests/test_labs.py
+  tests/test_importer.py tests/telegram/test_review.py tests/test_review_cli.py`:
+  PASS, 77 source files.
+- `uv run --offline mypy src tests`: same **13 inherited errors in four unchanged
+  automation/Drive/staging test files**, not claimed globally clean.
+- `uv lock --offline --check`, `git diff --check`: PASS.
+- `uv run --offline alembic heads`: unchanged single head `0005_whoop`; disposable
+  schema roundtrip remains covered by the full suite. No migration changes.
+
+All fixtures are synthetic, with fake OCR and disposable local PostgreSQL. No live
+network, credentials or personal records were used. Existing live-only OCR and
+Telegram validation limits above remain. Implementation worktree stays separate
+from the pending lab-extraction and Sheets branches.
