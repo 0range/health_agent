@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from health_agent.lab_extraction.models import LabExtractionJob
@@ -86,7 +86,10 @@ class HealthcheckReader:
         collected, issued = session.execute(
             select(func.max(Document.collected_date), func.max(Document.issued_date)).where(
                 Document.profile_id == profile_id,
-                Document.observations.any(),
+                or_(
+                    Document.document_type == "laboratory_report",
+                    Document.observations.any(),
+                ),
             )
         ).one()
         received = session.scalar(

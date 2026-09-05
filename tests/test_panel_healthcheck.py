@@ -189,8 +189,18 @@ def test_reader_aggregates_real_rows_and_isolates_two_profiles(
             statuses=(ReviewStatus.NEEDS_REVIEW, ReviewStatus.VERIFIED),
             queued=True,
         )
-        # A newer non-lab medical document must affect only the generic received
-        # date, never the latest analysis collection/issue dates.
+        # A classified lab report has useful source dates even before extraction.
+        _add_document(
+            database,
+            FIRST,
+            identity="4",
+            document_type="laboratory_report",
+            collected=date(2026, 9, 1),
+            issued=date(2026, 9, 2),
+            received=datetime(2026, 9, 3, tzinfo=UTC),
+        )
+        # A still newer non-lab medical document affects only generic received
+        # time, never the latest analysis collection/issue dates.
         _add_document(
             database,
             FIRST,
@@ -216,8 +226,8 @@ def test_reader_aggregates_real_rows_and_isolates_two_profiles(
     other = reader.coverage(second)
 
     assert first.latest_whoop_date == date(2026, 9, 3)
-    assert first.latest_lab_collected_date == date(2026, 8, 20)
-    assert first.latest_lab_issued_date == date(2026, 8, 21)
+    assert first.latest_lab_collected_date == date(2026, 9, 1)
+    assert first.latest_lab_issued_date == date(2026, 9, 2)
     assert first.latest_received_at == datetime(2026, 9, 5, tzinfo=UTC)
     assert (first.pending_extraction_count, first.needs_review_count, first.verified_count) == (1, 1, 1)
     assert other.latest_whoop_date == date(2026, 7, 2)
