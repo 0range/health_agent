@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -36,6 +36,9 @@ from health_agent.google_sheets.stores import (
 from health_agent.models import Profile
 from health_agent.panel.models import (
     ConnectorCard,
+    DataCoverage,
+    HealthcheckProfile,
+    HealthcheckSnapshot,
     PanelDestination,
     ProfilePanel,
     ProfileSummary,
@@ -90,6 +93,10 @@ class ConnectorStatusReader(Protocol):
     connector: str
 
     def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]: ...
+
+
+class DataCoverageReader(Protocol):
+    def coverage(self, profile_id: UUID) -> DataCoverage: ...
 
 
 class DriveConfigurationPort(ConnectorStatusReader, Protocol):
@@ -244,12 +251,12 @@ class TelegramStatusReader:
                 self.connector,
                 "ready" if status.poller_running else "configured",
                 (
-                    "Опрос Telegram активен для этого профиля."
+                    "Пользователь привязан; общий опрос Telegram недавно работал."
                     if status.poller_running
-                    else "Telegram настроен для этого профиля."
+                    else "Пользователь привязан, но работа общего опроса не подтверждена."
                 ),
-                # Telegram's poll timestamp is bot-global, never profile-scoped.
-                None,
+                # Explicitly presented as bot-global in detail, not profile activity.
+                status.last_poll_at if status.poller_running else None,
                 _panel_error_code("telegram", status.last_error_code),
             ),
         )
@@ -453,12 +460,16 @@ class PanelService:
         drive: DriveConfigurationPort | None = None,
         destinations: tuple[PanelDestination, ...] = (),
         destination_factory: DestinationFactory | None = None,
+        healthcheck_reader: DataCoverageReader | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._profiles = profiles
         self._readers = tuple(readers)
         self._drive = drive
         self._destinations = destinations
         self._destination_factory = destination_factory
+        self._healthcheck_reader = healthcheck_reader
+        self._clock = clock
 
     def list_profiles(self) -> tuple[ProfileSummary, ...]:
         return self._profiles.list()
@@ -512,6 +523,20 @@ class PanelService:
         if self._drive is None:
             raise RuntimeError("Google Drive configuration is unavailable")
         self._drive.configure(profile_id, folders)
+
+    def healthcheck(self) -> HealthcheckSnapshot:
+        profiles = self.list_profiles()
+        results: list[HealthcheckProfile] = []
+        for profile in profiles:
+            panel = self.profile(profile.id)
+            coverage = DataCoverage(status="unknown")
+            if self._healthcheck_reader is not None:
+                try:
+                    coverage = self._healthcheck_reader.coverage(profile.id)
+                except Exception:  # noqa: BLE001,S110 - never expose local details.
+                    pass
+            results.append(HealthcheckProfile(panel=panel, coverage=coverage))
+        return HealthcheckSnapshot(checked_at=self._clock(), profiles=tuple(results))
 
     @staticmethod
     def _safe_cards(
@@ -586,6 +611,8 @@ def build_panel_service(settings: Settings) -> PanelService:
             ),
         )
 
+    from health_agent.panel.healthcheck import HealthcheckReader
+
     return PanelService(
         SqlAlchemyProfileRepository(sessions),
         (
@@ -601,6 +628,7 @@ def build_panel_service(settings: Settings) -> PanelService:
             PanelDestination("metabase", "Дашборды", settings.metabase_url),
         ),
         destination_factory=sheets_destination,
+        healthcheck_reader=HealthcheckReader(sessions),
     )
 
 
@@ -765,13 +793,20 @@ def _local_telegram_status(
             last_error_code="credential_invalid",
         )
     state = state_factory()
+    next_offset, last_poll_at, runtime_error = state.runtime_status(credential.bot_id)
+    now = datetime.now(UTC)
+    poller_running = (
+        last_poll_at is not None
+        and runtime_error is None
+        and now - last_poll_at.astimezone(UTC) <= timedelta(minutes=2)
+    )
     return TelegramStatus(
         token_configured=True,
         credential_verified=True,
         bot_id=credential.bot_id,
         bot_username=credential.username,
         webhook_configured=None,
-        poller_running=False,
+        poller_running=poller_running,
         delivery_unknown_count=state.delivery_unknown_count(
             credential.bot_id, profile_id
         ),
@@ -779,9 +814,9 @@ def _local_telegram_status(
         identity_bound=(
             state.identity_for_profile(credential.bot_id, profile_id) is not None
         ),
-        # Runtime state belongs to the bot, not to this profile. Do not present
-        # it through a profile card.
-        next_offset=None,
-        last_poll_at=None,
+        # Runtime state belongs to the shared bot and is labelled as such by UI.
+        next_offset=next_offset,
+        last_poll_at=last_poll_at,
+        # Poller errors are not part of the closed profile-safe connector set.
         last_error_code=None,
     )
