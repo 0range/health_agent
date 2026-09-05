@@ -165,6 +165,7 @@ class LabObservation(Base):
         CheckConstraint(
             "confidence >= 0 AND confidence <= 1", name="ck_lab_observations_confidence_range"
         ),
+        CheckConstraint("source_flag IS NULL OR source_flag IN ('H','L','↑','↓','*')", name="ck_lab_observations_source_flag"),
         CheckConstraint(
             "reference_low IS NULL OR reference_high IS NULL OR reference_low <= reference_high",
             name="ck_lab_observations_reference_range",
@@ -186,6 +187,7 @@ class LabObservation(Base):
     source_value: Mapped[str] = mapped_column(String(255))
     parsed_value: Mapped[Decimal | None] = mapped_column(Numeric)
     source_unit: Mapped[str | None] = mapped_column(String(100))
+    source_flag: Mapped[str | None] = mapped_column(String(8))
     normalized_value: Mapped[Decimal | None] = mapped_column(Numeric)
     normalized_unit: Mapped[str | None] = mapped_column(String(100))
     reference_low: Mapped[Decimal | None] = mapped_column(Numeric)

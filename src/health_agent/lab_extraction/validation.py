@@ -112,7 +112,7 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
             tail_start = reference_span[1] if reference is not None else unit_span[1]
             if not flag_between and (
                 flag_span[0] < tail_start
-                or re.fullmatch(r"[\s|:=]*", excerpt[tail_start:flag_span[0]]) is None
+                or re.fullmatch(r"[\s|:=]*", excerpt[tail_start : flag_span[0]]) is None
             ):
                 raise ValueError("candidate_evidence_mismatch")
         qualified = value.startswith(("<", ">", "≤", "≥"))

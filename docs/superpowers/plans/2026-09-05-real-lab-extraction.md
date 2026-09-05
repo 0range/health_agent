@@ -15,7 +15,7 @@
 - Local first; cloud text requires explicit per-profile enablement and uses existing Settings key/model, strict Responses schema, store=false and no retries.
 - Bounds: 50 MiB original, 25M pixels, OCR30s, text60000 chars, cloud12000 chars, candidate excerpt500 chars, rows40/page, pages4/run default20 max, cloud2/run default10 max, daily20 default100 max, lifetime3 cloud attempts/page.
 - Durable claims/request reservations before external work; unknown cloud outcomes require explicit retry acknowledgment. Never reset counters on retry.
-- Worktree `health-agent-lab-extraction`, branch `codex/v1-real-lab-extraction`, base18d97a3; no merge/push. Add migration after0006 and coordinate renumbering with Sheets.
+- Worktree `health-agent-lab-extraction`, branch `codex/v1-real-lab-extraction`, base18d97a3; no merge/push into main. Main integration brings Sheets0007; extraction migration is0008, down0007_google_sheets.
 - Use apply_patch for authored edits; CLI/logs contain IDs/counts/safe codes only.
 
 ### Task 1: Extensible candidates, validation and local extraction
@@ -43,7 +43,7 @@
 
 ### Task 3: Durable scoped queue, profile budgets and backfill
 
-**Files:** Create `src/health_agent/lab_extraction/{models,service}.py`, `alembic/versions/0007_lab_extraction.py`, `tests/lab_extraction/{test_service,test_schema}.py`; update Alembic metadata imports and disposable cleanup table list.
+**Files:** Create `src/health_agent/lab_extraction/{models,queue,service}.py`, `alembic/versions/0008_lab_extraction.py`, `tests/lab_extraction/{test_service,test_schema}.py`; update Alembic metadata imports and disposable cleanup table list. Queue owns short DB transactions; service owns external-work orchestration.
 
 **Interfaces:** `LabExtractionService(engine, settings, local_reader=None, cloud_extractor=None)` with configure, run, status, retry. Profile config stores enablement/daily reservation; page jobs store version/status/claim/attempt counters/source digest/method/model/safe error.
 

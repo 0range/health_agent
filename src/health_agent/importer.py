@@ -398,6 +398,7 @@ def correct_observation(
         normalized_value=normalized_value,
         normalized_unit=normalized_unit,
         reference_low=original.reference_low,
+        source_flag=original.source_flag,
         reference_high=original.reference_high,
         reference_text=original.reference_text,
         evidence_excerpt=original.evidence_excerpt,
