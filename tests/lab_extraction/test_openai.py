@@ -44,7 +44,10 @@ class Client:
                     type="message",
                     status="completed",
                     content=[
-                        SimpleNamespace(type="refusal" if refusal else "output_text")
+                        SimpleNamespace(
+                            type="refusal" if refusal else "output_text",
+                            text=json.dumps(BODY) if text is None else text,
+                        )
                     ],
                 )
             ],
@@ -166,3 +169,27 @@ def test_key_loader_failure_never_exposes_path_or_secret():
     with pytest.raises(ExtractionError) as error:
         OpenAILabExtractor(BrokenSettings()).extract(PROFILE, TEXT)
     assert str(error.value) == "openai_not_configured"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        None,
+        [],
+        [SimpleNamespace(type="reasoning")],
+        [SimpleNamespace(type="message", status="completed")],
+        [SimpleNamespace(type="message", status="completed", content=None)],
+    ],
+)
+def test_malformed_response_envelopes_only_raise_safe_errors(output):
+    client = Client()
+    client.response.output = output
+    with pytest.raises(ExtractionError, match="cloud_invalid_output"):
+        OpenAILabExtractor(FakeSettings(), client=client).extract(PROFILE, TEXT)
+
+
+def test_convenience_output_cannot_forge_missing_message_text():
+    client = Client()
+    client.response.output[0].content = [SimpleNamespace(type="output_text")]
+    with pytest.raises(ExtractionError, match="cloud_invalid_output"):
+        OpenAILabExtractor(FakeSettings(), client=client).extract(PROFILE, TEXT)

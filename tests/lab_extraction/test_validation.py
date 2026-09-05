@@ -115,3 +115,47 @@ def test_numeric_evidence_cannot_drop_sign_qualifier_or_digits(printed):
     }
     with pytest.raises(ValueError):
         validate_candidates({"candidates": [row]}, text)
+
+
+@pytest.mark.parametrize(
+    "name,unit,reference,text",
+    [
+        ("Glucose", "mg/L", None, "Glucose 5 mg/L/day"),
+        ("Free T4", "pmol/L", None, "Free T4-index 5 pmol/L"),
+        ("Glucose", "mmol/L", "3.9-5.5", "Glucose 5 mmol/L 13.9-5.50"),
+    ],
+)
+def test_fields_must_not_be_shortened_tokens(name, unit, reference, text):
+    row = {
+        "source_name": name,
+        "source_value": "5",
+        "source_unit": unit,
+        "source_flag": None,
+        "reference_text": reference,
+        "evidence_excerpt": text,
+    }
+    with pytest.raises(ValueError):
+        validate_candidates({"candidates": [row]}, text)
+
+
+@pytest.mark.parametrize(
+    "text,flag",
+    [
+        ("ALT 53 H U/L 0-41", "H"),
+        ("ALT 53 U/L H 0-41", "H"),
+        ("ALT 53 U/L 0-41 H", "H"),
+        ("ALT 53 U/L ↑", "↑"),
+        ("ALT 53 U/L 0-41 *", "*"),
+    ],
+)
+def test_common_printed_flag_positions_are_not_lost(text, flag):
+    row = parse_local(text).candidates[0]
+    assert row.source_flag == flag
+
+
+def test_both_unknown_name_and_unit_are_retained_review_only():
+    row = parse_local("Synthetic marker 2.5 mystery-unit").candidates[0]
+    assert row.canonical_name.startswith("unmapped_")
+    assert row.source_unit == "mystery-unit"
+    with pytest.raises(ValueError):
+        normalize_registered(row.canonical_name, row.source_value, row.source_unit)

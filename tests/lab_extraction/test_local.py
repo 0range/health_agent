@@ -114,3 +114,17 @@ def test_local_ocr_subprocess_is_bounded_and_never_uses_shell(tmp_path, monkeypa
     assert command[0] == "/usr/bin/swift"
     assert options["timeout"] == 30
     assert not options.get("shell", False)
+
+
+def test_oversized_ocr_is_distinct_from_unavailable(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from health_agent.lab_extraction.local import recognize
+
+    monkeypatch.setattr("health_agent.lab_extraction.local.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "health_agent.lab_extraction.local.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="x" * 60001),
+    )
+    with pytest.raises(ExtractionError, match="page_text_limit"):
+        recognize(tmp_path / "unused.png")

@@ -8,7 +8,6 @@ from typing import Any
 from health_agent.lab_extraction.registry import (
     bounded_decimal,
     canonical_name,
-    known_unit,
 )
 from health_agent.lab_extraction.types import (
     MAX_CANDIDATES,
@@ -50,6 +49,19 @@ def _source_string(value: Any, limit: int) -> str:
     return value
 
 
+def _field_span(field: str, excerpt: str, text: str, start: int = 0) -> tuple[int, int]:
+    origin = text.find(excerpt)
+    offset = excerpt.find(field, start)
+    while offset >= 0:
+        left, right = origin + offset, origin + offset + len(field)
+        if (left == 0 or text[left - 1].isspace() or text[left - 1] == "|") and (
+            right == len(text) or text[right].isspace() or text[right] == "|"
+        ):
+            return offset, offset + len(field)
+        offset = excerpt.find(field, offset + 1)
+    raise ValueError("candidate_evidence_mismatch")
+
+
 def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
     if not isinstance(payload, dict) or set(payload) != {"candidates"}:
         raise ValueError("invalid_candidate_schema")
@@ -77,23 +89,24 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
             or (flag is not None and flag not in excerpt)
         ):
             raise ValueError("candidate_evidence_mismatch")
+        name_span = _field_span(name, excerpt, text)
+        value_span = _field_span(value, excerpt, text, name_span[1])
+        unit_span = _field_span(unit, excerpt, text, value_span[1])
         if (
-            re.search(
-                r"(?<![\w.,+<>≤≥-])" + re.escape(value) + r"(?![\w.,+<>≤≥-])", excerpt
-            )
-            is None
-            or re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", excerpt) is None
-            or re.search(r"(?<!\w)" + re.escape(unit) + r"(?!\w)", excerpt) is None
-            or (
-                flag is not None
-                and re.search(r"(?<!\S)" + re.escape(flag) + r"(?!\S)", excerpt) is None
-            )
+            not any(char.isalpha() for char in name)
+            or re.fullmatch(r"[\s|:=]*", excerpt[name_span[1] : value_span[0]]) is None
         ):
             raise ValueError("candidate_evidence_mismatch")
-        if not any(char.isalpha() for char in name) or excerpt.find(
-            name
-        ) > excerpt.find(value):
+        gap = excerpt[value_span[1] : unit_span[0]].strip(" \t\r\n|:=")
+        if gap and gap != flag:
             raise ValueError("candidate_evidence_mismatch")
+        if reference is not None:
+            reference_span = _field_span(reference, excerpt, text, unit_span[1])
+            gap = excerpt[unit_span[1] : reference_span[0]].strip(" \t\r\n|:=")
+            if gap and gap != flag:
+                raise ValueError("candidate_evidence_mismatch")
+        if flag is not None:
+            _field_span(flag, excerpt, text, value_span[1])
         qualified = value.startswith(("<", ">", "≤", "≥"))
         parsed = bounded_decimal(value[1:] if qualified else value)
         low, high = _reference_range(reference)
@@ -145,15 +158,33 @@ def parse_local(text: str) -> LocalResult:
             # Cleaning table separators never fabricates evidence: exact original
             # source fields must still occur in the unchanged source line.
             row["evidence_excerpt"] = line
-            name = canonical_name(row["source_name"])
-            if not name.startswith("unmapped_") or known_unit(row["source_unit"]):
-                try:
-                    candidates = validate_candidates({"candidates": [row]}, text)
-                except ValueError:
-                    unresolved = True
-                else:
-                    rows.extend(candidates)
-                continue
+            reference = row["reference_text"]
+            if reference:
+                fields = reference.split()
+                flags = [
+                    token for token in fields if token in {"H", "L", "↑", "↓", "*"}
+                ]
+                if flags:
+                    if (
+                        row["source_flag"] is not None
+                        or len(flags) != 1
+                        or (fields[0] != flags[0] and fields[-1] != flags[0])
+                    ):
+                        unresolved = True
+                        continue
+                    row["source_flag"] = flags[0]
+                    row["reference_text"] = (
+                        reference[len(flags[0]) :].strip()
+                        if fields[0] == flags[0]
+                        else reference[: -len(flags[0])].strip()
+                    ) or None
+            try:
+                candidates = validate_candidates({"candidates": [row]}, text)
+            except ValueError:
+                unresolved = True
+            else:
+                rows.extend(candidates)
+            continue
         if any(char.isdigit() for char in line) and any(
             char.isalpha() for char in line
         ):

@@ -88,8 +88,10 @@ def recognize(path: Path) -> str | None:
         )
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return None
-    if result.returncode or len(result.stdout.strip()) > MAX_PAGE_CHARACTERS:
+    if result.returncode:
         return None
+    if len(result.stdout.strip()) > MAX_PAGE_CHARACTERS:
+        raise ExtractionError("page_text_limit")
     return result.stdout.strip() or None
 
 

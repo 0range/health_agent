@@ -112,17 +112,32 @@ class OpenAILabExtractor:
             raise ExtractionError("cloud_outcome_unknown") from None
         if getattr(response, "status", None) != "completed":
             raise ExtractionError("cloud_incomplete")
-        for item in getattr(response, "output", ()):
+        envelope = getattr(response, "output", None)
+        if not isinstance(envelope, (list, tuple)) or not envelope:
+            raise ExtractionError("cloud_invalid_output")
+        segments: list[str] = []
+        for item in envelope:
             if getattr(item, "type", None) != "message":
                 continue
             if getattr(item, "status", None) != "completed":
                 raise ExtractionError("cloud_incomplete")
-            if any(
-                getattr(content, "type", None) == "refusal" for content in item.content
-            ):
-                raise ExtractionError("cloud_refused")
-        output = getattr(response, "output_text", None)
-        if not isinstance(output, str) or len(output) > 80_000:
+            contents = getattr(item, "content", None)
+            if not isinstance(contents, (list, tuple)) or not contents:
+                raise ExtractionError("cloud_invalid_output")
+            for content in contents:
+                kind = getattr(content, "type", None)
+                if kind == "refusal":
+                    raise ExtractionError("cloud_refused")
+                if kind != "output_text":
+                    raise ExtractionError("cloud_invalid_output")
+                segment = getattr(content, "text", None)
+                if not isinstance(segment, str):
+                    raise ExtractionError("cloud_invalid_output")
+                segments.append(segment)
+        if not segments:
+            raise ExtractionError("cloud_invalid_output")
+        output = "".join(segments)
+        if len(output) > 80_000:
             raise ExtractionError("cloud_invalid_output")
         try:
             return validate_candidates(json.loads(output), text)
