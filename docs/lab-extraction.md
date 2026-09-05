@@ -108,6 +108,23 @@ waiting_cloud/needs_attention. Это не означает, что кандид
 Cloud opt-in/лимит оставляют страницы waiting_cloud. Плохой исходник, непригодный
 текст, превышение bounds, refusal/incomplete/invalid output требуют внимания.
 
+Отклонённые cloud-запросы показываются только фиксированными кодами без ответа
+провайдера, request ID или текста исключения:
+
+- `cloud_quota_exhausted` — закончился доступный баланс/квота; пополните баланс или
+  квоту, затем явно повторите страницу;
+- `cloud_rate_limited` — провайдер временно ограничил частоту; дождитесь снятия
+  ограничения и повторите позже;
+- `cloud_auth_required` — проверьте API key и разрешения проекта, затем повторите;
+- `cloud_request_rejected` — запрос не принят как некорректный; перед retry проверьте
+  поддерживаемую model/configuration и совместимость SDK/API.
+
+После quota/auth/rate-limit ошибки worker не делает новых cloud-запросов в этом
+запуске, но продолжает локальную обработку оставшихся страниц. Каждая уже
+зарезервированная попытка по-прежнему расходует дневной и lifetime budget. Ошибки
+timeout/transport/5xx остаются `cloud_outcome_unknown`: для них сохраняется запрет
+на неявный retry и требуется `--acknowledge-unknown`.
+
 ```bash
 uv run health-agent lab-extract retry PROFILE_UUID DOCUMENT_UUID
 uv run health-agent lab-extract retry PROFILE_UUID DOCUMENT_UUID --acknowledge-unknown

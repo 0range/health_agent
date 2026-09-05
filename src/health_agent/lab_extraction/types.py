@@ -39,6 +39,10 @@ SAFE_CODES = frozenset(
         "cloud_budget_or_optin_required",
         "openai_not_configured",
         "cloud_input_limit",
+        "cloud_quota_exhausted",
+        "cloud_rate_limited",
+        "cloud_auth_required",
+        "cloud_request_rejected",
         "cloud_outcome_unknown",
         "cloud_unknown_acknowledged",
         "cloud_incomplete",
@@ -46,6 +50,10 @@ SAFE_CODES = frozenset(
         "cloud_refused",
         "unknown_retry_requires_acknowledgment",
     ]
+)
+
+CLOUD_RUN_STOP_CODES = frozenset(
+    ["cloud_quota_exhausted", "cloud_rate_limited", "cloud_auth_required"]
 )
 
 

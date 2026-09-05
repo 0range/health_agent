@@ -168,6 +168,34 @@ def test_unknown_cloud_outcome_is_not_retried_on_restart(clean_database, tmp_pat
     assert len(cloud.calls) == 2
 
 
+@pytest.mark.parametrize(
+    "safe_code",
+    ["cloud_quota_exhausted", "cloud_auth_required", "cloud_rate_limited"],
+)
+def test_bounded_cloud_failure_stops_cloud_calls_but_keeps_local_processing(
+    clean_database, tmp_path, safe_code
+):
+    for _ in range(3):
+        add_page(clean_database, "")
+    local_calls = []
+
+    def local_reader(snapshot, page_number, vault_root, temporary_root):
+        local_calls.append(snapshot.id)
+        return f"Unknown marker {len(local_calls)}"
+
+    cloud = Cloud(error=ExtractionError(safe_code))
+    worker = service(
+        clean_database, tmp_path, cloud=cloud, local_reader=local_reader
+    )
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
+    result = worker.run(DEFAULT_PROFILE_ID, limit=3, cloud_limit=3)
+    assert result.processed == 3
+    assert result.cloud_requests == 1
+    assert len(cloud.calls) == 1
+    assert len(local_calls) == 3
+    assert worker.status(DEFAULT_PROFILE_ID).waiting_cloud == 2
+
+
 def test_cloud_crash_fence_and_daily_budget_survive_restart(clean_database, tmp_path):
     first_id = add_page(clean_database, "Glucose\n5.1 mmol/L")
     add_page(clean_database, "Glucose\n5.1 mmol/L")

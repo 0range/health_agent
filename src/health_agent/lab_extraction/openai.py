@@ -7,7 +7,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 from health_agent.config import Settings
 from health_agent.lab_extraction.types import (
@@ -68,6 +68,31 @@ an empty candidates array. All returned rows require human review.
 """
 
 
+def _status_error_code(error: APIStatusError) -> str:
+    """Map only allowlisted structured status/code fields to application codes."""
+    status = error.status_code
+    if status == 429:
+        body = error.body
+        provider_code = None
+        if isinstance(body, dict):
+            provider_code = body.get("code")
+            if provider_code is None:
+                detail = body.get("error")
+                if isinstance(detail, dict):
+                    provider_code = detail.get("code")
+        if isinstance(provider_code, str) and provider_code in {
+            "credit_balance_exhausted",
+            "insufficient_quota",
+        }:
+            return "cloud_quota_exhausted"
+        return "cloud_rate_limited"
+    if status in {401, 403}:
+        return "cloud_auth_required"
+    if status in {400, 422}:
+        return "cloud_request_rejected"
+    return "cloud_outcome_unknown"
+
+
 class OpenAILabExtractor:
     def __init__(self, settings: Settings, *, client: Any = None) -> None:
         self.settings = settings
@@ -108,6 +133,8 @@ class OpenAILabExtractor:
         client = self._get_client()
         try:
             response = client.responses.create(**arguments)
+        except APIStatusError as error:
+            raise ExtractionError(_status_error_code(error)) from None
         except Exception:  # noqa: BLE001 -- response/transport details are private
             raise ExtractionError("cloud_outcome_unknown") from None
         if getattr(response, "status", None) != "completed":

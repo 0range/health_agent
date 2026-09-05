@@ -2,6 +2,8 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
+import openai
 import pytest
 
 from health_agent.lab_extraction.openai import OpenAILabExtractor
@@ -127,6 +129,56 @@ def test_transport_failure_is_one_call_and_safe():
     client.create = fail
     with pytest.raises(ExtractionError, match="cloud_outcome_unknown"):
         OpenAILabExtractor(FakeSettings(), client=client).extract(PROFILE, TEXT)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("exception_type", "status", "body", "safe_code"),
+    [
+        (
+            openai.RateLimitError,
+            429,
+            {"code": "credit_balance_exhausted"},
+            "cloud_quota_exhausted",
+        ),
+        (
+            openai.RateLimitError,
+            429,
+            {"code": "insufficient_quota"},
+            "cloud_quota_exhausted",
+        ),
+        (openai.RateLimitError, 429, {"code": "other"}, "cloud_rate_limited"),
+        (openai.RateLimitError, 429, {"code": []}, "cloud_rate_limited"),
+        (
+            openai.RateLimitError,
+            429,
+            {"error": {"code": {}}},
+            "cloud_rate_limited",
+        ),
+        (openai.AuthenticationError, 401, None, "cloud_auth_required"),
+        (openai.PermissionDeniedError, 403, None, "cloud_auth_required"),
+        (openai.BadRequestError, 400, None, "cloud_request_rejected"),
+        (openai.UnprocessableEntityError, 422, None, "cloud_request_rejected"),
+        (openai.InternalServerError, 500, None, "cloud_outcome_unknown"),
+    ],
+)
+def test_official_sdk_status_errors_map_to_fixed_safe_codes(
+    exception_type, status, body, safe_code
+):
+    client = Client()
+    response = httpx.Response(
+        status, request=httpx.Request("POST", "https://synthetic.invalid/v1/responses")
+    )
+
+    def fail(**kwargs):
+        client.calls.append(kwargs)
+        raise exception_type("private provider message", response=response, body=body)
+
+    client.create = fail
+    with pytest.raises(ExtractionError) as error:
+        OpenAILabExtractor(FakeSettings(), client=client).extract(PROFILE, TEXT)
+    assert str(error.value) == safe_code
+    assert "private" not in str(error.value)
     assert len(client.calls) == 1
 
 
