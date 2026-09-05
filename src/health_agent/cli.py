@@ -1408,6 +1408,13 @@ def configure_drive(profile_id: UUID, folders: list[str]) -> None:
         if profiles.exists(profile_key):
             current = profiles.load(profile_key)
             roots_changed = current.root_folder_ids != profile.root_folder_ids
+            if (
+                current.account_permission_id is not None
+                and current.account_email is not None
+            ):
+                profile = profile.with_account(
+                    current.account_permission_id, current.account_email
+                )
         else:
             roots_changed = True
         if roots_changed:
@@ -1422,7 +1429,7 @@ def configure_drive(profile_id: UUID, folders: list[str]) -> None:
 def authorize_drive(profile_id: UUID) -> None:
     """Authorize one Google account using a local Desktop OAuth callback."""
     settings = Settings()
-    profiles, tokens, _ = _drive_stores(settings)
+    profiles, tokens, state = _drive_stores(settings)
     _require_database_profile(settings, profile_id)
     profile_key = str(profile_id)
     profiles.load(profile_key)
@@ -1441,6 +1448,11 @@ def authorize_drive(profile_id: UUID) -> None:
             f"profile {profile_key!r} is already bound to another Google account"
         )
     oauth.publish_verified(profile_key, credentials, identity)
+    with state.sync_lock(profile_key):
+        profile = profiles.load(profile_key).with_account(
+            identity.permission_id, identity.email
+        )
+        profiles.save(profile)
     typer.echo(f"status=authorized profile={profile_key} account={identity.email}")
 
 
@@ -1526,6 +1538,7 @@ def sync_drive(profile_id: UUID, full: bool = False) -> None:
         profile = profiles.load(profile_key).with_account(
             identity.permission_id, identity.email
         )
+        profiles.save(profile)
         service = DriveService(
             profile,
             GoogleDriveGateway.from_credentials(

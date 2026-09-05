@@ -144,6 +144,32 @@ def test_changing_roots_invalidates_old_cursor(
     assert state.get_cursor(profile_id) is None
 
 
+def test_reconfiguring_roots_preserves_verified_account_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_database: Engine
+) -> None:
+    drive_root = tmp_path / "drive"
+    monkeypatch.setenv("GOOGLE_DRIVE_ROOT", str(drive_root))
+    monkeypatch.setenv(
+        "DATABASE_URL", clean_database.url.render_as_string(hide_password=False)
+    )
+    runner = CliRunner()
+    profile_id = str(DEFAULT_PROFILE_ID)
+    store = LocalProfileStore(drive_root)
+    first = "1g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsB"
+    second = "2g9ndH8Ue8XWJ6pjKSj4YPqLeGXw4ycsC"
+    assert runner.invoke(app, ["drive", "configure", profile_id, first]).exit_code == 0
+    store.save(
+        store.load(profile_id).with_account("permission-a", "alice@example.com")
+    )
+
+    result = runner.invoke(app, ["drive", "configure", profile_id, second])
+
+    assert result.exit_code == 0
+    configured = store.load(profile_id)
+    assert configured.account_permission_id == "permission-a"
+    assert configured.account_email == "alice@example.com"
+
+
 def test_root_reconfiguration_waits_for_the_same_lock_as_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_database: Engine
 ) -> None:
@@ -316,6 +342,9 @@ def test_successful_auth_publishes_verified_binding(
     verified = LocalTokenStore(drive_root).load_verified(profile_id)
     assert verified is not None
     assert verified[0].permission_id == "permission-a"
+    profile = LocalProfileStore(drive_root).load(profile_id)
+    assert profile.account_permission_id == "permission-a"
+    assert profile.account_email == "alice@example.com"
 
 
 def test_cli_sync_full_drive_lab_approve_reaches_exact_metabase_query(
@@ -346,6 +375,9 @@ def test_cli_sync_full_drive_lab_approve_reaches_exact_metabase_query(
     assert first.exit_code == 0
     assert "mode=full" in first.stdout
     assert "medically_imported=1" in first.stdout
+    profile = LocalProfileStore(drive_root).load(profile_id)
+    assert profile.account_permission_id == "permission-a"
+    assert profile.account_email == "alice@example.com"
     with session_scope(clean_database) as session:
         observation_id, document_id = session.execute(
             select(LabObservation.id, Document.id).join(LabObservation.document)
