@@ -5,8 +5,9 @@
 Коннектор работает через long polling на локальном Mac, принимает только явно
 привязанные личные чаты и всегда передаёт `profile_id` в Health Agent или
 медицинский inbox. Текст вопросов и содержимое файлов не сохраняются в его
-техническом журнале. Production composition подключена командой `telegram run`:
-профильные вопросы, PDF/JPEG/PNG importer и явная проверка распознанных значений.
+техническом журнале. Production-композиция `telegram run` обслуживает профильные
+вопросы, PDF/JPEG/PNG importer и явную проверку распознанных значений; отдельный
+LaunchAgent держит её включённой после входа пользователя в Mac.
 
 ## Что уже реализовано
 
@@ -79,6 +80,56 @@ symlink-компоненты, symlink-файлы и не-regular targets отв�
 identity/update/delivery keys; старый namespace сохраняется. Старый raw-token
 файл требует повторного `configure-token`, а legacy SQLite безопасно переносится
 в неактивный bot-0 namespace.
+
+## Всегда включённый режим на Mac
+
+Подготовьте абсолютный путь к приватному env-файлу и установите режим `0600`.
+Сам Telegram token остаётся в отдельном token-файле и в env/plist не копируется.
+
+```bash
+chmod 600 /absolute/path/health-agent/.env
+uv run health-agent telegram render --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram install --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram automation-status --env-file /absolute/path/health-agent/.env
+```
+
+`render` только создаёт проверяемый plist. `install` загружает user LaunchAgent
+`com.orange.health-agent.telegram`: он запускается при загрузке, остаётся
+включённым, а после неожиданного завершения повторяет старт не чаще чем раз в 30
+секунд. Настроенный webhook по-прежнему блокирует сам `telegram run`; локальный
+HTTP listener не создаётся.
+
+Штатная остановка выгружает label, поэтому `KeepAlive` его не перезапускает:
+
+```bash
+uv run health-agent telegram stop --env-file /absolute/path/health-agent/.env
+uv run health-agent telegram remove --env-file /absolute/path/health-agent/.env
+```
+
+`stop` сохраняет файлы, `remove` удаляет только два Telegram plist. Connector
+sync (`com.orange.health-agent.sync`) и reminders
+(`com.orange.health-agent.reminders`) не затрагиваются. Telegram владеет только:
+
+- `data/automation/launchd/com.orange.health-agent.telegram.plist`;
+- `~/Library/LaunchAgents/com.orange.health-agent.telegram.plist`;
+- `data/automation/telegram-service.lock`;
+- `~/Library/Application Support/Health Agent/locks/telegram-lifecycle.lock`;
+- `data/automation/logs/telegram-stdout.log`, `telegram-stderr.log` и одной
+  приватной ротацией `.1` после 5 МиБ.
+
+Plist содержит только абсолютные пути, не значения env. Managed-файлы имеют
+режим `0600`, каталоги — `0700`. Singleton lock не позволяет второму wrapper
+запустить ещё один poller и сериализует ротацию логов. В логах остаются только
+короткие `status/error` строки CLI без токенов, вопросов и медицинского текста.
+Отдельный lifecycle-lock сериализует `render`, `install`, чтение статуса, `stop`
+и `remove`, в том числе если команды одновременно запущены с разными env-файлами.
+Конкурирующая команда безопасно завершается с `telegram_lifecycle_busy` и не
+изменяет plist активной операции.
+
+При неудачной загрузке нового plist менеджер восстанавливает предыдущий файл и
+проверяет повторную загрузку старого сервиса. Ошибки новой загрузки и ошибки
+самого восстановления имеют разные короткие safe-коды; launchctl output, пути и
+содержимое env в них не попадают.
 
 ## Контракты приложения
 
@@ -164,11 +215,12 @@ webhook state и свежесть heartbeat; наличие файла токе�
 
 ## Что нужно для живого запуска
 
-После привязки запустите `uv run health-agent telegram run`. Нужны локальная БД с
-миграциями, приватный token и настроенный ключ вопросного responder; приложение
-проверяет responder configuration при запуске. Синтетический offline suite не
-подтверждает наличие Swift/Vision на конкретном Mac и качество OCR фотографий.
-Эти пункты и реальную Telegram-доставку проверяет владелец отдельно.
+До установки должны быть готовы локальная БД с миграциями, verified bot token,
+profile binding и OpenAI responder configuration. Сначала один раз вручную
+запустите `uv run health-agent telegram run`, проверьте `status=running`, ответ в
+личном чате и качество OCR тестового фото, затем остановите процесс и выполните
+`install`. Это live-проверка владельца: автоматические тесты не читают реальные
+credentials, не загружают LaunchAgent и не обращаются к Telegram/OpenAI.
 
 Подготовленные ответы вопросов и команд проверки временно сохраняются в общем
 приватном `TELEGRAM_ROOT/prepared-replies` (0700/0600, до 128 КиБ/ответ), включая
