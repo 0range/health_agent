@@ -16,6 +16,7 @@ from health_agent.lab_extraction.local import read_page
 from health_agent.lab_extraction.openai import OpenAILabExtractor
 from health_agent.lab_extraction.queue import ExtractionQueue, QueueStatus, profile_lock
 from health_agent.lab_extraction.types import (
+    CLOUD_RUN_STOP_CODES,
     MAX_CLOUD_CHARACTERS,
     Candidate,
     DocumentSnapshot,
@@ -96,6 +97,7 @@ class LabExtractionService:
                 return RunReport("deferred")
             self.queue.discover_and_recover(profile_id)
             processed = inserted = requests = 0
+            cloud_available = True
             for job_id in self.queue.pending(
                 profile_id, limit, cloud=state.cloud_enabled
             ):
@@ -129,7 +131,7 @@ class LabExtractionService:
                         claim,
                         self.clock().astimezone(UTC).date(),
                         self.settings.openai_model,
-                        allowed=requests < cloud_limit,
+                        allowed=cloud_available and requests < cloud_limit,
                     )
                     if not reserved:
                         continue
@@ -140,6 +142,8 @@ class LabExtractionService:
                     )
                 except ExtractionError as error:
                     self.queue.fail(claim, error.safe_code)
+                    if reserved and error.safe_code in CLOUD_RUN_STOP_CODES:
+                        cloud_available = False
                 except ValueError:
                     self.queue.fail(
                         claim,
