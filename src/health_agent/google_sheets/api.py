@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from collections.abc import Callable
 from typing import Any, cast
@@ -38,7 +39,20 @@ def _is_retryable(error: BaseException) -> bool:
     if not isinstance(error, HttpError):
         return False
     status = int(getattr(error.resp, "status", 0))
-    return status == 429 or status >= 500
+    if status == 429 or status >= 500:
+        return True
+    if status != 403:
+        return False
+    try:
+        payload = json.loads(error.content.decode("utf-8"))
+        reasons = {
+            detail.get("reason")
+            for detail in payload.get("error", {}).get("errors", [])
+            if isinstance(detail, dict)
+        }
+    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return bool(reasons & {"rateLimitExceeded", "userRateLimitExceeded"})
 
 
 def _retry[T](call: Callable[[], T]) -> T:

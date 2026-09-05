@@ -82,7 +82,7 @@ def parse_decisions(
     profile_id: UUID,
 ) -> tuple[ReviewDecision, ...]:
     if not rows:
-        return ()
+        raise ReviewGridError("review sheet schema is missing")
     if tuple(_text(value) for value in rows[0]) != REVIEW_HEADERS:
         raise ReviewGridError("review sheet schema mismatch")
     expected = {str(row.review_item_id): row for row in expected_rows}

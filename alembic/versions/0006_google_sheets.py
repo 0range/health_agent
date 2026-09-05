@@ -21,6 +21,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.create_unique_constraint(
+        "uq_review_items_id_observation",
+        "review_items",
+        ["id", "observation_id"],
+    )
     op.create_table(
         "sheets_sync_runs",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -66,17 +71,24 @@ def upgrade() -> None:
             "action IN ('approve', 'correct', 'reject')",
             name="ck_sheets_review_decision_action",
         ),
+        sa.CheckConstraint(
+            "sheet_row >= 2", name="ck_sheets_review_decision_sheet_row"
+        ),
         sa.ForeignKeyConstraint(
             ["observation_id", "document_id"],
             ["lab_observations.id", "lab_observations.document_id"],
             name="fk_sheets_review_audit_observation_document",
         ),
         sa.ForeignKeyConstraint(
+            ["review_item_id", "observation_id"],
+            ["review_items.id", "review_items.observation_id"],
+            name="fk_sheets_review_audit_review_observation",
+        ),
+        sa.ForeignKeyConstraint(
             ["document_id", "profile_id"],
             ["documents.id", "documents.profile_id"],
             name="fk_sheets_review_audit_document_profile",
         ),
-        sa.ForeignKeyConstraint(["review_item_id"], ["review_items.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "profile_id", "review_item_id", name="uq_sheets_review_decision_once"
@@ -122,5 +134,6 @@ def downgrade() -> None:
         table_name="sheets_review_decision_audits",
     )
     op.drop_table("sheets_review_decision_audits")
+    op.drop_constraint("uq_review_items_id_observation", "review_items", type_="unique")
     op.drop_index("ix_sheets_sync_runs_profile_id", table_name="sheets_sync_runs")
     op.drop_table("sheets_sync_runs")

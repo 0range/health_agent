@@ -72,7 +72,7 @@ class SheetsOAuth:
             )
         elif credentials.expired and credentials.refresh_token:
             try:
-                credentials.refresh(Request())
+                credentials.refresh(_BoundedRequest(self.timeout_seconds))
             except RefreshError as error:
                 raise SheetsOAuthRequired(
                     "Google Sheets reauthorization is required"
@@ -136,3 +136,13 @@ class SheetsOAuth:
         actual = set(credentials.granted_scopes or credentials.scopes or ())
         if actual != set(SHEETS_SCOPES):
             raise SheetsOAuthScopeError("Google token must grant exact Sheets scopes")
+
+
+class _BoundedRequest:
+    def __init__(self, timeout_seconds: int) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._request = Request()
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        kwargs["timeout"] = self.timeout_seconds
+        return self._request(*args, **kwargs)

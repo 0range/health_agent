@@ -52,6 +52,7 @@ class SheetsReviewDecisionAudit(Base):
             "action IN ('approve', 'correct', 'reject')",
             name="ck_sheets_review_decision_action",
         ),
+        CheckConstraint("sheet_row >= 2", name="ck_sheets_review_decision_sheet_row"),
         UniqueConstraint(
             "profile_id", "review_item_id", name="uq_sheets_review_decision_once"
         ),
@@ -59,6 +60,11 @@ class SheetsReviewDecisionAudit(Base):
             ["observation_id", "document_id"],
             ["lab_observations.id", "lab_observations.document_id"],
             name="fk_sheets_review_audit_observation_document",
+        ),
+        ForeignKeyConstraint(
+            ["review_item_id", "observation_id"],
+            ["review_items.id", "review_items.observation_id"],
+            name="fk_sheets_review_audit_review_observation",
         ),
         ForeignKeyConstraint(
             ["document_id", "profile_id"],
@@ -69,9 +75,7 @@ class SheetsReviewDecisionAudit(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(index=True)
-    review_item_id: Mapped[UUID] = mapped_column(
-        ForeignKey("review_items.id"), index=True
-    )
+    review_item_id: Mapped[UUID] = mapped_column(index=True)
     observation_id: Mapped[UUID] = mapped_column(index=True)
     document_id: Mapped[UUID] = mapped_column(index=True)
     spreadsheet_id: Mapped[str] = mapped_column(String(300))

@@ -170,7 +170,9 @@ def _expected_review(
         review.reason_code,
         _source_link(session, observation.document_id),
     )
-    version = audited_version or _row_version(partial[:3] + partial[4:])
+    version = audited_version or _row_version(
+        partial[:3] + partial[4:] + (ReviewStatus.NEEDS_REVIEW.value,)
+    )
     values = partial[:3] + (version,) + partial[4:]
     return ExpectedReviewRow(
         review.id, observation.id, profile_id, version, values, row_number

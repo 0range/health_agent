@@ -23,12 +23,14 @@ from health_agent.google_drive.stores import (
 )
 from health_agent.google_sheets.oauth import SheetsOAuth
 from health_agent.google_sheets.projection import SourceStatusRow
+from health_agent.google_sheets.stores import LocalSheetsStateStore
 from health_agent.whoop.models import WhoopConnection
 
 
 def _safe_regular_file(path: Path) -> bool:
-    if path.is_symlink():
-        raise RuntimeError("unsafe connector configuration")
+    for candidate in (path, path.parent, path.parent.parent):
+        if candidate.is_symlink():
+            raise RuntimeError("unsafe connector configuration")
     return path.is_file()
 
 
@@ -126,5 +128,20 @@ def collect_source_statuses(
         authorization = (
             sheets_oauth.local_status(profile) if sheets_oauth else "unknown"
         )
-        rows.append(SourceStatusRow("sheets", "main", authorization))
+        sheets_state = LocalSheetsStateStore(settings.google_sheets_root).read(profile)
+        last_success = _optional_string(sheets_state.get("last_success_at"))
+        rows.append(
+            SourceStatusRow(
+                "sheets",
+                "main",
+                authorization,
+                last_success=last_success,
+                safe_error=_optional_string(sheets_state.get("safe_error_code")),
+                freshness=_freshness(last_success, "sheets", now),
+            )
+        )
     return tuple(sorted(rows, key=lambda row: (row.source, row.account)))
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None

@@ -65,7 +65,9 @@ class SourceRecord(Base):
     external_id: Mapped[str] = mapped_column(String(500))
     revision: Mapped[str] = mapped_column(String(500))
     source_uri: Mapped[str | None] = mapped_column(String(2000))
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
 
     profile: Mapped[Profile] = relationship(back_populates="source_records")
     document_links: Mapped[list[DocumentSourceRecord]] = relationship(
@@ -136,7 +138,9 @@ class DocumentPage(Base):
     __tablename__ = "document_pages"
     __table_args__ = (
         UniqueConstraint("document_id", "page_number"),
-        CheckConstraint("page_number >= 1", name="ck_document_pages_page_number_positive"),
+        CheckConstraint(
+            "page_number >= 1", name="ck_document_pages_page_number_positive"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -161,9 +165,12 @@ class LabObservation(Base):
             name="fk_lab_observations_supersedes_same_document",
         ),
         UniqueConstraint("id", "document_id"),
-        CheckConstraint("page_number >= 1", name="ck_lab_observations_page_number_positive"),
         CheckConstraint(
-            "confidence >= 0 AND confidence <= 1", name="ck_lab_observations_confidence_range"
+            "page_number >= 1", name="ck_lab_observations_page_number_positive"
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_lab_observations_confidence_range",
         ),
         CheckConstraint(
             "reference_low IS NULL OR reference_high IS NULL OR reference_low <= reference_high",
@@ -208,7 +215,10 @@ class LabObservation(Base):
     )
 
     document: Mapped[Document] = relationship(back_populates="observations")
-    review_item: Mapped[ReviewItem | None] = relationship(back_populates="observation", uselist=False)
+    review_item: Mapped[ReviewItem | None] = relationship(
+        back_populates="observation", uselist=False
+    )
+
     @property
     def is_publishable(self) -> bool:
         return self.status == ReviewStatus.VERIFIED
@@ -216,7 +226,10 @@ class LabObservation(Base):
 
 class ReviewItem(Base):
     __tablename__ = "review_items"
-    __table_args__ = (UniqueConstraint("observation_id"),)
+    __table_args__ = (
+        UniqueConstraint("observation_id"),
+        UniqueConstraint("id", "observation_id", name="uq_review_items_id_observation"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     observation_id: Mapped[UUID] = mapped_column(
@@ -225,7 +238,9 @@ class ReviewItem(Base):
     reason_code: Mapped[str] = mapped_column(String(100))
     decision: Mapped[str | None] = mapped_column(String(100))
     correction_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     observation: Mapped[LabObservation] = relationship(back_populates="review_item")

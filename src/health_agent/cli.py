@@ -44,7 +44,11 @@ from health_agent.google_drive.stores import (
 )
 from health_agent.google_sheets.api import GoogleSheetsGateway
 from health_agent.google_sheets.oauth import SheetsOAuth
-from health_agent.google_sheets.service import SheetsService
+from health_agent.google_sheets.service import (
+    SheetsService,
+    SheetsSyncFailure,
+    WorkbookOwnershipError,
+)
 from health_agent.google_sheets.sources import collect_source_statuses
 from health_agent.google_sheets.stores import (
     LocalSheetsProfileStore,
@@ -1307,6 +1311,12 @@ def sync_sheets(profile_id: UUID) -> None:
     """Import review decisions and refresh managed profile projections."""
     try:
         report = _build_sheets_service(Settings()).sync(profile_id)
+    except WorkbookOwnershipError:
+        typer.echo("status=failed safe_error=workbook_mismatch", err=True)
+        raise typer.Exit(code=1) from None
+    except SheetsSyncFailure as error:
+        typer.echo(f"status=failed safe_error={error.safe_code}", err=True)
+        raise typer.Exit(code=1) from None
     except Exception:  # noqa: BLE001 - remote cells and API bodies stay private
         typer.echo("status=failed safe_error=sheets_sync_failed", err=True)
         raise typer.Exit(code=1) from None
