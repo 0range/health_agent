@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- No production credentials, medical values, or raw provider errors in test fixtures, logs, reports, or commits.
+- No real credentials, real patient medical values, or real raw provider errors in test fixtures, logs, reports, or commits. Invented synthetic medical values are required and allowed for tests.
 - No external calls on panel page reads; no database mutations from projections.
 - Every health query is profile scoped. Empty/unconnected profiles must not inherit another profile's data.
 - Russian user-facing text. Unknown is not healthy; configured is not running.
