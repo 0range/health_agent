@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from health_agent.insights.models import HealthSnapshot
 
 
 class QuestionIntent(StrEnum):
@@ -88,6 +92,7 @@ class HealthQuestionContext:
     source_counts: dict[EvidenceSource, int]
     limitations: tuple[ContextLimitation, ...] = ()
     max_items_per_source: int = 10
+    snapshot: HealthSnapshot | None = None
 
     @property
     def citations(self) -> tuple[EvidenceItem, ...]:

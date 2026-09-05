@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import Select, String, and_, cast, func, select
 from sqlalchemy.orm import Session
 
+from health_agent.insights.service import HealthSnapshotBuilder
 from health_agent.models import Document, LabObservation, ReviewStatus
 from health_agent.questions.models import (
     ContextLimitation,
@@ -109,15 +110,21 @@ class HealthContextBuilder:
             EvidenceSource.WEIGHT: self._weights(profile_id, window_start, window_end),
         }
         evidence = _label_evidence(rows_by_source)
+        snapshot = HealthSnapshotBuilder(self._session, clock=lambda: window_end).build(
+            profile_id
+        )
         return HealthQuestionContext(
             profile_id=profile_id,
             intent=intent,
             window_start=window_start,
             window_end=window_end,
             evidence=evidence,
-            source_counts={source: len(rows_by_source[source]) for source in _SOURCE_ORDER},
+            source_counts={
+                source: len(rows_by_source[source]) for source in _SOURCE_ORDER
+            },
             limitations=_limitations_for(question, intent),
             max_items_per_source=self._max_items_per_source,
+            snapshot=snapshot,
         )
 
     def _labs(
