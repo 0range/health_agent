@@ -79,7 +79,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("page_number >= 1", name="ck_extraction_page"),
         sa.CheckConstraint(
-            "local_attempts >= 0 AND cloud_attempts BETWEEN 0 AND 3 AND candidate_count >= 0",
+            "local_attempts >= 0 AND cloud_attempts BETWEEN 0 AND 3 AND candidate_count BETWEEN 0 AND 40",
             name="ck_extraction_counters",
         ),
         sa.CheckConstraint(

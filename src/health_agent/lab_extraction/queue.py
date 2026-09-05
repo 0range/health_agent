@@ -135,7 +135,10 @@ class ExtractionQueue:
                 status: count
                 for status, count in session.execute(
                     select(LabExtractionJob.status, func.count())
-                    .where(LabExtractionJob.profile_id == profile_id)
+                    .where(
+                        LabExtractionJob.profile_id == profile_id,
+                        LabExtractionJob.extractor_version == EXTRACTOR_VERSION,
+                    )
                     .group_by(LabExtractionJob.status)
                 ).all()
             }
@@ -191,6 +194,7 @@ class ExtractionQueue:
                         profile_id=profile_id,
                         document_id=document_id,
                         page_number=page,
+                        extractor_version=EXTRACTOR_VERSION,
                         status="queued" if page <= 100 else "needs_attention",
                         safe_error_code=None if page <= 100 else "page_limit",
                     )
@@ -205,6 +209,7 @@ class ExtractionQueue:
                     .where(
                         LabExtractionJob.profile_id == profile_id,
                         LabExtractionJob.status.in_(states),
+                        LabExtractionJob.extractor_version == EXTRACTOR_VERSION,
                     )
                     .order_by(LabExtractionJob.updated_at, LabExtractionJob.id)
                     .limit(limit)
@@ -326,6 +331,17 @@ class ExtractionQueue:
                 for row in existing
             }
             inserted = 0
+            lifetime_candidates = (
+                session.scalar(
+                    select(
+                        func.coalesce(func.sum(LabExtractionJob.candidate_count), 0)
+                    ).where(
+                        LabExtractionJob.document_id == document.id,
+                        LabExtractionJob.page_number == claim.page_number,
+                    )
+                )
+                or 0
+            )
             for candidate in candidates:
                 key = _value_key(
                     candidate.source_name, candidate.source_value, candidate.source_unit
@@ -333,6 +349,8 @@ class ExtractionQueue:
                 if key in keys:
                     continue
                 keys.add(key)
+                if lifetime_candidates + inserted >= 40:
+                    raise ExtractionError("candidate_limit")
                 row = LabObservation(
                     document_id=document.id,
                     page_number=claim.page_number,
@@ -404,8 +422,23 @@ class ExtractionQueue:
                 .with_for_update()
             )
             job = _locked_job(session, claim)
-            if job.cloud_attempts >= 3:
+            page_jobs = session.scalars(
+                select(LabExtractionJob)
+                .where(
+                    LabExtractionJob.document_id == job.document_id,
+                    LabExtractionJob.page_number == job.page_number,
+                )
+                .with_for_update()
+            ).all()
+            if sum(page_job.cloud_attempts for page_job in page_jobs) >= 3:
                 _finish(job, "needs_attention", "cloud_attempt_limit")
+                return False
+            if any(
+                page_job.safe_error_code == "cloud_outcome_unknown"
+                or (page_job.id != job.id and page_job.status == "cloud_in_flight")
+                for page_job in page_jobs
+            ):
+                _finish(job, "needs_attention", "cloud_outcome_unknown")
                 return False
             if config is None or not config.enabled:
                 _finish(job, "waiting_cloud", "extraction_disabled")
@@ -422,6 +455,7 @@ class ExtractionQueue:
                 return False
             config.cloud_requests_today += 1
             job.cloud_attempts += 1
+            job.safe_error_code = None
             job.status, job.model_name = "cloud_in_flight", model
             return True
 
@@ -465,10 +499,21 @@ class ExtractionQueue:
                 raise ExtractionError("unknown_retry_requires_acknowledgment")
             count = 0
             for job in jobs:
+                if acknowledge_unknown and (
+                    job.safe_error_code == "cloud_outcome_unknown"
+                    or job.status == "cloud_in_flight"
+                ):
+                    _finish(job, "needs_attention", "cloud_unknown_acknowledged")
                 if (
-                    job.status
+                    job.extractor_version == EXTRACTOR_VERSION
+                    and job.status
                     in {"needs_attention", "waiting_cloud", "cloud_in_flight"}
-                    and job.cloud_attempts < 3
+                    and sum(
+                        page_job.cloud_attempts
+                        for page_job in jobs
+                        if page_job.page_number == job.page_number
+                    )
+                    < 3
                 ):
                     _finish(job, "queued")
                     count += 1

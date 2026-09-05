@@ -15,7 +15,7 @@ from health_agent.lab_extraction.models import LabExtractionJob
 from health_agent.lab_extraction.queue import profile_lock
 from health_agent.lab_extraction.service import LabExtractionService
 from health_agent.lab_extraction.types import ExtractionError
-from health_agent.lab_extraction.validation import validate_candidates
+from health_agent.lab_extraction.validation import parse_local, validate_candidates
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
     Document,
@@ -291,3 +291,58 @@ def test_document_date_conflict_is_preserved(clean_database, tmp_path):
         document = session.get_one(Document, document_id)
         assert document.processing_status == "needs_attention"
         assert document.safe_error_code == "conflicting_medical_date"
+
+
+def test_local_cloud_aggregate_candidate_cap_is_atomic(clean_database, tmp_path):
+    text = "\n".join(f"Marker{i} {i} U/L" for i in range(41))
+    add_page(clean_database, text)
+    worker = service(clean_database, tmp_path)
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
+    worker.queue.discover_and_recover(DEFAULT_PROFILE_ID)
+    claim = worker.queue.claim(
+        DEFAULT_PROFILE_ID, worker.queue.pending(DEFAULT_PROFILE_ID, 1, cloud=True)[0]
+    )
+    candidates = tuple(parse_local(line).candidates[0] for line in text.splitlines())
+    worker.queue.publish(claim, text, candidates[:40], cloud=False, unresolved=True)
+    worker.queue.reserve_cloud(
+        claim, datetime.now(UTC).date(), "synthetic-model", allowed=True
+    )
+    with pytest.raises(ExtractionError, match="candidate_limit"):
+        worker.queue.publish(claim, text, candidates[40:], cloud=True)
+    with session_scope(clean_database) as session:
+        assert len(session.scalars(select(LabObservation)).all()) == 40
+
+
+def test_version_bump_preserves_unknown_acknowledgment_fence(clean_database, tmp_path):
+    document_id = add_page(clean_database, "Glucose\n5.1 mmol/L")
+    cloud = Cloud(error=ExtractionError("cloud_outcome_unknown"))
+    worker = service(clean_database, tmp_path, cloud=cloud)
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
+    worker.run(DEFAULT_PROFILE_ID)
+    with session_scope(clean_database) as session:
+        session.scalars(
+            select(LabExtractionJob)
+        ).one().extractor_version = "older-version"
+    assert worker.run(DEFAULT_PROFILE_ID).cloud_requests == 0
+    assert len(cloud.calls) == 1
+    with pytest.raises(ExtractionError, match="unknown_retry_requires_acknowledgment"):
+        worker.retry(DEFAULT_PROFILE_ID, document_id)
+    worker.retry(DEFAULT_PROFILE_ID, document_id, acknowledge_unknown=True)
+    assert worker.run(DEFAULT_PROFILE_ID).cloud_requests == 1
+    assert len(cloud.calls) == 2
+
+
+def test_version_bump_cannot_reset_page_lifetime_cost(clean_database, tmp_path):
+    document_id = add_page(clean_database, "Glucose\n5.1 mmol/L")
+    cloud = Cloud(error=ExtractionError("cloud_outcome_unknown"))
+    worker = service(clean_database, tmp_path, cloud=cloud)
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
+    for _ in range(3):
+        worker.run(DEFAULT_PROFILE_ID)
+        worker.retry(DEFAULT_PROFILE_ID, document_id, acknowledge_unknown=True)
+    with session_scope(clean_database) as session:
+        session.scalars(
+            select(LabExtractionJob)
+        ).one().extractor_version = "older-version"
+    assert worker.run(DEFAULT_PROFILE_ID).cloud_requests == 0
+    assert len(cloud.calls) == 3
