@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
+from health_agent.insights.catalog import explain
 from health_agent.insights.models import SignalKind, SignalState
 from health_agent.insights.service import HealthSnapshotBuilder, _valid_bounds
 from health_agent.models import (
@@ -18,6 +19,14 @@ from health_agent.models import (
 )
 
 NOW = datetime(2026, 9, 5, 12, tzinfo=UTC)
+
+
+def test_reviewed_catalogue_has_primary_sources_without_numeric_targets() -> None:
+    for key in ("ferritin", "ldl_cholesterol", "vitamin_b12", "folate"):
+        entry = explain(key)
+        assert entry is not None
+        assert entry.source_url.startswith("https://medlineplus.gov/lab-tests/")
+        assert not any(mark in entry.general_knowledge for mark in ("<", ">", "≤", "≥"))
 
 
 def test_lab_uses_parsed_source_value_against_source_range_and_keeps_qualifier(
@@ -40,7 +49,7 @@ def test_lab_uses_parsed_source_value_against_source_range_and_keeps_qualifier(
     )
     signal = next(item for item in snapshot.signals if item.kind is SignalKind.LAB)
 
-    assert signal.state is SignalState.ATTENTION
+    assert signal.state is SignalState.GAP
     assert signal.value == "<5"
     assert signal.reference == "10–20"
     assert signal.observed_at.date() == date(2025, 1, 2)
@@ -63,11 +72,20 @@ def test_missing_range_is_gap_not_stable_and_unverified_is_excluded(
         DEFAULT_PROFILE_ID
     )
 
-    assert [
+    assert {
         signal.title for signal in snapshot.gaps if signal.kind is SignalKind.LAB
-    ] == ["No range"]
+    } == {"No range", "Качество лабораторных данных"}
     assert "Draft" not in {signal.title for signal in snapshot.signals}
     assert not snapshot.stable
+
+
+def test_empty_profile_has_explicit_unknown_lab_gap(session: Session) -> None:
+    snapshot = HealthSnapshotBuilder(session, clock=lambda: NOW).build(
+        DEFAULT_PROFILE_ID
+    )
+    lab_gaps = [signal for signal in snapshot.gaps if signal.kind is SignalKind.LAB]
+    assert len(lab_gaps) == 1
+    assert "пока нет" in lab_gaps[0].summary
 
 
 def test_latest_per_analyte_and_source_unit_is_profile_scoped(session: Session) -> None:
@@ -92,6 +110,25 @@ def test_latest_per_analyte_and_source_unit_is_profile_scoped(session: Session) 
     assert "Other secret" not in {signal.title for signal in snapshot.signals}
 
 
+def test_latest_per_group_is_selected_before_global_bound(session: Session) -> None:
+    _lab(session, DEFAULT_PROFILE_ID, "Older distinct", day=date(2025, 1, 1))
+    for index in range(201):
+        _lab(
+            session,
+            DEFAULT_PROFILE_ID,
+            "Repeated",
+            day=date(2026, 1, 1) + timedelta(days=index),
+        )
+
+    snapshot = HealthSnapshotBuilder(session, clock=lambda: NOW).build(
+        DEFAULT_PROFILE_ID
+    )
+
+    assert {"Older distinct", "Repeated"} <= {
+        signal.title for signal in snapshot.signals
+    }
+
+
 def test_nonfinite_and_inverted_bounds_are_invalid() -> None:
     assert not _valid_bounds(Decimal("NaN"), Decimal(2))
     assert not _valid_bounds(Decimal(2), Decimal(1))
@@ -107,7 +144,8 @@ def test_wearable_daily_grouping_prevents_duplicates_from_meeting_threshold(
     signal = builder._trend(
         "Сон",
         "ч",
-        [(recent_day, 7.0)] * 20 + [(baseline_day, 8.0)] * 20,
+        [(recent_day, 7.0, str(uuid4()))] * 20
+        + [(baseline_day, 8.0, str(uuid4()))] * 20,
         NOW,
         "whoop_sleep",
     )
@@ -115,6 +153,36 @@ def test_wearable_daily_grouping_prevents_duplicates_from_meeting_threshold(
     assert signal.state is SignalState.GAP
     assert "последние 7 — 1" in signal.summary
     assert "предыдущие 28 — 1" in signal.summary
+
+
+def test_wearable_windows_use_only_complete_utc_days(session: Session) -> None:
+    builder = HealthSnapshotBuilder(session, clock=lambda: NOW)
+    today_partial = datetime(2026, 9, 5, 1, tzinfo=UTC)
+    day_seven = datetime(2026, 8, 29, 23, tzinfo=UTC)
+    recent = [
+        (day_seven + timedelta(days=offset), 10.0, str(uuid4())) for offset in range(7)
+    ]
+    baseline = [
+        (
+            datetime(2026, 8, 1, 12, tzinfo=UTC) + timedelta(days=offset),
+            5.0,
+            str(uuid4()),
+        )
+        for offset in range(28)
+    ]
+
+    signal = builder._trend(
+        "Метрика",
+        None,
+        [*recent, *baseline, (today_partial, 999.0, str(uuid4()))],
+        NOW,
+        "whoop_test",
+    )
+
+    assert signal.state is SignalState.OBSERVED
+    assert signal.value == "10.0"
+    assert signal.citations[0].observed_on == date(2026, 8, 1)
+    assert all(citation.source_id != "whoop_test" for citation in signal.citations)
 
 
 def _lab(

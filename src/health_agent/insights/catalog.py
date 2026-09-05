@@ -44,6 +44,44 @@ EXPLANATIONS: dict[str, Explanation] = {
         source_url="https://developer.whoop.com/docs/developing/user-data/recovery/",
         possible_next_step="Использовать изменение как наблюдение, а не диагноз.",
     ),
+    "ferritin": Explanation(
+        key="ferritin",
+        general_knowledge=(
+            "Ферритин — белок, который хранит железо; результат обычно оценивают вместе "
+            "с другими исследованиями обмена железа."
+        ),
+        source_url="https://medlineplus.gov/lab-tests/ferritin-blood-test/",
+        possible_next_step="Обсудить совместную интерпретацию показателей железа с врачом.",
+    ),
+    **{
+        key: Explanation(
+            key=key,
+            general_knowledge=(
+                "Показатели липидного профиля помогают оценивать сердечно-сосудистый риск; "
+                "индивидуальные цели зависят от общего клинического контекста."
+            ),
+            source_url="https://medlineplus.gov/lab-tests/cholesterol-levels/",
+            possible_next_step="Обсудить индивидуальную оценку риска и цели с врачом.",
+        )
+        for key in (
+            "total_cholesterol",
+            "ldl_cholesterol",
+            "hdl_cholesterol",
+            "triglycerides",
+        )
+    },
+    **{
+        key: Explanation(
+            key=key,
+            general_knowledge=(
+                "Витамины B9 и B12 участвуют в работе клеток крови и нервной системы; "
+                "их уровни нередко исследуют вместе."
+            ),
+            source_url="https://medlineplus.gov/lab-tests/vitamin-b-test/",
+            possible_next_step="Обсудить совместную интерпретацию результатов с врачом.",
+        )
+        for key in ("vitamin_b12", "folate")
+    },
 }
 
 

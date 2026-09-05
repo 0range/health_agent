@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +31,7 @@ from health_agent.questions.models import (
     EvidenceTimeSemantics,
     QuestionIntent,
 )
+from health_agent.questions.openai import build_responder_input
 from health_agent.questions.service import HealthQuestionApplicationService
 from health_agent.whoop.models import WhoopConnection
 from health_agent.whoop.normalize import normalize_whoop
@@ -40,30 +43,44 @@ from health_agent.whoop.repository import (
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
 
 
-@pytest.mark.parametrize("question,intent,blocked", (
-    ("Show my ferritin trend", QuestionIntent.GENERAL, False),
-    ("Покажи динамику холестерина", QuestionIntent.GENERAL, False),
-    ("What is my current weight?", QuestionIntent.CURRENT_WEIGHT, False),
-    ("Какой сейчас вес?", QuestionIntent.CURRENT_WEIGHT, False),
-    ("Has my weight changed?", QuestionIntent.WEIGHT_TREND, True),
-    ("Покажи динамику веса", QuestionIntent.WEIGHT_TREND, True),
-    ("How have my sleep and weight changed?", QuestionIntent.SLEEP_RECOVERY, False),
-    ("Как изменились сон и вес?", QuestionIntent.SLEEP_RECOVERY, False),
-))
+@pytest.mark.parametrize(
+    "question,intent,blocked",
+    (
+        ("Show my ferritin trend", QuestionIntent.GENERAL, False),
+        ("Покажи динамику холестерина", QuestionIntent.GENERAL, False),
+        ("What is my current weight?", QuestionIntent.CURRENT_WEIGHT, False),
+        ("Какой сейчас вес?", QuestionIntent.CURRENT_WEIGHT, False),
+        ("Has my weight changed?", QuestionIntent.WEIGHT_TREND, True),
+        ("Покажи динамику веса", QuestionIntent.WEIGHT_TREND, True),
+        ("How have my sleep and weight changed?", QuestionIntent.SLEEP_RECOVERY, False),
+        ("Как изменились сон и вес?", QuestionIntent.SLEEP_RECOVERY, False),
+    ),
+)
 def test_inference_is_separate_from_window_selection(
     session: Session, question: str, intent: QuestionIntent, blocked: bool
 ) -> None:
     _lab(session, DEFAULT_PROFILE_ID, "Ferritin", 42, NOW.date())
     _lab(session, DEFAULT_PROFILE_ID, "Ferritin", 40, (NOW - timedelta(days=3)).date())
     connection = register_authorized_connection(
-        session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement", "read:sleep")
+        session,
+        DEFAULT_PROFILE_ID,
+        "primary",
+        7,
+        ("read:body_measurement", "read:sleep"),
     )
     _store_whoop(session, connection, "body", {"weight_kilogram": 74.5})
-    _store_whoop(session, connection, "sleep", {
-        "id": "sleep-1", "user_id": 7, "cycle_id": 2,
-        "start": "2026-09-03T20:00:00Z",
-        "score": {"stage_summary": {"total_light_sleep_time_milli": 25_200_000}},
-    })
+    _store_whoop(
+        session,
+        connection,
+        "sleep",
+        {
+            "id": "sleep-1",
+            "user_id": 7,
+            "cycle_id": 2,
+            "start": "2026-09-03T20:00:00Z",
+            "score": {"stage_summary": {"total_light_sleep_time_milli": 25_200_000}},
+        },
+    )
     calls = []
 
     def respond(**kwargs):
@@ -91,16 +108,25 @@ def test_inference_is_separate_from_window_selection(
         assert result.text.startswith("The recorded sleep was 7 hours")
 
 
-@pytest.mark.parametrize("offset,included", ((-30, True), (0, True), (-31, False), (1, False)))
+@pytest.mark.parametrize(
+    "offset,included", ((-30, True), (0, True), (-31, False), (1, False))
+)
 def test_current_weight_enforces_both_inclusive_sync_window_bounds(
     session: Session, offset: int, included: bool
 ) -> None:
     connection = register_authorized_connection(
         session, DEFAULT_PROFILE_ID, "primary", 7, ("read:body_measurement",)
     )
-    _store_whoop(session, connection, "body", {"weight_kilogram": 74.5},
-                 fetched_at=NOW + timedelta(days=offset))
-    context = build_context(session, DEFAULT_PROFILE_ID, "current weight", clock=lambda: NOW)
+    _store_whoop(
+        session,
+        connection,
+        "body",
+        {"weight_kilogram": 74.5},
+        fetched_at=NOW + timedelta(days=offset),
+    )
+    context = build_context(
+        session, DEFAULT_PROFILE_ID, "current weight", clock=lambda: NOW
+    )
     assert bool(context.evidence) is included
     assert not context.limitations
 
@@ -111,9 +137,18 @@ def test_context_excludes_other_profiles_and_unverified_labs(session: Session) -
     session.flush()
     _lab(session, DEFAULT_PROFILE_ID, "Ferritin", 42, NOW.date())
     _lab(session, other_profile.id, "Ferritin", 999, NOW.date())
-    _lab(session, DEFAULT_PROFILE_ID, "Vitamin D", 10, NOW.date(), ReviewStatus.NEEDS_REVIEW)
+    _lab(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Vitamin D",
+        10,
+        NOW.date(),
+        ReviewStatus.NEEDS_REVIEW,
+    )
 
-    context = build_context(session, DEFAULT_PROFILE_ID, "show my labs", clock=lambda: NOW)
+    context = build_context(
+        session, DEFAULT_PROFILE_ID, "show my labs", clock=lambda: NOW
+    )
 
     assert [(item.metric, item.value) for item in context.evidence] == [
         ("Ferritin", "42")
@@ -127,17 +162,51 @@ def test_context_enforces_window_bounds_and_intent_windows(session: Session) -> 
     _lab(session, DEFAULT_PROFILE_ID, "Outside", 2, (NOW - timedelta(days=31)).date())
     _lab(session, DEFAULT_PROFILE_ID, "Future", 3, (NOW + timedelta(days=1)).date())
 
-    context = build_context(session, DEFAULT_PROFILE_ID, "general question", clock=lambda: NOW)
+    context = build_context(
+        session, DEFAULT_PROFILE_ID, "general question", clock=lambda: NOW
+    )
 
     assert [item.metric for item in context.evidence] == ["Inside"]
     assert context.window_start == NOW - timedelta(days=30)
-    assert detect_intent("How was my sleep and recovery?") == QuestionIntent.SLEEP_RECOVERY
+    assert (
+        detect_intent("How was my sleep and recovery?") == QuestionIntent.SLEEP_RECOVERY
+    )
     assert window_days(QuestionIntent.SLEEP_RECOVERY) == 14
     assert detect_intent("Покажи динамику веса") == QuestionIntent.WEIGHT_TREND
     assert window_days(QuestionIntent.WEIGHT_TREND) == 90
 
 
-def test_context_caps_and_labels_each_source_deterministically(session: Session) -> None:
+def test_old_snapshot_lab_flows_prompt_validator_and_footer(session: Session) -> None:
+    _lab(session, DEFAULT_PROFILE_ID, "Old marker", 15, date(2025, 1, 1))
+    builder = HealthContextBuilder(session, clock=lambda: NOW)
+    context = builder.build(DEFAULT_PROFILE_ID, "Что было в старых анализах?")
+
+    assert not context.evidence
+    assert context.snapshot is not None
+    payload = build_responder_input("Что было в старых анализах?", context)[0]
+    content = cast(list[dict[str, str]], payload["content"])
+    snapshot_data = json.loads(content[1]["text"])["health_snapshot"]
+    lab_signal = next(
+        signal for signal in snapshot_data["signals"] if signal["title"] == "Old marker"
+    )
+    assert lab_signal["citation_ids"] == ["[SNAP1]"]
+
+    accepted = HealthQuestionApplicationService(
+        builder, SimpleNamespace(respond=lambda **_: "Есть старый результат [SNAP1].")
+    ).answer(DEFAULT_PROFILE_ID, "Что было в старых анализах?")
+    rejected = HealthQuestionApplicationService(
+        builder, SimpleNamespace(respond=lambda **_: "Выдуманный результат [SNAP999].")
+    ).answer(DEFAULT_PROFILE_ID, "Что было в старых анализах?")
+
+    assert "Есть старый результат [SNAP1]." in accepted.text
+    assert "Снимок здоровья:" in accepted.text
+    assert "[SNAP1]" in accepted.text
+    assert rejected.text.startswith("В выбранном периоде недостаточно")
+
+
+def test_context_caps_and_labels_each_source_deterministically(
+    session: Session,
+) -> None:
     for index in range(MAX_ITEMS_PER_SOURCE + 2):
         _lab(
             session,
@@ -202,7 +271,9 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
         {"height_meter": 1.8, "weight_kilogram": 74.5},
     )
 
-    context = build_context(session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW)
+    context = build_context(
+        session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW
+    )
 
     assert [(item.source, item.value, item.unit) for item in context.evidence] == [
         (EvidenceSource.SLEEP, "7", "ч"),
@@ -216,10 +287,15 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
     ]
     assert not hasattr(context.evidence[0], "raw_record_id")
     assert not hasattr(context.evidence[0], "external_id")
-    weight = next(item for item in context.evidence if item.source is EvidenceSource.WEIGHT)
+    weight = next(
+        item for item in context.evidence if item.source is EvidenceSource.WEIGHT
+    )
     assert weight.metric == "Текущий вес WHOOP (на момент синхронизации)"
     assert weight.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
-    assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+    assert (
+        context.limitations[0].code
+        is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+    )
 
 
 def test_recovery_uses_associated_physiological_time_not_update_time(
@@ -277,7 +353,9 @@ def test_recovery_uses_associated_physiological_time_not_update_time(
 
     context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
 
-    recoveries = [item for item in context.evidence if item.source is EvidenceSource.RECOVERY]
+    recoveries = [
+        item for item in context.evidence if item.source is EvidenceSource.RECOVERY
+    ]
     assert [(item.value, item.observed_at) for item in recoveries] == [
         ("80", datetime(2026, 9, 3, 22, tzinfo=UTC))
     ]
@@ -318,7 +396,9 @@ def test_recovery_join_is_profile_and_connection_scoped(session: Session) -> Non
 
     context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
 
-    assert not [item for item in context.evidence if item.source is EvidenceSource.RECOVERY]
+    assert not [
+        item for item in context.evidence if item.source is EvidenceSource.RECOVERY
+    ]
 
 
 def test_recovery_falls_back_to_the_associated_cycle_time(session: Session) -> None:
@@ -350,7 +430,9 @@ def test_recovery_falls_back_to_the_associated_cycle_time(session: Session) -> N
 
     context = build_context(session, DEFAULT_PROFILE_ID, "recovery", clock=lambda: NOW)
 
-    recovery = next(item for item in context.evidence if item.source is EvidenceSource.RECOVERY)
+    recovery = next(
+        item for item in context.evidence if item.source is EvidenceSource.RECOVERY
+    )
     assert recovery.observed_at == datetime(2026, 9, 3, 8, tzinfo=UTC)
 
 
@@ -370,11 +452,16 @@ def test_weight_trend_excludes_stale_and_future_body_snapshots(
         fetched_at=stale_sync,
     )
 
-    context = build_context(session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW)
+    context = build_context(
+        session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW
+    )
 
     assert not any(item.source is EvidenceSource.WEIGHT for item in context.evidence)
     assert len(context.limitations) == 1
-    assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+    assert (
+        context.limitations[0].code
+        is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
+    )
 
 
 def test_lab_prefers_collection_date_for_window_and_citation(session: Session) -> None:
@@ -389,7 +476,9 @@ def test_lab_prefers_collection_date_for_window_and_citation(session: Session) -
     )
     session.add(document)
     session.flush()
-    session.add(DocumentPage(document_id=document.id, page_number=1, extraction_method="text"))
+    session.add(
+        DocumentPage(document_id=document.id, page_number=1, extraction_method="text")
+    )
     session.flush()
     session.add(
         LabObservation(

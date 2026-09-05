@@ -31,6 +31,7 @@ MAX_LIMITATION_CODE_CHARACTERS = 64
 MAX_LIMITATION_MESSAGE_CHARACTERS = 500
 MAX_SNAPSHOT_SIGNALS = 30
 MAX_SNAPSHOT_TEXT_CHARACTERS = 500
+MAX_SIGNAL_CITATIONS = 35
 
 MEDICAL_SAFETY_INSTRUCTIONS = """You are a careful health-information assistant.
 Use only the supplied verified observations; do not invent, retrieve, or assume facts.
@@ -201,7 +202,8 @@ def build_responder_input(
                     if signal.reference
                     else None,
                     "citation_ids": [
-                        citation.citation_id for citation in signal.citations[:2]
+                        citation.citation_id
+                        for citation in signal.citations[:MAX_SIGNAL_CITATIONS]
                     ],
                 }
                 for signal in context.snapshot.signals[:MAX_SNAPSHOT_SIGNALS]
