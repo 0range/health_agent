@@ -4,6 +4,7 @@ import os
 import plistlib
 import stat
 from pathlib import Path
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +97,8 @@ def test_render_is_exact_private_secret_free_and_isolated(tmp_path: Path) -> Non
     assert stat.S_IMODE(rendered.stat().st_mode) == 0o600
     assert stat.S_IMODE(paths.automation_root.stat().st_mode) == 0o700
     assert paths.lock_file.name == "telegram-service.lock"
+    assert paths.lifecycle_lock_file.name == "telegram-lifecycle.lock"
+    assert stat.S_IMODE(paths.lifecycle_lock_file.stat().st_mode) == 0o600
     assert paths.stdout_log.name == "telegram-stdout.log"
 
 
@@ -173,11 +176,133 @@ def test_failed_changed_reload_restores_previous_loaded_service(tmp_path: Path) 
         return original_run(arguments)
 
     launchctl.run = fail_new_bootstrap  # type: ignore[method-assign]
-    with pytest.raises(TelegramLaunchdError, match="launchctl_bootstrap_failed"):
+    with pytest.raises(
+        TelegramLaunchdError, match="launchctl_bootstrap_failed"
+    ) as captured:
         failing.install()
 
     assert first.installed_plist.read_bytes() == previous
     assert launchctl.loaded
+    assert captured.value.safe_code == "launchctl_bootstrap_failed"
+    assert captured.value.previous_service_restored is True
+
+
+def test_failed_reload_reports_failed_previous_service_recovery(tmp_path: Path) -> None:
+    launchctl = FakeLaunchctl()
+    first = _paths(tmp_path, env_name="first.env")
+    TelegramLaunchdManager(first, launchctl=launchctl, platform="darwin").install()
+    previous = first.installed_plist.read_bytes()
+    second_env = tmp_path / "second.env"
+    second_env.write_text("SAFE=1\n", encoding="utf-8")
+    second_env.chmod(0o600)
+    second = TelegramLaunchdPaths.resolve(
+        automation_root=first.automation_root,
+        executable=first.executable,
+        environment_file=second_env,
+        working_directory=first.working_directory,
+        home=tmp_path / "home",
+    )
+    launchctl.fail_bootstrap = True
+
+    with pytest.raises(
+        TelegramLaunchdError, match="launchctl_rollback_bootstrap_failed"
+    ) as captured:
+        TelegramLaunchdManager(
+            second, launchctl=launchctl, platform="darwin"
+        ).install()
+
+    assert first.installed_plist.read_bytes() == previous
+    assert launchctl.loaded is False
+    assert captured.value.safe_code == "launchctl_rollback_bootstrap_failed"
+    assert captured.value.previous_service_restored is False
+
+
+def test_concurrent_install_loser_cannot_replace_or_remove_winner_plist(
+    tmp_path: Path,
+) -> None:
+    class BlockingLaunchctl(FakeLaunchctl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.winner_bootstrap_started = Event()
+            self.release_winner = Event()
+
+        def run(self, arguments: tuple[str, ...]) -> int:
+            if arguments[0] == "bootstrap" and current_thread().name == "winner":
+                self.winner_bootstrap_started.set()
+                assert self.release_winner.wait(timeout=5)
+            return super().run(arguments)
+
+    launchctl = BlockingLaunchctl()
+    winner_paths = _paths(tmp_path, env_name="winner.env")
+    loser_env = tmp_path / "loser.env"
+    loser_env.write_text("SAFE=loser\n", encoding="utf-8")
+    loser_env.chmod(0o600)
+    loser_paths = TelegramLaunchdPaths.resolve(
+        automation_root=winner_paths.automation_root,
+        executable=winner_paths.executable,
+        environment_file=loser_env,
+        working_directory=winner_paths.working_directory,
+        home=tmp_path / "home",
+    )
+    winner = TelegramLaunchdManager(
+        winner_paths, launchctl=launchctl, platform="darwin"
+    )
+    loser = TelegramLaunchdManager(
+        loser_paths, launchctl=launchctl, platform="darwin"
+    )
+    winner_outcomes: list[object] = []
+
+    def install_winner() -> None:
+        try:
+            winner_outcomes.append(winner.install())
+        except TelegramLaunchdError as error:
+            winner_outcomes.append(error)
+
+    thread = Thread(target=install_winner, name="winner")
+    thread.start()
+    assert launchctl.winner_bootstrap_started.wait(timeout=5)
+    installed_by_winner = winner_paths.installed_plist.read_bytes()
+
+    with pytest.raises(TelegramLaunchdError, match="telegram_lifecycle_busy") as busy:
+        loser.install()
+
+    launchctl.release_winner.set()
+    thread.join(timeout=5)
+    assert thread.is_alive() is False
+    assert winner_outcomes == ["installed"]
+    assert busy.value.safe_code == "telegram_lifecycle_busy"
+    assert winner_paths.installed_plist.read_bytes() == installed_by_winner
+    assert winner_paths.rendered_plist.read_bytes() == installed_by_winner
+    assert plistlib.loads(installed_by_winner)["ProgramArguments"][-1] == str(
+        winner_paths.environment_file
+    )
+    assert winner_paths.lifecycle_lock_file != winner_paths.lock_file
+
+
+def test_stop_and_remove_fail_busy_without_launchctl_or_file_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    launchctl = FakeLaunchctl()
+    manager = TelegramLaunchdManager(
+        paths, launchctl=launchctl, platform="darwin"
+    )
+    manager.install()
+    installed = paths.installed_plist.read_bytes()
+    rendered = paths.rendered_plist.read_bytes()
+    calls = tuple(launchctl.calls)
+    held = GlobalRunLock(paths.lifecycle_lock_file)
+    assert held.acquire()
+    try:
+        for operation in (manager.stop, manager.remove):
+            with pytest.raises(TelegramLaunchdError, match="telegram_lifecycle_busy"):
+                operation()
+    finally:
+        held.release()
+
+    assert tuple(launchctl.calls) == calls
+    assert paths.installed_plist.read_bytes() == installed
+    assert paths.rendered_plist.read_bytes() == rendered
 
 
 def test_status_unknown_failure_and_platform_errors_are_not_masked(tmp_path: Path) -> None:

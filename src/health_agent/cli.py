@@ -90,6 +90,7 @@ from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminS
 from health_agent.telegram.api import TelegramBotAPI
 from health_agent.telegram.launchd import (
     TELEGRAM_LABEL,
+    TelegramLaunchdError,
     TelegramLaunchdManager,
     TelegramLaunchdPaths,
     TelegramServiceRunner,
@@ -1666,6 +1667,9 @@ def _run_telegram_launchd(action: str, env_file: Path) -> None:
             status = manager.remove()
         else:
             raise ValueError("invalid_launchd_action")
+    except TelegramLaunchdError as error:
+        typer.echo(f"status=failed safe_error={error.safe_code}", err=True)
+        raise typer.Exit(code=1) from None
     except Exception:  # noqa: BLE001 -- never expose credentials or private paths
         typer.echo("status=failed safe_error=telegram_launchd_failed", err=True)
         raise typer.Exit(code=1) from None

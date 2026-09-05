@@ -8,6 +8,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol
@@ -24,10 +26,39 @@ TELEGRAM_LABEL = "com.orange.health-agent.telegram"
 TELEGRAM_THROTTLE_SECONDS = 30
 TELEGRAM_LOG_ROTATE_BYTES = 5_242_880
 _MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+_SAFE_ERROR_CODES = frozenset(
+    {
+        "launchctl_unavailable",
+        "telegram_child_unavailable",
+        "launchctl_status_failed",
+        "launchctl_bootout_failed",
+        "launchctl_bootstrap_failed",
+        "launchctl_rollback_bootstrap_failed",
+        "launchd_requires_macos",
+        "unsafe_plist_path",
+        "telegram_lifecycle_busy",
+        "telegram_service_already_running",
+        "unsafe_log_path",
+        "telegram_launchd_failed",
+    }
+)
 
 
 class TelegramLaunchdError(RuntimeError):
     """Content-free launchd/service failure safe for the CLI boundary."""
+
+    def __init__(
+        self,
+        safe_code: str,
+        *,
+        previous_service_restored: bool = False,
+    ) -> None:
+        bounded_code = (
+            safe_code if safe_code in _SAFE_ERROR_CODES else "telegram_launchd_failed"
+        )
+        super().__init__(bounded_code)
+        self.safe_code = bounded_code
+        self.previous_service_restored = previous_service_restored
 
 
 class Launchctl(Protocol):
@@ -105,6 +136,7 @@ class TelegramLaunchdPaths:
     stdout_log: Path
     stderr_log: Path
     lock_file: Path
+    lifecycle_lock_file: Path
 
     @classmethod
     def resolve(
@@ -143,6 +175,7 @@ class TelegramLaunchdPaths:
             stdout_log=root / "logs" / "telegram-stdout.log",
             stderr_log=root / "logs" / "telegram-stderr.log",
             lock_file=root / "telegram-service.lock",
+            lifecycle_lock_file=root / "telegram-lifecycle.lock",
         )
 
 
@@ -197,11 +230,15 @@ class TelegramLaunchdManager:
         launchctl: Launchctl | None = None,
         platform: str | None = None,
         uid: int | None = None,
+        lifecycle_lock: GlobalRunLock | None = None,
     ) -> None:
         self.paths = paths
         self.launchctl = launchctl or SystemLaunchctl()
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
+        self.lifecycle_lock = lifecycle_lock or GlobalRunLock(
+            paths.lifecycle_lock_file
+        )
 
     @property
     def domain(self) -> str:
@@ -212,6 +249,10 @@ class TelegramLaunchdManager:
         return f"{self.domain}/{TELEGRAM_LABEL}"
 
     def render(self) -> Path:
+        with self._lifecycle_operation():
+            return self._render_locked()
+
+    def _render_locked(self) -> Path:
         private_directory(self.paths.automation_root)
         private_directory(self.paths.rendered_plist.parent)
         private_directory(self.paths.stdout_log.parent)
@@ -241,6 +282,10 @@ class TelegramLaunchdManager:
 
     def is_loaded(self) -> bool:
         self._require_macos()
+        with self._lifecycle_operation():
+            return self._is_loaded_locked()
+
+    def _is_loaded_locked(self) -> bool:
         result = self.launchctl.run(("print", self.service))
         if result == 0:
             return True
@@ -250,37 +295,50 @@ class TelegramLaunchdManager:
 
     def install(self) -> str:
         self._require_macos()
-        rendered = self.render()
-        content = rendered.read_bytes()
-        previous = self._installed_bytes()
-        loaded = self.is_loaded()
-        if loaded and previous == content:
+        with self._lifecycle_operation():
+            rendered = self._render_locked()
+            content = rendered.read_bytes()
+            previous = self._installed_bytes()
+            loaded = self._is_loaded_locked()
+            if loaded and previous == content:
+                return "installed"
+            _write_installed(self.paths.installed_plist, content)
+            if loaded and self.launchctl.run(("bootout", self.service)) != 0:
+                self._restore(previous)
+                raise TelegramLaunchdError(
+                    "launchctl_bootout_failed",
+                    previous_service_restored=True,
+                )
+            try:
+                rotate_telegram_logs(self.paths)
+            except Exception:
+                self._rollback(previous, loaded)
+                raise
+            if (
+                self.launchctl.run(
+                    ("bootstrap", self.domain, str(self.paths.installed_plist))
+                )
+                != 0
+            ):
+                restored = self._rollback(previous, loaded)
+                raise TelegramLaunchdError(
+                    "launchctl_bootstrap_failed",
+                    previous_service_restored=restored,
+                )
             return "installed"
-        _write_installed(self.paths.installed_plist, content)
-        if loaded and self.launchctl.run(("bootout", self.service)) != 0:
-            self._restore(previous)
-            raise TelegramLaunchdError("launchctl_bootout_failed")
-        try:
-            rotate_telegram_logs(self.paths)
-        except Exception:
-            self._rollback(previous, loaded)
-            raise
-        if (
-            self.launchctl.run(
-                ("bootstrap", self.domain, str(self.paths.installed_plist))
-            )
-            != 0
-        ):
-            self._rollback(previous, loaded)
-            raise TelegramLaunchdError("launchctl_bootstrap_failed")
-        return "installed"
 
     def status(self) -> str:
-        return "loaded" if self.is_loaded() else "unloaded"
+        self._require_macos()
+        with self._lifecycle_operation():
+            return "loaded" if self._is_loaded_locked() else "unloaded"
 
     def stop(self) -> str:
         self._require_macos()
-        if not self.is_loaded():
+        with self._lifecycle_operation():
+            return self._stop_locked()
+
+    def _stop_locked(self) -> str:
+        if not self._is_loaded_locked():
             return "stopped"
         if self.launchctl.run(("bootout", self.service)) != 0:
             raise TelegramLaunchdError("launchctl_bootout_failed")
@@ -288,14 +346,15 @@ class TelegramLaunchdManager:
 
     def remove(self) -> str:
         self._require_macos()
-        for path in (self.paths.installed_plist, self.paths.rendered_plist):
-            reject_symlink_components(path)
-            if path.is_symlink() or (path.exists() and not path.is_file()):
-                raise TelegramLaunchdError("unsafe_plist_path")
-        self.stop()
-        for path in (self.paths.installed_plist, self.paths.rendered_plist):
-            path.unlink(missing_ok=True)
-        return "removed"
+        with self._lifecycle_operation():
+            for path in (self.paths.installed_plist, self.paths.rendered_plist):
+                reject_symlink_components(path)
+                if path.is_symlink() or (path.exists() and not path.is_file()):
+                    raise TelegramLaunchdError("unsafe_plist_path")
+            self._stop_locked()
+            for path in (self.paths.installed_plist, self.paths.rendered_plist):
+                path.unlink(missing_ok=True)
+            return "removed"
 
     def _require_macos(self) -> None:
         if self.platform != "darwin":
@@ -320,12 +379,30 @@ class TelegramLaunchdManager:
             return
         _write_installed(path, content)
 
-    def _rollback(self, previous: bytes | None, was_loaded: bool) -> None:
+    def _rollback(self, previous: bytes | None, was_loaded: bool) -> bool:
         self._restore(previous)
         if was_loaded and previous is not None:
-            self.launchctl.run(
-                ("bootstrap", self.domain, str(self.paths.installed_plist))
-            )
+            if (
+                self.launchctl.run(
+                    ("bootstrap", self.domain, str(self.paths.installed_plist))
+                )
+                != 0
+            ):
+                raise TelegramLaunchdError(
+                    "launchctl_rollback_bootstrap_failed",
+                    previous_service_restored=False,
+                )
+            return True
+        return False
+
+    @contextmanager
+    def _lifecycle_operation(self) -> Iterator[None]:
+        if not self.lifecycle_lock.acquire():
+            raise TelegramLaunchdError("telegram_lifecycle_busy")
+        try:
+            yield
+        finally:
+            self.lifecycle_lock.release()
 
 
 def rotate_telegram_logs(paths: TelegramLaunchdPaths) -> None:

@@ -5,7 +5,11 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from health_agent import cli
-from health_agent.telegram.launchd import TELEGRAM_LABEL, TelegramServiceResult
+from health_agent.telegram.launchd import (
+    TELEGRAM_LABEL,
+    TelegramLaunchdError,
+    TelegramServiceResult,
+)
 
 
 class Manager:
@@ -127,6 +131,69 @@ def test_configuration_and_lifecycle_failures_are_content_free(
         assert result.exit_code == 1
         assert expected in result.stderr
         assert secret not in result.output
+
+
+def test_failed_rollback_surfaces_only_distinct_safe_code(
+    monkeypatch, tmp_path: Path
+) -> None:
+    secret = "private-token-and-medical-text"
+
+    class FailingManager(Manager):
+        def install(self) -> str:
+            try:
+                raise RuntimeError(secret)
+            except RuntimeError as cause:
+                raise TelegramLaunchdError(
+                    "launchctl_rollback_bootstrap_failed",
+                    previous_service_restored=False,
+                ) from cause
+
+    monkeypatch.setattr(
+        cli,
+        "_telegram_launchd_manager",
+        lambda _path: FailingManager(tmp_path),
+        raising=False,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["telegram", "install", "--env-file", str(tmp_path / "private.env")],
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.strip() == (
+        "status=failed safe_error=launchctl_rollback_bootstrap_failed"
+    )
+    assert "previous_service_restored" not in result.output
+    assert secret not in result.output
+
+
+def test_unrecognized_launchd_error_code_is_not_echoed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    secret = "private-token-and-medical-text"
+
+    class FailingManager(Manager):
+        def install(self) -> str:
+            raise TelegramLaunchdError(secret)
+
+    monkeypatch.setattr(
+        cli,
+        "_telegram_launchd_manager",
+        lambda _path: FailingManager(tmp_path),
+        raising=False,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["telegram", "install", "--env-file", str(tmp_path / "private.env")],
+    )
+
+    assert result.exit_code == 1
+    assert result.stderr.strip() == (
+        "status=failed safe_error=telegram_launchd_failed"
+    )
+    assert secret not in result.output
 
 
 def test_real_component_builder_rejects_relative_or_public_env_before_child(
