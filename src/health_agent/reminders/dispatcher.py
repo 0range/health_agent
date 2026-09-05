@@ -13,6 +13,7 @@ from health_agent.db import session_scope
 from health_agent.reminders.models import Reminder
 from health_agent.reminders.repository import ReminderRepository
 from health_agent.reminders.telegram import due_message, proposal_message
+from health_agent.reminders.time import require_aware_utc
 from health_agent.telegram.messenger import TelegramMessenger
 
 
@@ -42,7 +43,7 @@ class ReminderDispatcher:
         self._repository_factory = repository_factory
 
     def run(self, *, limit: int = 100) -> DispatchReport:
-        now = self._clock().astimezone(UTC)
+        now = require_aware_utc(self._clock())
         with session_scope(self._engine) as session:
             repository = self._repository_factory(session)
             proposals = repository.pending_proposals(limit)

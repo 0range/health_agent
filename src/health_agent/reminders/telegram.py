@@ -16,7 +16,7 @@ from health_agent.reminders.repository import (
     ReminderNotFound,
     ReminderRepository,
 )
-from health_agent.reminders.time import parse_local_datetime
+from health_agent.reminders.time import parse_local_datetime, require_aware_utc
 from health_agent.telegram.types import MessageContext
 
 REMINDER_COMMANDS = frozenset(
@@ -71,7 +71,7 @@ class DatabaseReminderCommands:
         if len(arguments) != expected:
             raise ValueError("invalid_reminder_command")
         code = arguments[0]
-        now = self._clock().astimezone(UTC)
+        now = require_aware_utc(self._clock())
         with session_scope(self._engine) as session:
             repository = ReminderRepository(session)
             if name == "reminder_confirm":
@@ -108,10 +108,13 @@ class DatabaseReminderCommands:
 def proposal_message(reminder: Reminder) -> str:
     return "\n".join(
         (
-            f"Предлагаю напоминание: {reminder.title}",
+            f"Предлагаю напоминание: {_safe_line(reminder.title)}",
             f"Когда: {_local_due(reminder)}",
-            f"Почему: {reminder.reason}",
-            f"Источник: {reminder.source_reference}",
+            f"Почему: {_safe_line(reminder.reason)}",
+            (
+                f"Источник: {_safe_line(reminder.source_type)} — "
+                f"{_safe_line(reminder.source_reference)}"
+            ),
             f"Подтвердить: /reminder_confirm {reminder.public_code}",
             f"Отменить: /reminder_cancel {reminder.public_code}",
         )
@@ -121,9 +124,12 @@ def proposal_message(reminder: Reminder) -> str:
 def due_message(reminder: Reminder) -> str:
     return "\n".join(
         (
-            f"Напоминание: {reminder.title}",
-            f"Почему: {reminder.reason}",
-            f"Источник: {reminder.source_reference}",
+            f"Напоминание: {_safe_line(reminder.title)}",
+            f"Почему: {_safe_line(reminder.reason)}",
+            (
+                f"Источник: {_safe_line(reminder.source_type)} — "
+                f"{_safe_line(reminder.source_reference)}"
+            ),
             f"Выполнено: /reminder_done {reminder.public_code}",
             f"Отложить на день: /reminder_snooze {reminder.public_code} 1d",
             (
@@ -152,7 +158,14 @@ def parse_snooze_duration(value: str) -> timedelta:
         "d": timedelta(days=1),
         "w": timedelta(weeks=1),
     }
-    duration = amount * multipliers[unit]
+    try:
+        duration = amount * multipliers[unit]
+    except OverflowError as error:
+        raise ValueError("invalid_snooze_duration") from error
     if duration > timedelta(days=365):
         raise ValueError("invalid_snooze_duration")
     return duration
+
+
+def _safe_line(value: str) -> str:
+    return " ".join(value.split())
