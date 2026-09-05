@@ -56,7 +56,9 @@ def _atomic_private_write(path: Path, value: str) -> None:
     _private_directory(path.parent)
     if path.is_symlink():
         raise RuntimeError("refusing symlinked Sheets connector file")
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
     temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
@@ -137,14 +139,18 @@ class LocalSheetsTokenStore:
             if own_path.exists():
                 own = _read_json(own_path)
                 if own.get("account_permission_id") != permission_id:
-                    raise ValueError("Sheets profile is already bound to another Google account")
+                    raise ValueError(
+                        "Sheets profile is already bound to another Google account"
+                    )
             for candidate in self.root.glob("*/token.json"):
                 stored = _read_json(candidate)
                 if (
                     stored.get("account_permission_id") == permission_id
                     and stored.get("profile_id") != profile_id
                 ):
-                    raise ValueError("Google account is already bound to another health profile")
+                    raise ValueError(
+                        "Google account is already bound to another health profile"
+                    )
             payload = {
                 "profile_id": profile_id,
                 "account_permission_id": permission_id,
@@ -167,7 +173,11 @@ class LocalSheetsTokenStore:
         credentials = value.get("credentials")
         permission_id = value.get("account_permission_id")
         email = value.get("account_email")
-        if not isinstance(credentials, dict) or not isinstance(permission_id, str) or not isinstance(email, str):
+        if (
+            not isinstance(credentials, dict)
+            or not isinstance(permission_id, str)
+            or not isinstance(email, str)
+        ):
             raise TypeError("stored Sheets authorization is incomplete")
         return SheetsAccountIdentity(permission_id, email), credentials
 
@@ -193,4 +203,3 @@ class LocalSheetsStateStore:
             _profile_directory(self.root, profile_id) / "sync-state.json",
             json.dumps(value, sort_keys=True, indent=2),
         )
-

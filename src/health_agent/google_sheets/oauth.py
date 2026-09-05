@@ -90,9 +90,7 @@ class SheetsOAuth:
         interactive: bool = False,
     ) -> None:
         profile = self.profiles.load(profile_id)
-        credentials = self.stage(
-            profile_id, force=force, interactive=interactive
-        )
+        credentials = self.stage(profile_id, force=force, interactive=interactive)
         identity = self.gateway_factory(credentials).account_identity()
         try:
             bound = profile.with_account(identity)
@@ -138,4 +136,3 @@ class SheetsOAuth:
         actual = set(credentials.granted_scopes or credentials.scopes or ())
         if actual != set(SHEETS_SCOPES):
             raise SheetsOAuthScopeError("Google token must grant exact Sheets scopes")
-

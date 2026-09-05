@@ -47,4 +47,3 @@ def test_stores_refuse_symlinked_files(tmp_path: Path) -> None:
     path.symlink_to(target)
     with pytest.raises(RuntimeError, match="symlinked"):
         store.load(profile_id)
-

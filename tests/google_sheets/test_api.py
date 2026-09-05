@@ -21,11 +21,24 @@ def _request(value):
 def test_replace_uses_one_atomic_batch_update() -> None:
     sheets = MagicMock()
     spreadsheets = sheets.spreadsheets.return_value
-    spreadsheets.get.return_value = _request({"sheets": [{"properties": {"title": title, "sheetId": index}} for index, title in enumerate(("Lab history", "Needs review", "Sources", "_HealthAgent"), 1)]})
+    spreadsheets.get.return_value = _request(
+        {
+            "sheets": [
+                {"properties": {"title": title, "sheetId": index}}
+                for index, title in enumerate(
+                    ("Lab history", "Needs review", "Sources", "_HealthAgent"), 1
+                )
+            ]
+        }
+    )
     spreadsheets.batchUpdate.return_value = _request({})
     gateway = GoogleSheetsGateway(sheets, MagicMock())
     projection = WorkbookProjection(
-        WorkbookBinding("00000000-0000-0000-0000-000000000001", "health-agent-sheets-v1", "token_12345678"),
+        WorkbookBinding(
+            "00000000-0000-0000-0000-000000000001",
+            "health-agent-sheets-v1",
+            "token_12345678",
+        ),
         (
             ManagedSheet("Lab history", ("A",), (("one",),)),
             ManagedSheet("Needs review", ("Decision",), (("",),), (0,)),
@@ -45,4 +58,3 @@ def test_safe_error_does_not_leak_google_body() -> None:
     code = safe_sheets_error_code(error)
     assert code == "permission_denied"
     assert "private remote text" not in code
-

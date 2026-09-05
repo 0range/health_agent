@@ -86,7 +86,11 @@ def _extended_value(value: SheetValue) -> dict[str, Any]:
 def _row_data(values: tuple[SheetValue, ...]) -> dict[str, Any]:
     return {
         "values": [
-            ({"userEnteredValue": extended} if (extended := _extended_value(value)) else {})
+            (
+                {"userEnteredValue": extended}
+                if (extended := _extended_value(value))
+                else {}
+            )
             for value in values
         ]
     }
@@ -109,7 +113,9 @@ class GoogleSheetsGateway:
     def from_credentials(
         cls, credentials: Credentials, *, timeout_seconds: int = 30
     ) -> GoogleSheetsGateway:
-        transport = AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout_seconds))
+        transport = AuthorizedHttp(
+            credentials, http=httplib2.Http(timeout=timeout_seconds)
+        )
         return cls(
             build("sheets", "v4", http=transport, cache_discovery=False),
             build("drive", "v3", http=transport, cache_discovery=False),
@@ -125,9 +131,7 @@ class GoogleSheetsGateway:
             email=str(user["emailAddress"]).casefold(),
         )
 
-    def create_workbook(
-        self, title: str, binding: WorkbookBinding
-    ) -> CreatedWorkbook:
+    def create_workbook(self, title: str, binding: WorkbookBinding) -> CreatedWorkbook:
         sheets: list[dict[str, Any]] = []
         for managed_title in _MANAGED_TITLES:
             sheet: dict[str, Any] = {
@@ -139,9 +143,11 @@ class GoogleSheetsGateway:
             }
             if managed_title == "_HealthAgent":
                 sheet["data"] = [
-                    {"startRow": 0, "startColumn": 0, "rowData": [
-                        _row_data(row) for row in _binding_rows(binding)
-                    ]}
+                    {
+                        "startRow": 0,
+                        "startColumn": 0,
+                        "rowData": [_row_data(row) for row in _binding_rows(binding)],
+                    }
                 ]
             sheets.append(sheet)
         payload = _execute(
@@ -212,7 +218,10 @@ class GoogleSheetsGateway:
         }
         if set(sheet_ids) != set(_MANAGED_TITLES):
             raise ValueError("managed workbook tabs changed")
-        managed = (*projection.sheets, ManagedSheet("_HealthAgent", (), _binding_rows(projection.binding)))
+        managed = (
+            *projection.sheets,
+            ManagedSheet("_HealthAgent", (), _binding_rows(projection.binding)),
+        )
         requests: list[dict[str, Any]] = []
         for sheet in managed:
             rows = (() if not sheet.headers else (sheet.headers,)) + sheet.rows
@@ -232,7 +241,9 @@ class GoogleSheetsGateway:
                         "properties": {
                             "sheetId": sheet_id,
                             "hidden": sheet.title == "_HealthAgent",
-                            "gridProperties": {"frozenRowCount": 1 if sheet.headers else 0},
+                            "gridProperties": {
+                                "frozenRowCount": 1 if sheet.headers else 0
+                            },
                         },
                         "fields": "hidden,gridProperties.frozenRowCount",
                     }
@@ -242,8 +253,14 @@ class GoogleSheetsGateway:
                 requests.append(
                     {
                         "repeatCell": {
-                            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
-                            "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": 0,
+                                "endRowIndex": 1,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {"textFormat": {"bold": True}}
+                            },
                             "fields": "userEnteredFormat.textFormat.bold",
                         }
                     }
@@ -252,7 +269,12 @@ class GoogleSheetsGateway:
                 requests.append(
                     {
                         "setDataValidation": {
-                            "range": {"sheetId": sheet_id, "startRowIndex": 1, "startColumnIndex": column, "endColumnIndex": column + 1},
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": 1,
+                                "startColumnIndex": column,
+                                "endColumnIndex": column + 1,
+                            },
                             "rule": {
                                 "condition": {
                                     "type": "ONE_OF_LIST",

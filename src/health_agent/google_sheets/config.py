@@ -53,14 +53,15 @@ class SheetsProfile:
         expected_permission_id: str | None = None,
         expected_email: str | None = None,
     ) -> SheetsProfile:
-        permission_id, email = _clean_identity(
-            expected_permission_id, expected_email
-        )
+        permission_id, email = _clean_identity(expected_permission_id, expected_email)
         return cls(validate_profile_id(profile_id), permission_id, email)
 
     def with_account(self, identity: SheetsAccountIdentity) -> SheetsProfile:
         permission_id, email = _clean_identity(identity.permission_id, identity.email)
-        if self.expected_permission_id not in {None, permission_id} or self.expected_email not in {
+        if self.expected_permission_id not in {
+            None,
+            permission_id,
+        } or self.expected_email not in {
             None,
             email,
         }:

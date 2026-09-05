@@ -38,12 +38,27 @@ def _credentials(scopes: list[str] | None = None) -> Credentials:
     )
 
 
-def test_authorize_verifies_expected_identity_before_publishing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authorize_verifies_expected_identity_before_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     profile_id = str(uuid4())
     profiles = LocalSheetsProfileStore(tmp_path / "profiles")
     tokens = LocalSheetsTokenStore(tmp_path / "tokens")
-    profiles.save(SheetsProfile.create(profile_id, expected_permission_id="expected", expected_email="me@example.com"))
-    oauth = SheetsOAuth(Path("missing"), profiles, tokens, lambda _: IdentityGateway(SheetsAccountIdentity("different", "other@example.com")))
+    profiles.save(
+        SheetsProfile.create(
+            profile_id,
+            expected_permission_id="expected",
+            expected_email="me@example.com",
+        )
+    )
+    oauth = SheetsOAuth(
+        Path("missing"),
+        profiles,
+        tokens,
+        lambda _: IdentityGateway(
+            SheetsAccountIdentity("different", "other@example.com")
+        ),
+    )
     monkeypatch.setattr(oauth, "stage", lambda *args, **kwargs: _credentials())
     with pytest.raises(SheetsAccountMismatch):
         oauth.authorize(profile_id)
@@ -55,9 +70,21 @@ def test_load_rejects_extra_scope(tmp_path: Path) -> None:
     profiles = LocalSheetsProfileStore(tmp_path / "profiles")
     tokens = LocalSheetsTokenStore(tmp_path / "tokens")
     profiles.save(SheetsProfile.create(profile_id))
-    credentials = _credentials([*SHEETS_SCOPES, "https://www.googleapis.com/auth/drive"])
-    tokens.publish_verified(profile_id, SheetsAccountIdentity("permission", "me@example.com"), credentials.to_json())
-    oauth = SheetsOAuth(Path("missing"), profiles, tokens, lambda _: IdentityGateway(SheetsAccountIdentity("permission", "me@example.com")))
+    credentials = _credentials(
+        [*SHEETS_SCOPES, "https://www.googleapis.com/auth/drive"]
+    )
+    tokens.publish_verified(
+        profile_id,
+        SheetsAccountIdentity("permission", "me@example.com"),
+        credentials.to_json(),
+    )
+    oauth = SheetsOAuth(
+        Path("missing"),
+        profiles,
+        tokens,
+        lambda _: IdentityGateway(
+            SheetsAccountIdentity("permission", "me@example.com")
+        ),
+    )
     with pytest.raises(SheetsOAuthScopeError):
         oauth.load(profile_id)
-
