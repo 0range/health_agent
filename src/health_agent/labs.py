@@ -8,6 +8,11 @@ from enum import Enum
 from health_agent.lab_extraction.registry import normalize_registered
 from health_agent.pdf import ExtractedPage
 
+MAX_LAB_TOKEN_CHARACTERS = 64
+MAX_LAB_ABSOLUTE_VALUE = Decimal("1e12")
+MAX_LAB_EXPONENT = 12
+MAX_LAB_SIGNIFICANT_DIGITS = 28
+
 
 class CandidateStatus(str, Enum):
     """Transport status for a parsed candidate before human review."""
@@ -230,11 +235,36 @@ def _is_unit(value: str) -> bool:
 
 
 def parse_decimal_token(raw_value: str) -> Decimal:
-    """Parse a source token without changing the token retained as evidence."""
+    """Parse a bounded finite decimal, without changing retained source evidence.
+
+    These are technical storage/format bounds, not medical reference ranges.
+    Reject exceptional values before arithmetic or any verified-state mutation.
+    """
+    if len(raw_value) > MAX_LAB_TOKEN_CHARACTERS:
+        raise ValueError("Invalid laboratory numeric value")
+    token = raw_value.strip().replace(",", ".")
+    if (
+        re.fullmatch(
+            r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", token
+        )
+        is None
+    ):
+        raise ValueError("Invalid laboratory numeric value")
     try:
-        return Decimal(raw_value.strip().replace(",", "."))
-    except InvalidOperation as error:
-        raise ValueError("Invalid laboratory numeric value") from error
+        value = Decimal(token)
+    except InvalidOperation:
+        raise ValueError("Invalid laboratory numeric value") from None
+    if not value.is_finite():
+        raise ValueError("Invalid laboratory numeric value")
+    exponent = value.as_tuple().exponent
+    if (
+        not isinstance(exponent, int)
+        or not -MAX_LAB_EXPONENT <= exponent <= MAX_LAB_EXPONENT
+        or value.copy_abs() > MAX_LAB_ABSOLUTE_VALUE
+        or len(value.as_tuple().digits) > MAX_LAB_SIGNIFICANT_DIGITS
+    ):
+        raise ValueError("Invalid laboratory numeric value")
+    return value
 
 
 def normalize_lab_result(

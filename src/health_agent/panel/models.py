@@ -43,16 +43,38 @@ class ConnectorCard:
 
 
 @dataclass(frozen=True, slots=True)
+class PanelDestination:
+    """A safe local destination or an explicit unavailable placeholder."""
+
+    key: str
+    label: str
+    url: str | None
+    unavailable_text: str | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "url": self.url,
+            "unavailable_text": self.unavailable_text,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProfilePanel:
     """All safe panel data selected for one profile."""
 
     profile: ProfileSummary
     connectors: tuple[ConnectorCard, ...]
     drive_folder_ids: tuple[str, ...] = ()
+    destinations: tuple[PanelDestination, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "profile": self.profile.to_dict(),
             "connectors": [connector.to_dict() for connector in self.connectors],
             "drive_folder_ids": list(self.drive_folder_ids),
+            "destinations": [
+                destination.to_dict() for destination in self.destinations
+            ],
         }

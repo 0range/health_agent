@@ -20,19 +20,29 @@ from health_agent.google_drive.stores import (
     LocalTokenStore,
 )
 from health_agent.google_drive.types import DriveAccountIdentity
-from health_agent.models import Profile
-from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
+from health_agent.google_sheets.config import SheetsProfile
+from health_agent.google_sheets.stores import LocalSheetsProfileStore
+from health_agent.models import DEFAULT_PROFILE_ID, Profile
+from health_agent.panel.models import (
+    ConnectorCard,
+    PanelDestination,
+    ProfilePanel,
+    ProfileSummary,
+)
 from health_agent.panel.service import (
+    DatabaseStatusReader,
     DriveConfiguration,
     GmailStatusReader,
     PanelService,
     ProfileNotFoundError,
+    ReminderStatusReader,
     SqlAlchemyProfileRepository,
     TelegramStatusReader,
     _local_telegram_status,
     _whoop_card,
     build_panel_service,
 )
+from health_agent.reminders.repository import ReminderRepository
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import (
     TelegramIdentity,
@@ -97,6 +107,77 @@ def test_lists_profiles_by_repository_order_and_creates_a_profile() -> None:
 
     assert created.name == "New profile"
     assert service.list_profiles() == (alpha, beta, created)
+
+
+def test_reminder_status_reader_is_profile_scoped_and_aggregate_only(
+    clean_database: Engine,
+) -> None:
+    other_id = uuid4()
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=other_id, name="Other"))
+        session.flush()
+        repository = ReminderRepository(session)
+        repository.propose(
+            profile_id=DEFAULT_PROFILE_ID,
+            title="private blood test title",
+            reason="private medical reason",
+            source_type="manual",
+            source_reference="private reference",
+            due_at=datetime(2030, 1, 1, tzinfo=UTC),
+            timezone_name="UTC",
+        )
+        other = repository.propose(
+            profile_id=other_id,
+            title="other private title",
+            reason="other private reason",
+            source_type="manual",
+            source_reference="other private reference",
+            due_at=datetime(2030, 1, 1, tzinfo=UTC),
+            timezone_name="UTC",
+            public_code="rother1",
+        )
+        repository.confirm(other_id, other.public_code)
+
+    reader = ReminderStatusReader(lambda: session_scope(clean_database))
+    own = reader.cards(DEFAULT_PROFILE_ID)[0]
+    other_card = reader.cards(other_id)[0]
+
+    assert own.status == "action_required"
+    assert own.detail == (
+        "Ожидают подтверждения: 1 · Запланировано: 0 · Пора отправить: 0"
+    )
+    assert other_card.status == "ready"
+    assert other_card.detail == (
+        "Ожидают подтверждения: 0 · Запланировано: 1 · Пора отправить: 0"
+    )
+    assert "private" not in repr((own, other_card))
+
+
+def test_database_reader_and_destinations_are_exposed_without_health_data(
+    clean_database: Engine,
+) -> None:
+    profiles = SqlAlchemyProfileRepository(lambda: session_scope(clean_database))
+    destinations = (
+        PanelDestination("metabase", "Дашборд", "http://127.0.0.1:53000"),
+        PanelDestination(
+            "google_sheets",
+            "Google Таблица",
+            None,
+            "Появится после подключения Google Таблицы",
+        ),
+    )
+    service = PanelService(
+        profiles,
+        (DatabaseStatusReader(lambda: session_scope(clean_database)),),
+        destinations=destinations,
+    )
+
+    panel = service.profile(DEFAULT_PROFILE_ID)
+
+    assert panel.connectors[0] == ConnectorCard(
+        "database", "ready", "Локальная база доступна."
+    )
+    assert panel.destinations == destinations
 
 
 def test_sqlalchemy_profiles_are_serialized_before_session_scope_closes(
@@ -351,6 +432,34 @@ def test_production_panel_construction_does_not_create_telegram_state(tmp_path) 
     assert state_path.exists() is False
     assert state_path.parent.exists() is False
     assert (tmp_path / "drive").exists() is False
+
+
+def test_production_panel_exposes_configured_profile_sheet(
+    tmp_path, clean_database: Engine
+) -> None:
+    sheets_root = tmp_path / "sheets"
+    token = "workbook-token-1234567890"
+    sheet_id = "verified-sheet-id-123456"
+    sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    profile = SheetsProfile.create(str(DEFAULT_PROFILE_ID)).with_creation_started(token)
+    LocalSheetsProfileStore(sheets_root).save(
+        profile.with_workbook(sheet_id, sheet_url, token)
+    )
+    settings = Settings(
+        database_url=clean_database.url.render_as_string(hide_password=False),
+        gmail_root=tmp_path / "gmail",
+        whoop_token_root=tmp_path / "whoop",
+        telegram_token_file=tmp_path / "telegram" / "bot-token",
+        telegram_state_path=tmp_path / "telegram" / "state.sqlite3",
+        google_drive_root=tmp_path / "drive",
+        google_sheets_root=sheets_root,
+    )
+
+    panel = build_panel_service(settings).profile(DEFAULT_PROFILE_ID)
+
+    sheets = next(item for item in panel.destinations if item.key == "google_sheets")
+    assert sheets.url == sheet_url
+    assert sheet_id not in repr(panel.connectors)
 
 
 def test_local_telegram_status_is_scoped_to_the_requested_profile(tmp_path) -> None:

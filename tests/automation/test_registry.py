@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from health_agent.automation.registry import (
     DriveJobAdapter,
     GmailJobAdapter,
+    SheetsJobAdapter,
     WhoopJobAdapter,
 )
 from health_agent.config import Settings
@@ -17,6 +18,12 @@ from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailTokenSto
 from health_agent.google_drive.config import DriveProfile
 from health_agent.google_drive.stores import LocalProfileStore, LocalTokenStore
 from health_agent.google_drive.types import DriveAccountIdentity
+from health_agent.google_sheets.config import SheetsProfile
+from health_agent.google_sheets.stores import (
+    LocalSheetsProfileStore,
+    LocalSheetsTokenStore,
+)
+from health_agent.google_sheets.types import SheetsAccountIdentity
 from health_agent.whoop.models import WhoopConnection
 
 PROFILE_A = UUID("00000000-0000-0000-0000-000000000001")
@@ -27,7 +34,9 @@ def test_discovers_whoop_connections_with_exact_arguments(
     session: Session, disposable_postgres
 ) -> None:
     session.add(
-        WhoopConnection(profile_id=PROFILE_A, account_name="main", auth_status="connected")
+        WhoopConnection(
+            profile_id=PROFILE_A, account_name="main", auth_status="connected"
+        )
     )
     session.commit()
     jobs = tuple(WhoopJobAdapter().discover(disposable_postgres.settings))
@@ -39,7 +48,9 @@ def test_discovers_whoop_connections_with_exact_arguments(
     ]
 
 
-def test_discovers_gmail_accounts_and_drive_profiles_in_stable_order(tmp_path: Path) -> None:
+def test_discovers_gmail_accounts_and_drive_profiles_in_stable_order(
+    tmp_path: Path,
+) -> None:
     gmail_root = tmp_path / "gmail"
     drive_root = tmp_path / "drive"
     gmail = LocalGmailProfileStore(gmail_root)
@@ -48,7 +59,9 @@ def test_discovers_gmail_accounts_and_drive_profiles_in_stable_order(tmp_path: P
         .upsert_account(GmailAccount.create("secondary"))
         .upsert_account(GmailAccount.create("main"))
     )
-    gmail.save(GmailProfile.empty(PROFILE_A).upsert_account(GmailAccount.create("main")))
+    gmail.save(
+        GmailProfile.empty(PROFILE_A).upsert_account(GmailAccount.create("main"))
+    )
     drive = LocalProfileStore(drive_root)
     drive.save(DriveProfile.create(str(PROFILE_B), ["folder_1234567890"]))
     drive.save(DriveProfile.create(str(PROFILE_A), ["folder_abcdefghij"]))
@@ -77,7 +90,9 @@ def test_discovers_gmail_accounts_and_drive_profiles_in_stable_order(tmp_path: P
     assert drive_jobs[0].arguments == ("drive", "sync", str(PROFILE_A))
 
 
-def test_symlinked_or_malformed_profile_configuration_fails_closed(tmp_path: Path) -> None:
+def test_symlinked_or_malformed_profile_configuration_fails_closed(
+    tmp_path: Path,
+) -> None:
     target = tmp_path / "outside"
     target.mkdir()
     root = tmp_path / "gmail"
@@ -167,3 +182,24 @@ def test_gmail_symlinked_token_fails_closed_but_malformed_token_reaches_validati
     token.chmod(0o600)
     job = next(iter(GmailJobAdapter().discover(Settings(gmail_root=root))))
     assert job.not_ready_code is None
+
+
+def test_sheets_profile_is_discovered_and_missing_oauth_is_deferred(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sheets"
+    LocalSheetsProfileStore(root).save(SheetsProfile.create(str(PROFILE_A)))
+    settings = Settings(google_sheets_root=root)
+    job = next(iter(SheetsJobAdapter().discover(settings)))
+    assert job.key == ("sheets", str(PROFILE_A), "main")
+    assert job.arguments == ("sheets", "sync", str(PROFILE_A))
+    assert job.supports_full is False
+    assert job.not_ready_code == "oauth_not_ready"
+
+    LocalSheetsTokenStore(root).publish_verified(
+        str(PROFILE_A),
+        SheetsAccountIdentity("permission-1", "owner@example.com"),
+        '{"token":"synthetic"}',
+    )
+    ready = next(iter(SheetsJobAdapter().discover(settings)))
+    assert ready.not_ready_code is None

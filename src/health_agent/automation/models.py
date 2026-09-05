@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-AutomationSource = Literal["whoop", "gmail", "drive"]
+AutomationSource = Literal["whoop", "gmail", "drive", "sheets"]
 AutomationMode = Literal["full", "incremental", "none"]
 AutomationStatus = Literal["succeeded", "deferred", "failed", "timed_out", "skipped"]
 
@@ -32,7 +32,9 @@ class AutomationJob:
         _validated(self.source, "source")
         _validated(self.profile_id, "profile ID")
         _validated(self.account_id, "account ID")
-        if not self.arguments or any("\n" in value or "\r" in value for value in self.arguments):
+        if not self.arguments or any(
+            "\n" in value or "\r" in value for value in self.arguments
+        ):
             raise ValueError("unsafe connector arguments")
         if self.not_ready_code is not None:
             _validated(self.not_ready_code, "not-ready code")
