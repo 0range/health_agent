@@ -167,9 +167,9 @@ class HealthContextBuilder:
                 "",
                 EvidenceSource.SLEEP,
                 _as_utc(record.start_at),
-                "Sleep duration",
+                "Продолжительность сна",
                 _display_hours(record.total_sleep_milli),
-                "hours",
+                "ч",
             )
             for record in self._session.scalars(statement)
             if record.total_sleep_milli is not None
@@ -216,7 +216,7 @@ class HealthContextBuilder:
                 "",
                 EvidenceSource.RECOVERY,
                 _as_utc(observed_at),
-                "Recovery score",
+                "Показатель восстановления",
                 _display_number(record.recovery_score),
                 "%",
             )
@@ -242,7 +242,7 @@ class HealthContextBuilder:
                 "",
                 EvidenceSource.CYCLE,
                 _as_utc(record.start_at),
-                "Cycle strain",
+                "Нагрузка за цикл",
                 _display_number(record.strain),
                 None,
             )
@@ -268,7 +268,7 @@ class HealthContextBuilder:
                 "",
                 EvidenceSource.WORKOUT,
                 _as_utc(record.start_at),
-                "Workout strain",
+                "Нагрузка тренировки",
                 _display_number(record.strain),
                 None,
             )
@@ -297,9 +297,9 @@ class HealthContextBuilder:
                 "",
                 EvidenceSource.WEIGHT,
                 _as_utc(record.sync_as_of),
-                "WHOOP current weight (synced as of)",
+                "Текущий вес WHOOP (на момент синхронизации)",
                 _display_number(record.weight_kilogram),
-                "kg",
+                "кг",
                 EvidenceTimeSemantics.SYNC_AS_OF,
             )
             for record in self._session.scalars(statement)
@@ -379,9 +379,9 @@ def _limitations_for(
     return (
         ContextLimitation(
             ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
-            "WHOOP provides a current body snapshot synced as of its timestamp, not "
-            "dated measurement history. Fewer than two dated measurements are "
-            "available, so a weight change cannot be established.",
+            "WHOOP предоставляет текущий снимок параметров тела на момент синхронизации, "
+            "а не историю измерений по датам. Доступно менее двух измерений с датами, "
+            "поэтому нельзя определить изменение веса.",
             prevents_requested_inference=True,
             prevents_entire_answer=intent is QuestionIntent.WEIGHT_TREND,
         ),

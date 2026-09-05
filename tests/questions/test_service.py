@@ -23,9 +23,10 @@ from health_agent.questions.service import (
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
 SELECTION = (
-    "Selected window (inclusive, UTC): 2026-09-04T12:00:00+00:00 to "
-    "2026-09-04T12:00:00+00:00; up to 10 items per source.\n"
-    "Labs use calendar dates; WHOOP uses observation times or explicit sync-as-of times.\n"
+    "Выбранный период (включительно, UTC): 2026-09-04T12:00:00+00:00 — "
+    "2026-09-04T12:00:00+00:00; не более 10 записей из каждого источника.\n"
+    "Для анализов указана календарная дата; для WHOOP — время наблюдения "
+    "или синхронизации.\n"
 )
 
 
@@ -67,7 +68,7 @@ def test_urgent_guard_precedes_context_retrieval_and_remote_responder(question: 
 
     assert result.urgent is True
     assert result.available is True
-    assert "emergency" in result.text.lower()
+    assert "экстренной помощи" in result.text.lower()
     assert builder.calls == []
     assert responder.calls == []
 
@@ -75,11 +76,11 @@ def test_urgent_guard_precedes_context_retrieval_and_remote_responder(question: 
 def test_answer_appends_deterministic_sources_and_structured_limitations() -> None:
     limitation = ContextLimitation(
         ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
-        "A dated trend cannot be established.",
+        "Нельзя определить динамику по датам.",
     )
     context = _context(limitations=(limitation,))
     builder = FakeContextBuilder(context)
-    responder = FakeResponder("This is an observation, not a diagnosis. [LAB1]")
+    responder = FakeResponder("Это наблюдение, а не диагноз. [LAB1]")
 
     result = HealthQuestionApplicationService(builder, responder).answer(
         PROFILE_ID, "What does my ferritin show?"
@@ -89,9 +90,9 @@ def test_answer_appends_deterministic_sources_and_structured_limitations() -> No
     assert result.evidence == context.evidence
     assert result.limitations == (limitation,)
     assert result.text == (
-        "This is an observation, not a diagnosis. [LAB1]\n\n"
-        f"Sources:\n{SELECTION}- [LAB1] 2026-09-03T09:00:00+00:00: Ferritin — 42 ug/L\n\n"
-        "Limitations:\n- A dated trend cannot be established."
+        "Это наблюдение, а не диагноз. [LAB1]\n\n"
+        f"Источники:\n{SELECTION}- [LAB1] 2026-09-03T09:00:00+00:00: Ferritin — 42 ug/L\n\n"
+        "Ограничения:\n- Нельзя определить динамику по датам."
     )
     assert responder.calls == [(PROFILE_ID, "What does my ferritin show?", context)]
 
@@ -106,8 +107,8 @@ def test_missing_evidence_is_local_and_does_not_call_responder() -> None:
     )
 
     assert result.text == (
-        f"{INSUFFICIENT_EVIDENCE_TEXT}\n\nSources:\n{SELECTION}"
-        "- No verified data was available in the selected window."
+        f"{INSUFFICIENT_EVIDENCE_TEXT}\n\nИсточники:\n{SELECTION}"
+        "- В выбранном периоде нет проверенных данных."
     )
     assert result.safe_error_code is None
     assert responder.calls == []
@@ -116,7 +117,7 @@ def test_missing_evidence_is_local_and_does_not_call_responder() -> None:
 def test_inference_blocking_limitation_is_local_even_with_current_evidence() -> None:
     limitation = ContextLimitation(
         ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
-        "A dated trend cannot be established.",
+        "Нельзя определить динамику по датам.",
         prevents_requested_inference=True,
         prevents_entire_answer=True,
     )
@@ -130,9 +131,9 @@ def test_inference_blocking_limitation_is_local_even_with_current_evidence() -> 
     ).answer(PROFILE_ID, "Has my weight changed over time?")
 
     assert result.text == (
-        f"{INSUFFICIENT_EVIDENCE_TEXT}\n\nSources:\n{SELECTION}"
+        f"{INSUFFICIENT_EVIDENCE_TEXT}\n\nИсточники:\n{SELECTION}"
         "- [LAB1] 2026-09-03T09:00:00+00:00: Ferritin — 42 ug/L\n\n"
-        "Limitations:\n- A dated trend cannot be established."
+        "Ограничения:\n- Нельзя определить динамику по датам."
     )
     assert result.evidence == context.evidence
     assert result.limitations == (limitation,)

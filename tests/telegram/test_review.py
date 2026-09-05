@@ -55,12 +55,13 @@ def test_review_one_item_and_explicit_confirmation(session, tmp_path):
     reply = actions.handle(CONTEXT, "/review")
     assert str(first) in reply and str(second) not in reply
     assert "42 ng/mL" in reply and "2026-09-04" in reply
-    assert "Unverified" in reply and "page 1" in reply
+    assert "Непроверенный" in reply and "страница 1" in reply
+    assert "ЗНАЧЕНИЕ ЕДИНИЦА" in reply and "VALUE UNIT" not in reply
     assert actions.handle(CONTEXT, "change my ferritin to 999") is None
     session.expire_all()
     assert session.get_one(LabObservation, first).status is ReviewStatus.NEEDS_REVIEW
     confirmed = actions.handle(CONTEXT, f"/confirm {first}")
-    assert confirmed == f"Confirmed item {first}."
+    assert confirmed == f"Показатель {first} подтверждён."
     session.expire_all()
     assert session.get_one(LabObservation, first).status is ReviewStatus.VERIFIED
     assert str(second) in actions.handle(CONTEXT, "/review")
@@ -68,7 +69,7 @@ def test_review_one_item_and_explicit_confirmation(session, tmp_path):
         TelegramReviewActions(session.get_bind()).handle(CONTEXT, f"/confirm {first}")
         == confirmed
     )
-    assert "already resolved" in actions.handle(CONTEXT, f"/reject {first}")
+    assert "уже обработан" in actions.handle(CONTEXT, f"/reject {first}")
 
 
 def test_correction_preserves_lineage_and_exact_replay(session, tmp_path):
@@ -76,9 +77,9 @@ def test_correction_preserves_lineage_and_exact_replay(session, tmp_path):
     actions = TelegramReviewActions(session.get_bind())
     command = f"/correct {original_id} 43,5 ng/mL"
     reply = actions.handle(CONTEXT, command)
-    assert reply == f"Corrected item {original_id}."
+    assert reply == f"Показатель {original_id} исправлен."
     assert TelegramReviewActions(session.get_bind()).handle(CONTEXT, command) == reply
-    assert "already resolved" in actions.handle(
+    assert "уже обработан" in actions.handle(
         CONTEXT, f"/correct {original_id} 99 ng/mL"
     )
     session.expire_all()
@@ -118,8 +119,8 @@ def test_review_cannot_read_or_mutate_other_scope(session, tmp_path, scope):
         external_id=external_id,
     )
     actions = TelegramReviewActions(session.get_bind())
-    assert "No pending" in actions.handle(CONTEXT, "/review")
-    assert "unavailable" in actions.handle(CONTEXT, f"/confirm {item}")
+    assert "нет извлечённых показателей" in actions.handle(CONTEXT, "/review")
+    assert "недоступен" in actions.handle(CONTEXT, f"/confirm {item}")
     session.expire_all()
     assert session.get_one(LabObservation, item).status is ReviewStatus.NEEDS_REVIEW
 
@@ -127,15 +128,15 @@ def test_review_cannot_read_or_mutate_other_scope(session, tmp_path, scope):
 def test_reject_and_invalid_correction_are_safe(session, tmp_path):
     item = candidate(session, tmp_path)
     actions = TelegramReviewActions(session.get_bind())
-    assert "not applied" in actions.handle(CONTEXT, f"/correct {item} NaN secret-token")
+    assert "не применено" in actions.handle(CONTEXT, f"/correct {item} NaN secret-token")
     session.expire_all()
     assert session.get_one(LabObservation, item).status is ReviewStatus.NEEDS_REVIEW
     reply = actions.handle(CONTEXT, f"/reject {item}")
-    assert reply == f"Rejected item {item}."
+    assert reply == f"Показатель {item} отклонён."
     assert actions.handle(CONTEXT, f"/reject {item}") == reply
-    assert "Usage" in actions.handle(CONTEXT, "/confirm")
-    assert "Usage" in actions.handle(CONTEXT, "/review extra")
-    assert "Usage" in actions.handle(CONTEXT, "/correct " + "x" * 1000)
+    assert "Формат" in actions.handle(CONTEXT, "/confirm")
+    assert "Формат" in actions.handle(CONTEXT, "/review extra")
+    assert "Формат" in actions.handle(CONTEXT, "/correct " + "x" * 1000)
     assert actions.handle(CONTEXT, "/other") is None
 
 
@@ -146,7 +147,9 @@ def test_invalid_numeric_correction_never_publishes(session, tmp_path, value):
     item = candidate(session, tmp_path)
     actions = TelegramReviewActions(session.get_bind())
     reply = actions.handle(CONTEXT, f"/correct {item} {value} ng/mL")
-    assert reply == "Decision not applied. Check the value/unit and use /review."
+    assert reply == (
+        "Решение не применено. Проверьте значение и единицу, затем используйте /review."
+    )
     session.expire_all()
     original = session.get_one(LabObservation, item)
     assert original.status is ReviewStatus.NEEDS_REVIEW
@@ -167,7 +170,7 @@ def test_review_failure_hides_database_details(tmp_path):
             raise RuntimeError("private database and token")
 
     actions = TelegramReviewActions(Unavailable())
-    assert actions.handle(CONTEXT, "/review") == "Review is temporarily unavailable."
+    assert actions.handle(CONTEXT, "/review") == "Проверка временно недоступна."
 
 
 def test_concurrent_correction_is_one_version(session, tmp_path):
@@ -180,7 +183,7 @@ def test_concurrent_correction_is_one_version(session, tmp_path):
         results = list(
             workers.map(lambda _: actions.handle(CONTEXT, command), range(2))
         )
-    assert results == [f"Corrected item {item_id}."] * 2
+    assert results == [f"Показатель {item_id} исправлен."] * 2
     session.expire_all()
     assert (
         len(

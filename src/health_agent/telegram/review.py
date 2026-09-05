@@ -24,8 +24,8 @@ from health_agent.models import (
 from health_agent.telegram.types import MessageContext
 
 _USAGE = (
-    "Usage: /review; /confirm ITEM_UUID; /correct ITEM_UUID VALUE UNIT; "
-    "/reject ITEM_UUID. These explicit commands apply your decision to one item."
+    "Формат: /review; /confirm UUID; /correct UUID ЗНАЧЕНИЕ ЕДИНИЦА; /reject UUID. "
+    "Решение применяется только к одному показателю явной командой."
 )
 _COMMANDS = {"/review", "/confirm", "/correct", "/reject"}
 
@@ -54,9 +54,12 @@ class TelegramReviewActions:
                     return _next_item(session, context)
                 return _decide(session, context, item_id, command, parts)
         except ValueError:
-            return "Decision not applied. Check the value/unit and use /review."
+            return (
+                "Решение не применено. Проверьте значение и единицу, затем используйте "
+                "/review."
+            )
         except Exception:  # noqa: BLE001 -- medical data and DB diagnostics are private
-            return "Review is temporarily unavailable."
+            return "Проверка временно недоступна."
 
 
 def _scoped_items(context: MessageContext) -> Select[tuple[LabObservation]]:
@@ -91,21 +94,24 @@ def _next_item(session: Session, context: MessageContext) -> str:
     )
     if item is None:
         return (
-            "No pending extracted items in this chat. An image may still need OCR "
-            "or local attention; an empty queue does not mean every upload was read."
+            "В этом чате нет извлечённых показателей, ожидающих проверки. Для изображения "
+            "всё ещё могут требоваться OCR или локальная проверка; пустая очередь не "
+            "означает, что все загрузки распознаны."
         )
     document = item.document
     return (
-        f"Unverified item {item.id}\n"
-        f"Source: Telegram document {document.id}, page {item.page_number}.\n"
-        f"Extracted: {_display(item.source_name)} = {_display(item.source_value)} "
-        f"{_display(item.source_unit or '(unit missing)')}\n"
-        f"Collection date: {document.collected_date or 'unknown'}; "
-        f"issue date: {document.issued_date or 'unknown'}.\n"
-        "Compare with the original, including the medical date. Missing/wrong dates "
-        "need local review set-date before relying on this result.\n"
-        f"/confirm {item.id}\n/correct {item.id} VALUE UNIT\n/reject {item.id}\n"
-        "Only an explicit command confirms or changes this item. /review shows the next item."
+        f"Непроверенный показатель {item.id}\n"
+        f"Источник: документ Telegram {document.id}, страница {item.page_number}.\n"
+        f"Извлечено: {_display(item.source_name)} = {_display(item.source_value)} "
+        f"{_display(item.source_unit or '(единица не указана)')}\n"
+        f"Дата сдачи: {document.collected_date or 'неизвестна'}; "
+        f"дата выдачи: {document.issued_date or 'неизвестна'}.\n"
+        "Сверьте показатель и медицинскую дату с оригиналом. Если дата отсутствует или "
+        "неверна, задайте её локальной командой review set-date, прежде чем полагаться "
+        "на этот результат.\n"
+        f"/confirm {item.id}\n/correct {item.id} ЗНАЧЕНИЕ ЕДИНИЦА\n/reject {item.id}\n"
+        "Только явная команда подтверждает или изменяет показатель. /review показывает "
+        "следующий."
     )
 
 
@@ -123,14 +129,14 @@ def _decide(
         .with_for_update(of=(Document, LabObservation))
     )
     if item is None or item.review_item is None:
-        return "This review item is unavailable in this chat."
+        return "Этот показатель недоступен для проверки в этом чате."
     decision = {"/confirm": "approved", "/correct": "corrected", "/reject": "rejected"}[
         command
     ]
     reply = {
-        "/confirm": f"Confirmed item {item_id}.",
-        "/correct": f"Corrected item {item_id}.",
-        "/reject": f"Rejected item {item_id}.",
+        "/confirm": f"Показатель {item_id} подтверждён.",
+        "/correct": f"Показатель {item_id} исправлен.",
+        "/reject": f"Показатель {item_id} отклонён.",
     }[command]
     if item.status is not ReviewStatus.NEEDS_REVIEW:
         same = item.review_item.decision == decision
@@ -142,7 +148,9 @@ def _decide(
                 and (correction.get("source_unit") == parts[3])
             )
         return (
-            reply if same else "This item is already resolved; no changes were applied."
+            reply
+            if same
+            else "Этот показатель уже обработан; изменения не применены."
         )
     if command == "/confirm":
         approve_observation(session, item_id, profile_id=context.profile_id)

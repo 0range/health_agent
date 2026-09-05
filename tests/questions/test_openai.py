@@ -100,6 +100,13 @@ def test_responses_adapter_uses_exact_stateless_safe_call_arguments() -> None:
     assert "conversation" not in responses.calls[0]
 
 
+def test_safety_instructions_request_russian_unless_user_clearly_asks_otherwise() -> None:
+    assert (
+        "Answer in Russian unless the user clearly asks for another language."
+        in MEDICAL_SAFETY_INSTRUCTIONS
+    )
+
+
 @pytest.mark.parametrize(
     "response",
     (
