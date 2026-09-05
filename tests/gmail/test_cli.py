@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pymupdf
@@ -156,6 +157,35 @@ def test_sync_all_accounts_reports_oauth_needed_without_trace_or_secret(
     assert status.stdout.count("last_error=oauth_required") == 2
     assert status.stdout.count("oauth=reauth_required") == 2
     assert "last_attempt=never" not in status.stdout
+
+
+def test_status_reports_valid_after_reauthorization_despite_stale_sync_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "gmail"
+    monkeypatch.setenv("GMAIL_ROOT", str(root))
+    runner = CliRunner()
+    runner.invoke(app, ["gmail", "configure", PROFILE, "personal"])
+    runner.invoke(app, ["gmail", "sync", PROFILE])
+
+    credentials = Credentials(
+        token="access-token",
+        refresh_token="refresh-token",
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id="client-id",
+        client_secret="client-secret",
+        scopes=[GMAIL_READONLY_SCOPE],
+        expiry=datetime.now(UTC) + timedelta(hours=1),
+    )
+    LocalGmailTokenStore(root).publish_verified(
+        PROFILE, "personal", "alice@example.com", credentials.to_json()
+    )
+
+    status = runner.invoke(app, ["gmail", "status", PROFILE])
+
+    assert status.exit_code == 0, (status.output, status.exception)
+    assert "oauth=valid" in status.stdout
+    assert "last_error=oauth_required" in status.stdout
 
 
 def test_reauthorization_mismatch_preserves_previous_verified_token(

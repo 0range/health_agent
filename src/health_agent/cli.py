@@ -736,7 +736,10 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
         run = state.get_run_state(profile.profile_id, account.account_id)
         oauth = GmailOAuth(settings.google_oauth_client_secrets, tokens)
         token_status = oauth.local_status(profile.profile_id, account.account_id)
-        if run.last_error_code == "oauth_required":
+        # A successful re-authorization can happen after the previous sync
+        # recorded ``oauth_required``.  Keep that historical run error visible,
+        # but never let it override a currently valid credential.
+        if run.last_error_code == "oauth_required" and token_status != "valid":
             token_status = "reauth_required"
         try:
             verified = tokens.load_verified(profile.profile_id, account.account_id)
