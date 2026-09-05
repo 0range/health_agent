@@ -106,6 +106,7 @@ def test_configure_multiple_accounts_and_show_safe_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GMAIL_ROOT", str(tmp_path / "gmail"))
+    monkeypatch.setenv("GOOGLE_OAUTH_PUBLISHING_STATUS", "testing")
     runner = CliRunner()
     first = runner.invoke(
         app,
