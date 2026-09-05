@@ -67,6 +67,20 @@ from health_agent.questions.composition import (
     safe_question_setup_error,
 )
 from health_agent.questions.models import EvidenceSource
+from health_agent.reminders.dispatcher import DispatchReport, ReminderDispatcher
+from health_agent.reminders.launchd import (
+    REMINDER_LABEL,
+    ReminderLaunchdError,
+    ReminderLaunchdManager,
+    ReminderLaunchdPaths,
+)
+from health_agent.reminders.repository import (
+    InvalidReminderTransition,
+    ReminderNotFound,
+    ReminderRepository,
+)
+from health_agent.reminders.telegram import parse_snooze_duration
+from health_agent.reminders.time import parse_local_datetime
 from health_agent.staging import (
     StagingConfigurationError,
     StagingEnvironment,
@@ -74,6 +88,7 @@ from health_agent.staging import (
 )
 from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
 from health_agent.telegram.api import TelegramBotAPI
+from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.vault import FileVault
 from health_agent.whoop.auth_service import (
@@ -100,7 +115,10 @@ panel_app = typer.Typer(help="Serve the local management panel.")
 staging_app = typer.Typer(help="Manage the isolated local staging environment.")
 drive_app = typer.Typer(help="Manage read-only Google Drive profiles.")
 automation_app = typer.Typer(help="Run and manage safe local connector automation.")
-question_app = typer.Typer(help="Ask profile-scoped questions from verified health data.")
+question_app = typer.Typer(
+    help="Ask profile-scoped questions from verified health data."
+)
+reminder_app = typer.Typer(help="Manage explicitly confirmed health reminders.")
 QUESTION_PROFILE_OPTION = typer.Option(..., "--profile-id")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
@@ -113,6 +131,7 @@ app.add_typer(staging_app, name="staging")
 app.add_typer(drive_app, name="drive")
 app.add_typer(automation_app, name="automation")
 app.add_typer(question_app, name="question")
+app.add_typer(reminder_app, name="reminder")
 
 
 @app.callback()
@@ -695,8 +714,7 @@ def gmail_status(profile_id: UUID, account_id: str | None = None) -> None:
     try:
         if not profiles.exists(profile_key):
             typer.echo(
-                f"status=not_configured profile={profile_key} "
-                "action_required=configure"
+                f"status=not_configured profile={profile_key} action_required=configure"
             )
             return
         profile = profiles.load(profile_key)
@@ -928,6 +946,194 @@ def health_question_status(
     typer.echo(f"status=ready readiness=local profile_id={profile_id} {counts}")
 
 
+@reminder_app.command("propose")
+def propose_health_reminder(
+    profile_id: UUID,
+    title: Annotated[str, typer.Option("--title")],
+    reason: Annotated[str, typer.Option("--reason")],
+    due: Annotated[str, typer.Option("--when")],
+    source_type: Annotated[str, typer.Option("--source-type")],
+    source_reference: Annotated[str, typer.Option("--source-reference")],
+    timezone_name: Annotated[str, typer.Option("--timezone")] = "Europe/Moscow",
+) -> None:
+    """Create an inactive proposal; Telegram confirmation is still required."""
+    try:
+        due_at = parse_local_datetime(due, timezone_name)
+        with session_scope(_reminder_engine()) as session:
+            reminder = ReminderRepository(session).propose(
+                profile_id=profile_id,
+                title=title,
+                reason=reason,
+                source_type=source_type,
+                source_reference=source_reference,
+                due_at=due_at,
+                timezone_name=timezone_name,
+            )
+    except (ReminderNotFound, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=reminder_proposal_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        f"status={reminder.status.value} profile_id={profile_id} "
+        f"code={reminder.public_code}"
+    )
+
+
+@reminder_app.command("list")
+def list_health_reminders(profile_id: UUID) -> None:
+    """List reminders for exactly one local profile."""
+    try:
+        with session_scope(_reminder_engine()) as session:
+            reminders = ReminderRepository(session).list(profile_id)
+    except Exception:  # noqa: BLE001 -- database details stay local
+        typer.echo("status=failed safe_error=reminder_list_failed", err=True)
+        raise typer.Exit(code=1) from None
+    for reminder in reminders:
+        typer.echo(
+            f"code={reminder.public_code} status={reminder.status.value} "
+            f"due_at={reminder.due_at.isoformat()} timezone={reminder.timezone_name} "
+            f"title={reminder.title}"
+        )
+
+
+@reminder_app.command("status")
+def health_reminder_status(profile_id: UUID) -> None:
+    """Show content-free counts for one profile."""
+    try:
+        with session_scope(_reminder_engine()) as session:
+            status = ReminderRepository(session).status(profile_id)
+    except Exception:  # noqa: BLE001 -- database details stay local
+        typer.echo("status=failed safe_error=reminder_status_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        " ".join(
+            (
+                "status=ready",
+                f"profile_id={profile_id}",
+                f"total={status.total}",
+                f"pending_confirmation={status.pending_confirmation}",
+                f"scheduled={status.scheduled}",
+                f"due={status.due}",
+                f"delivered={status.delivered}",
+                f"completed={status.completed}",
+                f"cancelled={status.cancelled}",
+            )
+        )
+    )
+
+
+@reminder_app.command("confirm")
+def confirm_health_reminder(profile_id: UUID, code: str) -> None:
+    _run_reminder_transition(profile_id, code, "confirm")
+
+
+@reminder_app.command("complete")
+def complete_health_reminder(profile_id: UUID, code: str) -> None:
+    _run_reminder_transition(profile_id, code, "complete")
+
+
+@reminder_app.command("cancel")
+def cancel_health_reminder(profile_id: UUID, code: str) -> None:
+    _run_reminder_transition(profile_id, code, "cancel")
+
+
+@reminder_app.command("snooze")
+def snooze_health_reminder(profile_id: UUID, code: str, duration: str) -> None:
+    try:
+        with session_scope(_reminder_engine()) as session:
+            reminder = ReminderRepository(session).snooze(
+                profile_id, code, duration=parse_snooze_duration(duration)
+            )
+    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        f"status=scheduled profile_id={profile_id} code={code} "
+        f"due_at={reminder.due_at.isoformat()}"
+    )
+
+
+@reminder_app.command("reschedule")
+def reschedule_health_reminder(
+    profile_id: UUID,
+    code: str,
+    due: Annotated[str, typer.Option("--when")],
+    timezone_name: Annotated[str, typer.Option("--timezone")] = "Europe/Moscow",
+) -> None:
+    try:
+        due_at = parse_local_datetime(due, timezone_name)
+        with session_scope(_reminder_engine()) as session:
+            reminder = ReminderRepository(session).reschedule(
+                profile_id,
+                code,
+                due_at=due_at,
+                timezone_name=timezone_name,
+            )
+    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        f"status=scheduled profile_id={profile_id} code={code} "
+        f"due_at={reminder.due_at.isoformat()}"
+    )
+
+
+@reminder_app.command("dispatch")
+def dispatch_health_reminders(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    """Deliver pending proposals and due confirmed reminders once."""
+    try:
+        dispatcher, lock = _reminder_dispatch_components(env_file)
+        if not lock.acquire():
+            typer.echo("status=skipped safe_error=already_running")
+            return
+        try:
+            report = dispatcher.run()
+        finally:
+            lock.release()
+    except Exception:  # noqa: BLE001 -- never leak credentials or private paths
+        typer.echo("status=failed safe_error=reminder_dispatch_failed", err=True)
+        raise typer.Exit(code=1) from None
+    _print_reminder_dispatch_report(report)
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
+@reminder_app.command("render")
+def render_health_reminder_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    _run_reminder_launchd("render", env_file)
+
+
+@reminder_app.command("install")
+def install_health_reminder_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    _run_reminder_launchd("install", env_file)
+
+
+@reminder_app.command("automation-status")
+def health_reminder_automation_status(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    _run_reminder_launchd("status", env_file)
+
+
+@reminder_app.command("stop")
+def stop_health_reminder_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    _run_reminder_launchd("stop", env_file)
+
+
+@reminder_app.command("remove")
+def remove_health_reminder_automation(
+    env_file: Annotated[Path, typer.Option("--env-file")],
+) -> None:
+    _run_reminder_launchd("remove", env_file)
+
+
 @telegram_app.command("configure-token")
 def configure_telegram_token() -> None:
     """Store a BotFather token locally without exposing it in shell history."""
@@ -1122,9 +1328,7 @@ def authorize_drive(profile_id: UUID) -> None:
             f"profile {profile_key!r} is already bound to another Google account"
         )
     oauth.publish_verified(profile_key, credentials, identity)
-    typer.echo(
-        f"status=authorized profile={profile_key} account={identity.email}"
-    )
+    typer.echo(f"status=authorized profile={profile_key} account={identity.email}")
 
 
 @drive_app.command("status")
@@ -1201,7 +1405,9 @@ def sync_drive(profile_id: UUID, full: bool = False) -> None:
     credentials = oauth.stage(profile_key)
     verified = tokens.load_verified(profile_key)
     if verified is None:
-        raise RuntimeError(f"Google Drive profile {profile_key!r} needs OAuth authorization")
+        raise RuntimeError(
+            f"Google Drive profile {profile_key!r} needs OAuth authorization"
+        )
     identity = verified[0]
     with state.sync_lock(profile_key):
         profile = profiles.load(profile_key).with_account(
@@ -1286,7 +1492,10 @@ def _telegram_admin(settings: Settings) -> TelegramAdminService:
 
 def _profile_exists(settings: Settings, profile_id: UUID) -> bool:
     with session_scope(build_engine(settings)) as session:
-        return session.scalar(select(Profile.id).where(Profile.id == profile_id)) is not None
+        return (
+            session.scalar(select(Profile.id).where(Profile.id == profile_id))
+            is not None
+        )
 
 
 def _staging_manager(env_file: Path | None) -> StagingManager:
@@ -1343,6 +1552,118 @@ def _automation_manager_or_exit(env_file: Path) -> LaunchdManager:
     except (RuntimeError, ValueError):
         typer.echo("status=failed safe_error=automation_configuration_failed", err=True)
         raise typer.Exit(code=1) from None
+
+
+def _reminder_engine():
+    return build_engine(Settings())
+
+
+def _run_reminder_transition(profile_id: UUID, code: str, action: str) -> None:
+    try:
+        with session_scope(_reminder_engine()) as session:
+            repository = ReminderRepository(session)
+            if action == "confirm":
+                reminder = repository.confirm(profile_id, code)
+            elif action == "complete":
+                reminder = repository.complete(profile_id, code)
+            elif action == "cancel":
+                reminder = repository.cancel(profile_id, code)
+            else:
+                raise ValueError("invalid_reminder_action")
+    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={reminder.status.value} profile_id={profile_id} code={code}")
+
+
+def _reminder_settings(env_file: Path) -> tuple[Settings, Path, Path]:
+    repository_root = Path(__file__).resolve().parents[2]
+    expanded = env_file.expanduser()
+    if not expanded.is_absolute():
+        raise ValueError("env_file_not_absolute")
+    resolved = expanded.resolve()
+    from health_agent.automation.storage import require_private_file
+
+    require_private_file(resolved)
+    settings = Settings(_env_file=resolved)  # type: ignore[call-arg]
+    settings.automation_root = _repository_relative(
+        repository_root, settings.automation_root
+    )
+    settings.telegram_root = _repository_relative(
+        repository_root, settings.telegram_root
+    )
+    if settings.telegram_token_file is not None:
+        settings.telegram_token_file = _repository_relative(
+            repository_root, settings.telegram_token_file
+        )
+    if settings.telegram_state_path is not None:
+        settings.telegram_state_path = _repository_relative(
+            repository_root, settings.telegram_state_path
+        )
+    return settings, repository_root, resolved
+
+
+def _reminder_dispatch_components(
+    env_file: Path,
+) -> tuple[ReminderDispatcher, GlobalRunLock]:
+    settings, _, _ = _reminder_settings(env_file)
+    credential = PrivateBotTokenStore(
+        settings.effective_telegram_token_file
+    ).load_verified()
+    state = SqliteTelegramState(settings.telegram_state_file)
+    state.register_bot(credential.bot_id, credential.username)
+    gateway = TelegramBotAPI(credential.token)
+    messenger = TelegramMessenger(credential.bot_id, gateway, state)
+    dispatcher = ReminderDispatcher(build_engine(settings), messenger)
+    return dispatcher, GlobalRunLock(settings.automation_root / "reminders.lock")
+
+
+def _reminder_launchd_manager(env_file: Path) -> ReminderLaunchdManager:
+    settings, repository_root, resolved_env = _reminder_settings(env_file)
+    paths = ReminderLaunchdPaths.resolve(
+        automation_root=settings.automation_root,
+        executable=_current_console_script(),
+        environment_file=resolved_env,
+        working_directory=repository_root,
+    )
+    return ReminderLaunchdManager(paths)
+
+
+def _run_reminder_launchd(action: str, env_file: Path) -> None:
+    try:
+        manager = _reminder_launchd_manager(env_file)
+        if action == "render":
+            manager.render()
+            status = "rendered"
+        elif action == "install":
+            status = manager.install()
+        elif action == "status":
+            status = manager.status()
+        elif action == "stop":
+            status = manager.stop()
+        elif action == "remove":
+            status = manager.remove()
+        else:
+            raise ValueError("invalid_launchd_action")
+    except (ReminderLaunchdError, RuntimeError, ValueError):
+        typer.echo("status=failed safe_error=reminder_launchd_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status={status} label={REMINDER_LABEL}")
+
+
+def _print_reminder_dispatch_report(report: DispatchReport) -> None:
+    typer.echo(
+        " ".join(
+            (
+                "status=succeeded" if not report.failed else "status=failed",
+                f"proposals_sent={report.proposals_sent}",
+                f"proposals_acknowledged={report.proposals_acknowledged}",
+                f"due_sent={report.due_sent}",
+                f"due_acknowledged={report.due_acknowledged}",
+                f"failed={report.failed}",
+            )
+        )
+    )
 
 
 def _repository_relative(repository_root: Path, path: Path) -> Path:

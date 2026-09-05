@@ -80,7 +80,7 @@ class DatabaseReminderCommands:
                 reminder = repository.snooze(
                     profile_id,
                     code,
-                    duration=_parse_duration(arguments[1]),
+                    duration=parse_snooze_duration(arguments[1]),
                     now=now,
                 )
                 return f"Напоминание перенесено на {_local_due(reminder)}."
@@ -131,7 +131,7 @@ def _local_due(reminder: Reminder) -> str:
     return f"{local:%Y-%m-%d %H:%M} ({reminder.timezone_name})"
 
 
-def _parse_duration(value: str) -> timedelta:
+def parse_snooze_duration(value: str) -> timedelta:
     match = _DURATION.fullmatch(value.casefold())
     if match is None:
         raise ValueError("invalid_snooze_duration")
