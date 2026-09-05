@@ -181,6 +181,84 @@ def test_safe_error_never_renders_as_connected() -> None:
     assert "Подключено" not in whoop_card
 
 
+@pytest.mark.parametrize(
+    ("card", "expected_action", "forbidden_action"),
+    (
+        (
+            ConnectorCard(
+                "whoop",
+                "reauth_required",
+                "Аккаунт требует внимания.",
+                error_code="reauth_required",
+            ),
+            "Подключите или переподключите WHOOP.",
+            "Переподключение не требуется",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
+                "ready",
+                "Аккаунт требует внимания.",
+                error_code="rate_limited",
+            ),
+            "Подождите следующей автоматической попытки; переподключение не требуется.",
+            "Подключите или переподключите WHOOP.",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
+                "ready",
+                "Аккаунт требует внимания.",
+                error_code="sync_failed",
+            ),
+            "Повторите синхронизацию позже. Если ошибка повторится, откройте подробности.",
+            "Подключите или переподключите WHOOP.",
+        ),
+        (
+            ConnectorCard(
+                "gmail",
+                "ready",
+                "Аккаунт требует внимания.",
+                error_code="AttachmentPreparationError",
+            ),
+            "Повторите синхронизацию позже. Если ошибка повторится, откройте подробности.",
+            "Подключите или переподключите Gmail.",
+        ),
+    ),
+)
+def test_visible_remediation_matches_failure_kind(
+    card: ConnectorCard, expected_action: str, forbidden_action: str
+) -> None:
+    app, profile, _ = application(card=card)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+    connector_label = "WHOOP" if card.connector == "whoop" else "Gmail"
+    connector_card = page.split(f">{connector_label}</h3>", 1)[1].split(
+        "</article>", 1
+    )[0]
+
+    assert expected_action in connector_card
+    assert forbidden_action not in connector_card
+
+
+def test_configured_card_with_previous_success_is_not_marked_never_synced() -> None:
+    configured = ConnectorCard(
+        "gmail",
+        "configured",
+        "Аккаунт настроен.",
+        last_success_at=datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    app, profile, _ = application(card=configured)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+    gmail_card = page.split(">Gmail</h3>", 1)[1].split("</article>", 1)[0]
+
+    assert "Подключено" in gmail_card
+    assert "Последняя синхронизация" in gmail_card
+    assert "Синхронизация ещё не запускалась" not in gmail_card
+    assert "Успешной синхронизации ещё не было" not in gmail_card
+
+
 def test_profile_page_has_semantic_sections_and_collapsed_identifiers() -> None:
     card = ConnectorCard(
         "whoop",

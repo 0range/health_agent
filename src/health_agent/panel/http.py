@@ -56,6 +56,9 @@ _CONNECTOR_ORDER = {
         ("whoop", "drive", "gmail", "telegram", "reminders", "database")
     )
 }
+_AUTH_ERROR_CODES = frozenset(
+    {"OAuthRequired", "credential_invalid", "reauth_required", "token_not_configured"}
+)
 _MONTHS = (
     "января",
     "февраля",
@@ -542,15 +545,13 @@ def _render_card(card: ConnectorCard, profile_id: UUID, index: int) -> str:
 def _product_status(card: ConnectorCard) -> str:
     if card.error_code is not None:
         return "action_required"
-    if card.status == "ready":
+    if card.status in {"ready", "configured"}:
         if card.last_success_at is not None or card.connector in {
             "telegram",
             "reminders",
             "database",
         }:
             return "connected"
-        return "not_synced"
-    if card.status == "configured":
         return "not_synced"
     return "action_required"
 
@@ -563,6 +564,16 @@ def _human_time(value: datetime) -> str:
 
 
 def _human_action(card: ConnectorCard) -> str:
+    if card.error_code == "rate_limited":
+        return (
+            "Подождите следующей автоматической попытки; "
+            "переподключение не требуется."
+        )
+    if card.error_code is not None and card.error_code not in _AUTH_ERROR_CODES:
+        return (
+            "Повторите синхронизацию позже. Если ошибка повторится, "
+            "откройте подробности."
+        )
     if card.connector == "drive":
         return (
             "Добавьте папку Google Drive ниже."
