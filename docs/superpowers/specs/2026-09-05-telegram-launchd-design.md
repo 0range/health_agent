@@ -38,6 +38,23 @@ retaining files; launchd therefore does not restart it after an intentional
 stop. Remove unloads and deletes only the Telegram rendered/installed plists.
 Status reports only `loaded` or `unloaded` plus the fixed label.
 
+All plist lifecycle operations use a second Telegram-only advisory lock,
+separate from the poller singleton lock. `render`, `install`, status reads,
+`stop`, and `remove` either hold this lifecycle lock across their complete
+filesystem/launchctl transaction or fail closed with `telegram_lifecycle_busy`.
+Private helpers do not reacquire the lock, so nested install/rollback and
+remove/stop flows remain deadlock-free. A losing concurrent operation cannot
+restore or delete files written by the lock owner.
+
+If loading a changed plist fails after the old service was unloaded, install
+first restores the previous plist and then verifies the bootstrap of that
+previous service. A successful recovery raises `launchctl_bootstrap_failed`
+with `previous_service_restored=true`; if that recovery bootstrap also fails,
+install raises the distinct content-free
+`launchctl_rollback_bootstrap_failed` outcome with
+`previous_service_restored=false`. No CLI output includes launchctl output,
+paths, credentials, or medical content.
+
 Rendered roots are `0700`; plist, lock, active logs and one rotated generation
 are regular `0600` files. Logs rotate above 5 MiB only while the service lock is
 held, so rotation cannot race a running poller. Runtime output remains the
@@ -50,6 +67,9 @@ Tests parse the plist and use fake launchctl/subprocess adapters, temporary
 homes, private synthetic env files, and lock contention. They cover label
 isolation, absolute paths, no secret leakage, KeepAlive/backoff, idempotent
 install/reload/rollback, stop/remove, private rotation, single instance, safe
-child environment and exit propagation. Tests never load launchd, call Telegram,
-read real credentials, or run the long-poller. Live install and delivery remain
-an explicit owner smoke test after merge.
+child environment and exit propagation. Deterministic concurrency tests hold the
+lifecycle owner at a controlled boundary and prove a losing install cannot
+remove or replace the winner's plist. Double-bootstrap tests distinguish a
+restored previous service from a failed recovery. Tests never load launchd, call
+Telegram, read real credentials, or run the long-poller. Live install and
+delivery remain an explicit owner smoke test after merge.

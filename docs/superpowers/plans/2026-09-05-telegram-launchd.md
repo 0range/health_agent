@@ -72,3 +72,38 @@ assert "SECRET" not in result.output
 - [ ] Update the Telegram runbook with the five operator commands, owned files, restart/stop semantics, live-only validation, and distinction from connector/reminder LaunchAgents.
 - [ ] Run focused Telegram/automation/reminder tests, then full `uv run --offline pytest -q`, `uv run --offline ruff check .`, `uv run --offline mypy src`, `uv lock --check`, `git diff --check`, CLI help and plist parse smokes. Do not run install or the service wrapper outside fakes.
 - [ ] Write the implementation report, generate `.superpowers/sdd/2026-09-05-telegram-launchd/review-18d97a3..<HEAD>.diff`, self-review, and commit the final documentation/package.
+
+### Task 3: Serialize lifecycle and verify rollback recovery
+
+**Files:**
+- Modify: `src/health_agent/telegram/launchd.py`
+- Modify: `tests/telegram/test_launchd.py`
+- Modify: `tests/telegram/test_launchd_cli.py`
+- Modify: `docs/integrations/telegram.md`
+- Modify: `docs/superpowers/reports/2026-09-05-telegram-launchd-report.md`
+
+**Interfaces:**
+- Consumes: `GlobalRunLock` and the existing manager private lifecycle helpers.
+- Produces: `TelegramLaunchdError.safe_code`,
+  `TelegramLaunchdError.previous_service_restored`, and a distinct
+  `telegram-lifecycle.lock` path owned only by this manager.
+
+- [ ] Add a failing double-bootstrap test whose new bootstrap and rollback
+  bootstrap both return non-zero. Assert the old plist bytes are restored but
+  the exception has safe code `launchctl_rollback_bootstrap_failed` and
+  `previous_service_restored is False`; retain the successful-rollback test with
+  `previous_service_restored is True`.
+- [ ] Add a failing deterministic concurrent-install test. Pause the winning
+  manager inside its lifecycle transaction, invoke a second manager, assert the
+  loser receives `telegram_lifecycle_busy`, then release the winner and prove its
+  installed plist remains present and byte-identical.
+- [ ] Add the minimal Telegram-only lifecycle lock and locked private helpers.
+  Hold it across render/read/write/print/bootout/bootstrap/rollback for install,
+  and across every read/write/launchctl step for render, status, stop, and remove.
+  Never reuse the poller singleton lock and never nest lock acquisition.
+- [ ] Map lifecycle failures through the existing bounded CLI boundary without
+  exposing exception causes, launchctl output, paths, env values, or health text.
+  Add a CLI regression for the distinct rollback code.
+- [ ] Run the focused tests, then full pytest, Ruff, mypy `src`, lock check,
+  Alembic-head check and diff check. Update the report and review package without
+  invoking live launchd or Telegram; commit the complete hardening change.
