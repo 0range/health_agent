@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -30,7 +29,6 @@ from health_agent.whoop.models import (
 
 MAX_LAB_ROWS = 200
 MAX_PRIORITY_SIGNALS = 5
-MAX_WEARABLE_ROWS = 500
 MAX_SIGNAL_CITATIONS = 35
 RECENT_DAYS = 7
 BASELINE_DAYS = 28
@@ -177,10 +175,9 @@ class HealthSnapshotBuilder:
             )
         }
         pending = counts.get(ReviewStatus.NEEDS_REVIEW, 0)
-        total = sum(counts.values())
         if pending:
             summary = f"{pending} лабораторных результатов ожидают проверки; их значения не показаны"
-        elif not total and not has_verified:
+        elif not has_verified:
             summary = "Проверенных лабораторных результатов пока нет"
         else:
             return []
@@ -210,7 +207,7 @@ class HealthSnapshotBuilder:
                 WhoopSleep.start_at < today,
                 WhoopSleep.is_nap.is_not(True),
             )
-            .limit(MAX_WEARABLE_ROWS)
+            .order_by(WhoopSleep.start_at.desc(), WhoopSleep.id.desc())
         ).all()
         sleep_values = [
             (row.start_at, float(row.total_sleep_milli) / 3_600_000, str(row.id))
@@ -233,7 +230,7 @@ class HealthSnapshotBuilder:
         ]
         signals.append(
             self._trend(
-                "Эффективность сна WHOOP",
+                "Выполнение потребности во сне WHOOP",
                 "%",
                 sleep_performance,
                 as_of,
@@ -265,7 +262,7 @@ class HealthSnapshotBuilder:
                 physiological_at >= start,
                 physiological_at < today,
             )
-            .limit(MAX_WEARABLE_ROWS)
+            .order_by(physiological_at.desc(), WhoopRecovery.id.desc())
         )
         recovery_rows = list(recoveries)
         for title, unit, attribute, source, valid in (
@@ -308,7 +305,7 @@ class HealthSnapshotBuilder:
                 WhoopCycle.start_at >= start,
                 WhoopCycle.start_at < today,
             )
-            .limit(MAX_WEARABLE_ROWS)
+            .order_by(WhoopCycle.start_at.desc(), WhoopCycle.id.desc())
         ).all()
         strain = [
             (row.start_at, float(row.strain), str(row.id))
@@ -330,24 +327,25 @@ class HealthSnapshotBuilder:
         as_of: datetime,
         source: str,
     ) -> HealthSignal:
-        daily: dict[date, list[float]] = defaultdict(list)
-        provenance: list[tuple[datetime, str]] = []
+        daily: dict[date, tuple[datetime, str, float]] = {}
         today = datetime.combine(as_of.date(), datetime.min.time(), UTC)
         recent_start = today - timedelta(days=RECENT_DAYS)
         baseline_start = recent_start - timedelta(days=BASELINE_DAYS)
         for when, value, source_id in rows:
             when_utc = _utc(when)
             if baseline_start <= when_utc < today and isfinite(value):
-                daily[when_utc.date()].append(value)
-                provenance.append((when_utc, source_id))
+                candidate = (when_utc, source_id, value)
+                representative = daily.get(when_utc.date())
+                if representative is None or candidate[:2] > representative[:2]:
+                    daily[when_utc.date()] = candidate
         recent = [
-            fmean(v)
-            for d, v in daily.items()
+            row[2]
+            for d, row in daily.items()
             if recent_start.date() <= d < today.date()
         ]
         baseline = [
-            fmean(v)
-            for d, v in daily.items()
+            row[2]
+            for d, row in daily.items()
             if baseline_start.date() <= d < recent_start.date()
         ]
         citations = tuple(
@@ -357,8 +355,8 @@ class HealthSnapshotBuilder:
                 source_id,
                 when.date(),
             )
-            for index, (when, source_id) in enumerate(
-                sorted(provenance)[:MAX_SIGNAL_CITATIONS], 1
+            for index, (when, source_id, _value) in enumerate(
+                sorted(daily.values())[:MAX_SIGNAL_CITATIONS], 1
             )
         )
         if not citations:
@@ -367,7 +365,7 @@ class HealthSnapshotBuilder:
                     f"[SNAP-{_citation_prefix(source)}-NONE]", source, "none"
                 ),
             )
-        method = f"UTC-дни: {recent_start.date()}–{(today - timedelta(days=1)).date()} против {baseline_start.date()}–{(recent_start - timedelta(days=1)).date()}; среднее дневных средних"
+        method = f"UTC-дни: {recent_start.date()}–{(today - timedelta(days=1)).date()} против {baseline_start.date()}–{(recent_start - timedelta(days=1)).date()}; среднее последних по времени валидных записей каждого дня"
         if len(recent) < MIN_RECENT_DAYS or len(baseline) < MIN_BASELINE_DAYS:
             return HealthSignal(
                 SignalKind.WEARABLE,

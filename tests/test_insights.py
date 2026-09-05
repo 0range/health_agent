@@ -88,6 +88,31 @@ def test_empty_profile_has_explicit_unknown_lab_gap(session: Session) -> None:
     assert "пока нет" in lab_gaps[0].summary
 
 
+def test_rejected_or_future_only_profile_has_unknown_lab_gap(session: Session) -> None:
+    _lab(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Rejected",
+        day=NOW.date(),
+        status=ReviewStatus.REJECTED,
+    )
+    _lab(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Future",
+        day=NOW.date() + timedelta(days=1),
+    )
+
+    snapshot = HealthSnapshotBuilder(session, clock=lambda: NOW).build(
+        DEFAULT_PROFILE_ID
+    )
+
+    lab_gaps = [signal for signal in snapshot.gaps if signal.kind is SignalKind.LAB]
+    assert len(lab_gaps) == 1
+    assert "пока нет" in lab_gaps[0].summary
+    assert not [signal for signal in snapshot.signals if signal.value is not None]
+
+
 def test_latest_per_analyte_and_source_unit_is_profile_scoped(session: Session) -> None:
     other = Profile(id=uuid4(), name="Other")
     session.add(other)
@@ -183,6 +208,47 @@ def test_wearable_windows_use_only_complete_utc_days(session: Session) -> None:
     assert signal.value == "10.0"
     assert signal.citations[0].observed_on == date(2026, 8, 1)
     assert all(citation.source_id != "whoop_test" for citation in signal.citations)
+
+
+def test_more_than_500_duplicate_records_select_same_latest_daily_value(
+    session: Session,
+) -> None:
+    builder = HealthSnapshotBuilder(session, clock=lambda: NOW)
+    duplicate_day = datetime(2026, 9, 4, tzinfo=UTC)
+    duplicates = [
+        (
+            duplicate_day + timedelta(seconds=index),
+            20.0 if index == 599 else 999.0,
+            f"duplicate-{index:03}",
+        )
+        for index in range(600)
+    ]
+    recent = [
+        (
+            datetime(2026, 8, 29, 12, tzinfo=UTC) + timedelta(days=offset),
+            20.0,
+            f"recent-{offset}",
+        )
+        for offset in range(6)
+    ]
+    baseline = [
+        (
+            datetime(2026, 8, 1, 12, tzinfo=UTC) + timedelta(days=offset),
+            10.0,
+            f"baseline-{offset}",
+        )
+        for offset in range(28)
+    ]
+    rows = [*duplicates, *recent, *baseline]
+
+    forward = builder._trend("Метрика", None, rows, NOW, "whoop_test")
+    reverse = builder._trend("Метрика", None, reversed(rows), NOW, "whoop_test")
+
+    assert forward.state is SignalState.OBSERVED
+    assert forward.value == reverse.value == "20.0"
+    assert forward.summary == reverse.summary
+    assert forward.citations == reverse.citations
+    assert len(forward.citations) == 35
 
 
 def _lab(
