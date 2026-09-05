@@ -39,21 +39,26 @@ CLI commands and never starts synchronization. See the
 [Telegram connector guide](integrations/telegram.md) for binding and token
 storage details.
 
-Prepared question replies are temporarily spooled under
+Prepared question and explicit review-command replies are temporarily spooled under
 `TELEGRAM_ROOT/prepared-replies` before delivery. Files contain the final reply
-(including its Sources footer) and an opaque authentication-scope hash, never a
+(including its Sources footer or displayed review candidate) and an opaque authentication-scope hash, never a
 question, raw retrieval context, credentials, or dialogue history. The directory
 is `0700`, files are regular `0600` files, names hash the bot/update identity,
 and each reply is limited to 128 KiB. Atomic publication preserves the original
 reply across a 429 retry, process restart, and multipart delivery. Previously
 sent parts are skipped by the existing outbound hashes. After a committed
-terminal update, the reply file is deleted; startup and incoming questions sweep
+terminal update, the reply file is deleted; startup and incoming question/review handling sweep
 orphan files older than seven days. An expired or manually removed spool cannot
 guarantee replay; outbound hash conflicts and unknown-send fencing still fail
 closed. No reply is used to answer a different question.
 
-PDF imports and duplicate replays return the same canonical receipt and text,
+PDF/image imports and duplicate replays return the same canonical receipt and text,
 allowing a deferred import acknowledgement to complete after restart.
+JPEG/PNG originals use the shared vault with bounded local OCR. `/review` presents
+one unverified item from this profile/bot/chat; only `/confirm UUID`,
+`/correct UUID VALUE UNIT`, or `/reject UUID` changes review state. Corrected
+values retain immutable source lineage. Question retrieval still consumes only
+verified facts. Manual weight is intentionally absent: WHOOP is the v0.1 source.
 
 ## Data boundaries and privacy
 

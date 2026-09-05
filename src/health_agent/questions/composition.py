@@ -36,9 +36,13 @@ from health_agent.questions.service import (
     QuestionAnswerResult,
 )
 from health_agent.reminders.telegram import DatabaseReminderCommands
-from health_agent.telegram.actions import PreparedTelegramTextActions
-from health_agent.telegram.api import TelegramBotAPI
+from health_agent.telegram.actions import (
+    CompositeTelegramTextActions,
+    PreparedTelegramTextActions,
+)
+from health_agent.telegram.api import MAX_DOWNLOAD_BYTES, TelegramBotAPI
 from health_agent.telegram.messenger import TelegramMessenger
+from health_agent.telegram.review import TelegramReviewActions
 from health_agent.telegram.service import TelegramLongPoller, TelegramUpdateService
 from health_agent.telegram.stores import (
     PrivateBotTokenStore,
@@ -206,7 +210,7 @@ class NeedsAttentionMedicalInbox:
 
 
 class TelegramMedicalInbox:
-    """Import signature-validated Telegram PDFs through the normal vault pipeline.
+    """Import validated Telegram PDFs/images through the normal vault pipeline.
 
     The temporary file is private and exists only while the full staged stream is
     hashed and handed to ``import_document``. Telegram provenance is persisted by
@@ -237,7 +241,11 @@ class TelegramMedicalInbox:
         temporary = self._write_private_copy(chunks)
         try:
             sha256, size_bytes = _sha256_and_size(temporary)
-            if provenance.validated_media_type != "application/pdf":
+            if provenance.validated_media_type not in {
+                "application/pdf",
+                "image/jpeg",
+                "image/png",
+            }:
                 return InboxReceipt(
                     sha256,
                     size_bytes,
@@ -253,12 +261,19 @@ class TelegramMedicalInbox:
                     profile_id=provenance.context.profile_id,
                     source_provider="telegram",
                     source_external_id=provenance.source_external_id,
+                    media_type=provenance.validated_media_type,
                 )
             return InboxReceipt(
                 sha256,
                 size_bytes,
                 "received",
-                "Medical PDF received and stored. It may need review before use.",
+                (
+                    "Medical PDF"
+                    if provenance.validated_media_type == "application/pdf"
+                    else "Medical image"
+                )
+                + " received and stored. It may need review before use. "
+                "Use /review to check one extracted item. OCR may be unavailable.",
                 external_reference=str(report.document_id),
             )
         finally:
@@ -267,15 +282,19 @@ class TelegramMedicalInbox:
     def _write_private_copy(self, chunks: Iterable[bytes]) -> Path:
         private_directory(self._temporary_root)
         descriptor, name = tempfile.mkstemp(
-            dir=self._temporary_root, prefix="telegram-", suffix=".pdf"
+            dir=self._temporary_root, prefix="telegram-", suffix=".upload"
         )
         temporary = Path(name)
         try:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as destination:
+                size = 0
                 for chunk in chunks:
                     if not isinstance(chunk, bytes):
                         raise TypeError("attachment stream is invalid")
+                    size += len(chunk)
+                    if size > MAX_DOWNLOAD_BYTES:
+                        raise ValueError("attachment exceeds the import size limit")
                     destination.write(chunk)
                 destination.flush()
                 os.fsync(destination.fileno())
@@ -363,7 +382,7 @@ def build_telegram_question_runtime(
     """Compose verified local Telegram state with profile-bound question handling.
 
     ``medical_inbox`` remains injectable for tests and deployments. The
-    production default imports validated PDFs through the established vault and
+    production default imports validated PDFs/images through the established vault and
     database provenance pipeline.
     """
 
@@ -377,15 +396,21 @@ def build_telegram_question_runtime(
     engine = engine_factory(settings)
     reply_store = PrivateReplyStore(settings.telegram_root / "prepared-replies")
     question_service = TelegramHealthQuestionService(application, reply_store)
+    engine = engine_factory(settings)
+    text_actions = PreparedTelegramTextActions(
+        CompositeTelegramTextActions(
+            (TelegramReviewActions(engine), DatabaseReminderCommands(engine))
+        ),
+        reply_store,
+    )
     commands = ReadOnlyQuestionCommands(
         status_reader or (lambda profile_id: question_status(settings, profile_id))
     )
     messenger = messenger_factory(credential.bot_id, gateway, state)
     inbox = medical_inbox or TelegramMedicalInbox(
-        engine, FileVault(settings.vault_root), settings.temporary_root
-    )
-    text_actions = PreparedTelegramTextActions(
-        DatabaseReminderCommands(engine), reply_store
+        engine,
+        FileVault(settings.vault_root),
+        settings.temporary_root,
     )
     updates = update_service_factory(
         credential.bot_id,

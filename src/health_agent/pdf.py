@@ -6,7 +6,7 @@ from typing import Literal
 
 import pymupdf
 
-ExtractionMethod = Literal["digital_text", "ocr_required"]
+ExtractionMethod = Literal["digital_text", "local_ocr", "ocr_required"]
 
 
 @dataclass(frozen=True)

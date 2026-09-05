@@ -1,6 +1,12 @@
 from decimal import Decimal
 
-from health_agent.labs import CandidateStatus, parse_lab_candidates
+import pytest
+
+from health_agent.labs import (
+    CandidateStatus,
+    normalize_lab_result,
+    parse_lab_candidates,
+)
 from health_agent.pdf import ExtractedPage
 
 
@@ -24,8 +30,7 @@ def test_parser_accepts_known_aliases_and_decimal_commas() -> None:
     pages = (
         ExtractedPage(
             2,
-            "Vitamin D 25.5 ng/mL 30 - 100\n"
-            "Холестерин ЛПНП 3,2 ммоль/л 0.0-3.0",
+            "Vitamin D 25.5 ng/mL 30 - 100\nХолестерин ЛПНП 3,2 ммоль/л 0.0-3.0",
         ),
     )
 
@@ -53,7 +58,9 @@ def test_parser_rejects_unknown_names_and_does_not_guess_incomplete_ranges() -> 
 
     candidates = parse_lab_candidates(pages)
 
-    assert [(candidate.source_name, candidate.reference_text) for candidate in candidates] == [
+    assert [
+        (candidate.source_name, candidate.reference_text) for candidate in candidates
+    ] == [
         ("Ферритин", None),
         ("Ферритин", None),
     ]
@@ -63,3 +70,30 @@ def test_parser_rejects_ordinary_prose_as_a_unit() -> None:
     pages = (ExtractedPage(1, "Ferritin 42 words from a note"),)
 
     assert parse_lab_candidates(pages) == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "NaN",
+        "sNaN",
+        "Infinity",
+        "-Infinity",
+        "1e999999",
+        "1e-999999",
+        "1000000000001",
+        "0.0000000000001",
+        "0" * 1000,
+        "1_000",
+    ],
+)
+def test_normalization_rejects_non_finite_or_unbounded_values(value: str) -> None:
+    with pytest.raises(ValueError, match="Invalid laboratory numeric value"):
+        normalize_lab_result("ferritin", value, "ng/mL")
+
+
+@pytest.mark.parametrize("value", ["0", "-1.5", "43,5", "1e3", "1e12", "1e-12"])
+def test_normalization_preserves_finite_bounded_values(value: str) -> None:
+    parsed, unit = normalize_lab_result("ferritin", value, "ng/mL")
+    assert parsed == Decimal(value.replace(",", "."))
+    assert unit == "ng/mL"
