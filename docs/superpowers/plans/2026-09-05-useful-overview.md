@@ -53,6 +53,18 @@
 - [ ] Add service regression proving a quota/auth/rate-limit error stops further cloud calls in that run while leaving remaining local processing possible. Existing local-only operation and review safety remain intact.
 - [ ] Run focused tests/Ruff/mypy, self-review, commit and report. No real API requests or production mutations. Document user-visible diagnosis/recovery without secrets.
 
+### Task 4: Distinguish literal spreadsheet text from formulas
+
+**Files:** Modify `src/health_agent/google_sheets/api.py`, `decisions.py`, and focused `tests/google_sheets/test_api.py`, `test_decisions.py`, `test_service.py` as needed; update `docs/google-sheets.md` if present.
+
+**Interfaces:** Preserve `read_review_rows(spreadsheet_id)` tuple contract and profile/workbook/row ownership checks. Use native cell `userEnteredValue` to distinguish `stringValue` beginning with `=` from actual `formulaValue`; never trust calculated formula output as review input.
+
+- [ ] Reproduce app-authored literal `=` in an immutable unit field, with matching expected DB row: untouched review grid must parse to no decisions and be syncable. Existing generic string-prefix rejection currently rejects this legitimate literal field.
+- [ ] Read the bounded review rectangle using native grid CellData (derive exact title/row-column bounds from metadata; existing workbook grid 1000x26). Reject actual formulaValue cells anywhere in the read review grid with application-owned ReviewGridError. Preserve sparse leading/trailing rows/columns, text, number and boolean types without interpreting displayed values or formula results. Headers/row width/schema checks still fail closed.
+- [ ] Permit a leading-equals literal in immutable cells only when it exactly matches the expected trusted row. Changed immutable values/versions/foreign profile/unknown IDs remain rejected; editable decisions/corrections cannot smuggle formulas. Do not auto-approve malformed lab values.
+- [ ] Add typed native gateway tests for literal string vs actual formula with same text, sparse row offsets, row widths, and parser regression with synthetic metadata/values. Preserve replay/concurrency fences and prove failed validation performs no projection write.
+- [ ] Run focused Sheets tests/Ruff/mypy, self-review, commit/report. No live reads/writes from implementer; controller owns one real sync after review and verification. No workbook recreation or clearing of user-owned content.
+
 ## Controller integration checklist
 
 - [ ] Diagnose first two cloud failures safely before further medical requests; preserve budget and no silent retries of unknown outcomes.
