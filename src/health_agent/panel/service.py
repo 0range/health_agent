@@ -27,7 +27,13 @@ from health_agent.google_drive.stores import (
     LocalTokenStore,
 )
 from health_agent.models import Profile
-from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
+from health_agent.panel.models import (
+    ConnectorCard,
+    PanelDestination,
+    ProfilePanel,
+    ProfileSummary,
+)
+from health_agent.reminders.repository import ReminderRepository
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import TelegramStatus
 from health_agent.whoop.models import WhoopConnection
@@ -225,6 +231,44 @@ class TelegramStatusReader:
         )
 
 
+class ReminderStatusReader:
+    """Expose profile-scoped reminder counts without reminder content."""
+
+    connector = "reminders"
+
+    def __init__(self, sessions: SessionScopeFactory) -> None:
+        self._sessions = sessions
+
+    def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]:
+        with self._sessions() as session:
+            summary = ReminderRepository(session).status(profile_id)
+        status = (
+            "action_required"
+            if summary.pending_confirmation or summary.due
+            else "ready"
+        )
+        detail = (
+            f"Ожидают подтверждения: {summary.pending_confirmation} · "
+            f"Запланировано: {summary.scheduled} · Пора отправить: {summary.due}"
+        )
+        return (ConnectorCard(self.connector, status, detail),)
+
+
+class DatabaseStatusReader:
+    """Check only local database availability; never count health rows."""
+
+    connector = "database"
+
+    def __init__(self, sessions: SessionScopeFactory) -> None:
+        self._sessions = sessions
+
+    def cards(self, profile_id: UUID) -> tuple[ConnectorCard, ...]:
+        del profile_id
+        with self._sessions() as session:
+            session.execute(select(1)).scalar_one()
+        return (ConnectorCard(self.connector, "ready", "Локальная база доступна."),)
+
+
 class DriveConfiguration:
     """Read and update one profile's local Drive roots without remote calls."""
 
@@ -321,10 +365,12 @@ class PanelService:
         readers: tuple[ConnectorStatusReader, ...] | list[ConnectorStatusReader] = (),
         *,
         drive: DriveConfigurationPort | None = None,
+        destinations: tuple[PanelDestination, ...] = (),
     ) -> None:
         self._profiles = profiles
         self._readers = tuple(readers)
         self._drive = drive
+        self._destinations = destinations
 
     def list_profiles(self) -> tuple[ProfileSummary, ...]:
         return self._profiles.list()
@@ -355,6 +401,7 @@ class PanelService:
             profile=profile,
             connectors=(*cards, *drive_cards),
             drive_folder_ids=drive_folder_ids,
+            destinations=self._destinations,
         )
 
     def configure_drive(self, profile_id: UUID, folders: list[str]) -> None:
@@ -404,8 +451,19 @@ def build_panel_service(settings: Settings) -> PanelService:
             WhoopStatusReader(sessions, TokenStore(settings.whoop_token_root)),
             GmailStatusReader(gmail_profiles, gmail_state, gmail_oauth.local_status),
             TelegramStatusReader(telegram_status),
+            ReminderStatusReader(sessions),
+            DatabaseStatusReader(sessions),
         ),
         drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
+        destinations=(
+            PanelDestination("metabase", "Дашборды", settings.metabase_url),
+            PanelDestination(
+                "google_sheets",
+                "Google Таблица",
+                None,
+                "Появится после подключения Google Таблицы",
+            ),
+        ),
     )
 
 
