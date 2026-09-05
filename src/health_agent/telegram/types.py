@@ -137,6 +137,12 @@ class HealthQuestionService(Protocol):
     def answer(self, question: HealthQuestion) -> str: ...
 
 
+class TelegramTextActionService(Protocol):
+    """Explicit text actions after authenticated private-chat routing."""
+
+    def handle(self, context: MessageContext, text: str) -> str | None: ...
+
+
 class HealthCommandService(Protocol):
     """Profile-scoped operational commands exposed to Telegram and future UI."""
 
