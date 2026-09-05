@@ -157,4 +157,7 @@ class AutomationRunner:
                         adapter.source, "none", "none", "none", "failed", "discovery_failed"
                     )
                 )
-        return tuple(sorted(jobs, key=lambda job: job.key)), tuple(failures)
+        # Imported documents commit first; extraction is a separate bounded job;
+        # the managed Sheets projection then sees the newly pending candidates.
+        phases = {"lab_extraction": 1, "sheets": 2}
+        return tuple(sorted(jobs, key=lambda job: (phases.get(job.source, 0), job.key))), tuple(failures)

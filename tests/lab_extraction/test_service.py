@@ -10,7 +10,11 @@ from sqlalchemy import select
 
 from health_agent.config import Settings
 from health_agent.db import session_scope
-from health_agent.importer import approve_observation, reject_observation
+from health_agent.importer import (
+    approve_observation,
+    correct_observation,
+    reject_observation,
+)
 from health_agent.lab_extraction.models import LabExtractionJob
 from health_agent.lab_extraction.queue import profile_lock
 from health_agent.lab_extraction.service import LabExtractionService
@@ -346,3 +350,45 @@ def test_version_bump_cannot_reset_page_lifetime_cost(clean_database, tmp_path):
         ).one().extractor_version = "older-version"
     assert worker.run(DEFAULT_PROFILE_ID).cloud_requests == 0
     assert len(cloud.calls) == 3
+
+
+def test_corrected_source_replay_retains_flag_and_correction(clean_database, tmp_path):
+    add_page(clean_database, "ALT 53 H U/L 0-41")
+    worker = service(clean_database, tmp_path)
+    worker.configure(DEFAULT_PROFILE_ID)
+    worker.run(DEFAULT_PROFILE_ID)
+    with session_scope(clean_database) as session:
+        original = session.scalars(select(LabObservation)).one()
+        corrected = correct_observation(
+            session, original.id, source_value="52", source_unit="U/L"
+        )
+        assert corrected.source_flag == "H"
+        session.scalars(select(LabExtractionJob)).one().status = "queued"
+    assert worker.run(DEFAULT_PROFILE_ID).inserted == 0
+    with session_scope(clean_database) as session:
+        rows = session.scalars(select(LabObservation)).all()
+        assert len(rows) == 2
+        assert [
+            row.source_value for row in rows if row.status is ReviewStatus.VERIFIED
+        ] == ["52"]
+
+
+def test_stale_cloud_claim_cannot_publish_after_ack_and_reclaim(
+    clean_database, tmp_path
+):
+    document_id = add_page(clean_database, "Glucose\n5.1 mmol/L")
+    worker = service(clean_database, tmp_path)
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
+    worker.queue.discover_and_recover(DEFAULT_PROFILE_ID)
+    job_id = worker.queue.pending(DEFAULT_PROFILE_ID, 1, cloud=True)[0]
+    stale = worker.queue.claim(DEFAULT_PROFILE_ID, job_id)
+    worker.queue.publish(stale, stale.text, (), cloud=False, unresolved=True)
+    worker.queue.reserve_cloud(
+        stale, datetime.now(UTC).date(), "synthetic", allowed=True
+    )
+    worker.queue.discover_and_recover(DEFAULT_PROFILE_ID)
+    worker.retry(DEFAULT_PROFILE_ID, document_id, acknowledge_unknown=True)
+    current = worker.queue.claim(DEFAULT_PROFILE_ID, job_id)
+    assert current.token != stale.token
+    with pytest.raises(ExtractionError, match="stale_extraction_claim"):
+        worker.queue.publish(stale, stale.text, (), cloud=True)

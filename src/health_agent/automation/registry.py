@@ -16,6 +16,7 @@ from health_agent.db import build_engine, session_scope
 from health_agent.gmail.stores import LocalGmailProfileStore
 from health_agent.google_drive.stores import LocalProfileStore
 from health_agent.google_sheets.stores import LocalSheetsProfileStore
+from health_agent.lab_extraction.models import LabExtractionProfile
 from health_agent.whoop.models import WhoopConnection
 
 
@@ -196,8 +197,22 @@ class SheetsJobAdapter:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class LabExtractionJobAdapter:
+    source: AutomationSource = "lab_extraction"
+
+    def discover(self, settings: Settings) -> Iterable[AutomationJob]:
+        engine = build_engine(settings)
+        try:
+            with session_scope(engine) as session:
+                profiles = session.scalars(select(LabExtractionProfile.profile_id).where(LabExtractionProfile.enabled.is_(True)).order_by(LabExtractionProfile.profile_id)).all()
+            return tuple(AutomationJob("lab_extraction", str(profile_id), "main", False, ("lab-extract", "run", str(profile_id))) for profile_id in profiles)
+        finally:
+            engine.dispose()
+
+
 def configured_job_adapters(
     settings: Settings, executable: Path
 ) -> tuple[JobAdapter, ...]:
     del settings, executable
-    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), SheetsJobAdapter())
+    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), LabExtractionJobAdapter(), SheetsJobAdapter())

@@ -180,7 +180,7 @@ uv run health-agent sheets status PROFILE_UUID
 ## Фоновое обновление на Mac
 
 Один локальный LaunchAgent может раз в четыре часа последовательно обновлять
-WHOOP, Gmail, Google Drive и Google Sheets. Ошибка или 30-минутный таймаут одного источника не
+WHOOP, Gmail, Google Drive, извлечение лабораторных кандидатов и Google Sheets. Ошибка или 30-минутный таймаут одного источника не
 останавливает следующие. Полная сверка каждого отдельного аккаунта выполняется
 при первом запуске и затем раз в семь дней; остальные запуски инкрементальные.
 
@@ -193,3 +193,8 @@ uv run health-agent automation status --env-file /полный/путь/к/.env
 
 Установка выполняется только явной командой. Подробности, остановка и удаление:
 [фоновая автоматизация](docs/runbooks/automation.md).
+
+Извлечение уже импортированных PDF/изображений включается отдельно для профиля:
+`uv run health-agent lab-extract configure PROFILE_UUID`. Cloud по умолчанию
+выключен; все кандидаты требуют review. Команды, бюджеты, privacy и recovery:
+[лабораторный pipeline](docs/lab-extraction.md).

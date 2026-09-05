@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-AutomationSource = Literal["whoop", "gmail", "drive", "sheets"]
+AutomationSource = Literal["whoop", "gmail", "drive", "lab_extraction", "sheets"]
 AutomationMode = Literal["full", "incremental", "none"]
 AutomationStatus = Literal["succeeded", "deferred", "failed", "timed_out", "skipped"]
 

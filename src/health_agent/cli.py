@@ -66,6 +66,7 @@ from health_agent.importer import (
     reject_observation,
     set_document_medical_dates,
 )
+from health_agent.lab_extraction.cli import app as lab_extraction_app
 from health_agent.metabase import bootstrap_metabase
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
@@ -155,6 +156,7 @@ app.add_typer(automation_app, name="automation")
 app.add_typer(question_app, name="question")
 app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
+app.add_typer(lab_extraction_app, name="lab-extract")
 
 
 @app.callback()
