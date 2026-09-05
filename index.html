@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Health Agent is a private, local-first personal health data assistant.">
+  <title>Health Agent</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; color: #18312d; background: #f4f8f6; }
+    main { max-width: 720px; margin: 0 auto; padding: 72px 24px; }
+    .mark { display: inline-flex; width: 48px; height: 48px; align-items: center; justify-content: center;
+      border-radius: 16px; background: #153f36; color: white; font-size: 24px; }
+    h1 { margin: 24px 0 12px; font-size: clamp(2.4rem, 8vw, 4.8rem); letter-spacing: -.05em; }
+    h2 { margin-top: 40px; }
+    p, li { color: #49635e; font-size: 1.06rem; line-height: 1.7; }
+    .card { margin-top: 36px; padding: 24px; background: white; border: 1px solid #dbe8e3;
+      border-radius: 20px; box-shadow: 0 12px 40px rgba(21, 63, 54, .08); }
+    a { color: #0b6b57; }
+    footer { margin-top: 48px; font-size: .92rem; color: #6b7e7a; }
+  </style>
+</head>
+<body>
+  <main>
+    <span class="mark" aria-hidden="true">+</span>
+    <h1>Health Agent</h1>
+    <p>A private, local-first assistant that helps its users collect and understand their own health history.</p>
+
+    <section class="card">
+      <h2>What it does</h2>
+      <ul>
+        <li>Imports health documents from folders a user explicitly selects.</li>
+        <li>Reads new health-related email and wearable data after the user grants access.</li>
+        <li>Organizes confirmed laboratory results in a private spreadsheet and dashboard.</li>
+        <li>Answers personal questions through a private Telegram bot.</li>
+      </ul>
+    </section>
+
+    <h2>Local by default</h2>
+    <p>The application runs on the user's own computer. Each person connects their own accounts, and their records are kept in a separate local profile. Google Drive and Gmail access is read-only; spreadsheet access is limited to files created by Health Agent.</p>
+
+    <h2>User control</h2>
+    <p>Connections can be revoked at any time from the user's Google Account permissions. Local records can be removed directly by the user. Health Agent is not a medical provider and does not replace professional diagnosis or treatment.</p>
+
+    <footer>
+      <a href="privacy.html">Privacy policy</a> ·
+      <a href="https://github.com/0range/health_agent">Source code</a>
+    </footer>
+  </main>
+</body>
+</html>
