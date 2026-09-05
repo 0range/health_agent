@@ -38,6 +38,7 @@ from health_agent.telegram.types import (
     TelegramCommand,
     TelegramGateway,
     TelegramState,
+    TelegramTextActionService,
     UpdateClaim,
 )
 
@@ -111,6 +112,7 @@ class TelegramUpdateService:
         inbox: MedicalInbox,
         *,
         staging_root: Path,
+        text_actions: TelegramTextActionService | None = None,
         owner_id: str | None = None,
         lease_seconds: float = 60,
         clock=lambda: datetime.now(UTC),
@@ -125,6 +127,7 @@ class TelegramUpdateService:
         self.commands = commands
         self.inbox = inbox
         self.staging_root = Path(staging_root)
+        self.text_actions = text_actions
         self.owner_id = owner_id or str(uuid4())
         self.lease_seconds = lease_seconds
         self.clock = clock
@@ -303,6 +306,10 @@ class TelegramUpdateService:
             return self.commands.status(TelegramCommand(context, "status"))
         if command == "sync":
             return self.commands.sync(TelegramCommand(context, "sync"))
+        if self.text_actions is not None:
+            reply = self.text_actions.handle(context, text)
+            if reply is not None:
+                return reply
         if command is not None:
             return HELP_TEXT
         return self.questions.answer(HealthQuestion(context, text))
