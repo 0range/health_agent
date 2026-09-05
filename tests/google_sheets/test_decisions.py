@@ -68,6 +68,12 @@ def test_parser_rejects_duplicate_and_malformed_corrections(session: Session) ->
         )
 
 
+def test_parser_rejects_missing_header(session: Session) -> None:
+    add_observation(session, DEFAULT_PROFILE_ID)
+    with pytest.raises(ReviewGridError, match="schema"):
+        parse_decisions((), _bundle(session).known_reviews, DEFAULT_PROFILE_ID)
+
+
 def test_apply_mixed_batch_and_identical_replay(session: Session) -> None:
     observations = [
         add_observation(session, DEFAULT_PROFILE_ID, value=str(value))[0]

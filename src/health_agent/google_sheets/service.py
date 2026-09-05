@@ -106,6 +106,7 @@ class SheetsService:
                 existing.spreadsheet_id,
                 existing.spreadsheet_url,
                 existing.workbook_token,
+                existing.projection_initialized,
             )
         self.profiles.save(profile)
         return profile
@@ -160,7 +161,6 @@ class SheetsService:
         except ValueError as error:
             raise SheetsSyncFailure("account_mismatch") from error
 
-        created = False
         if profile.spreadsheet_id is None:
             token = secrets.token_urlsafe(24)
             binding = WorkbookBinding(key, WORKBOOK_SCHEMA_VERSION, token)
@@ -169,16 +169,22 @@ class SheetsService:
                 workbook.spreadsheet_id, workbook.spreadsheet_url, token
             )
             self.profiles.save(profile)
-            created = True
         assert profile.spreadsheet_id is not None
         assert profile.workbook_token is not None
         expected_binding = WorkbookBinding(
             key, WORKBOOK_SCHEMA_VERSION, profile.workbook_token
         )
-        if gateway.read_binding(profile.spreadsheet_id) != expected_binding:
+        try:
+            actual_binding = gateway.read_binding(profile.spreadsheet_id)
+        except (TypeError, ValueError) as error:
+            raise WorkbookOwnershipError(
+                "configured workbook binding is invalid"
+            ) from error
+        if actual_binding != expected_binding:
             raise WorkbookOwnershipError("configured workbook binding mismatch")
 
         decision_report = DecisionReport()
+        remote_rows = None
         with self.sessions() as session:
             before = build_projection(
                 session,
@@ -186,7 +192,7 @@ class SheetsService:
                 expected_binding,
                 self.source_statuses(session, profile_id),
             )
-            if not created:
+            if profile.projection_initialized:
                 remote_rows = gateway.read_review_rows(profile.spreadsheet_id)
                 decisions = parse_decisions(
                     remote_rows, before.known_reviews, profile_id
@@ -202,7 +208,16 @@ class SheetsService:
                 expected_binding,
                 self.source_statuses(session, profile_id),
             )
+        if (
+            remote_rows is not None
+            and gateway.read_review_rows(profile.spreadsheet_id) != remote_rows
+        ):
+            raise SheetsSyncFailure("review_grid_changed")
         gateway.replace_managed_tabs(profile.spreadsheet_id, projection.workbook)
+        if not profile.projection_initialized:
+            profile = profile.with_initialized_projection()
+            self.profiles.save(profile)
+        assert profile.spreadsheet_id is not None
         lab_rows, review_rows, source_rows = (
             len(sheet.rows) for sheet in projection.workbook.sheets
         )
@@ -266,7 +281,13 @@ class SheetsService:
         if error.__class__.__module__.startswith("google"):
             return safe_sheets_error_code(error)
         name = error.__class__.__name__
-        if name in {"ReviewGridError", "ReviewConflict"}:
+        if name in {
+            "InvalidReviewTransition",
+            "NoResultFound",
+            "ReviewGridError",
+            "ReviewConflict",
+            "UnsupportedNormalization",
+        }:
             return "review_grid_invalid"
         return "sheets_sync_failed"
 

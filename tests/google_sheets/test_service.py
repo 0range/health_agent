@@ -123,6 +123,32 @@ def test_first_and_repeat_sync_create_exactly_one_workbook(
     assert service.status(DEFAULT_PROFILE_ID).spreadsheet_configured is True
 
 
+def test_first_projection_failure_reuses_workbook_and_initializes_on_restart(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        add_observation(session, DEFAULT_PROFILE_ID)
+    gateway = FakeGateway()
+    gateway.fail_next_write = True
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    with pytest.raises(SheetsSyncFailure):
+        service.sync(DEFAULT_PROFILE_ID)
+    stored = service.profiles.load(str(DEFAULT_PROFILE_ID))
+    assert stored.spreadsheet_id == "spreadsheet_123"
+    assert stored.projection_initialized is False
+
+    recovered = service.sync(DEFAULT_PROFILE_ID)
+    assert recovered.status == "succeeded"
+    assert gateway.created == 1
+    assert gateway.review_reads == 0
+    assert service.profiles.load(str(DEFAULT_PROFILE_ID)).projection_initialized is True
+
+
 def test_wrong_workbook_binding_aborts_before_review_or_write(
     tmp_path: Path, clean_database
 ) -> None:
@@ -178,3 +204,37 @@ def test_remote_write_failure_keeps_decision_and_next_run_converges(
             select(SheetsSyncRun.status).order_by(SheetsSyncRun.started_at)
         ).all()
     assert statuses == ["succeeded", "failed", "succeeded"]
+
+
+def test_concurrent_remote_edit_aborts_before_overwrite(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        add_observation(session, DEFAULT_PROFILE_ID)
+    gateway = FakeGateway()
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    service.sync(DEFAULT_PROFILE_ID)
+    original_read = gateway.read_review_rows
+    reads = 0
+
+    def changing_read(spreadsheet_id: str):
+        nonlocal reads
+        reads += 1
+        rows = original_read(spreadsheet_id)
+        if reads == 2:
+            changed = list(rows[1])
+            changed[12] = "approve"
+            return (rows[0], tuple(changed))
+        return rows
+
+    gateway.read_review_rows = changing_read  # type: ignore[method-assign]
+    writes = gateway.writes
+    with pytest.raises(SheetsSyncFailure) as captured:
+        service.sync(DEFAULT_PROFILE_ID)
+    assert captured.value.safe_code == "review_grid_changed"
+    assert gateway.writes == writes

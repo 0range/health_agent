@@ -44,6 +44,7 @@ class SheetsProfile:
     spreadsheet_id: str | None = None
     spreadsheet_url: str | None = None
     workbook_token: str | None = None
+    projection_initialized: bool = False
 
     @classmethod
     def create(
@@ -73,6 +74,7 @@ class SheetsProfile:
             self.spreadsheet_id,
             self.spreadsheet_url,
             self.workbook_token,
+            self.projection_initialized,
         )
 
     def with_workbook(
@@ -98,6 +100,20 @@ class SheetsProfile:
             spreadsheet_id.strip(),
             spreadsheet_url.strip(),
             workbook_token.strip(),
+            self.projection_initialized,
+        )
+
+    def with_initialized_projection(self) -> SheetsProfile:
+        if self.spreadsheet_id is None:
+            raise ValueError("cannot initialize a missing workbook")
+        return SheetsProfile(
+            self.profile_id,
+            self.expected_permission_id,
+            self.expected_email,
+            self.spreadsheet_id,
+            self.spreadsheet_url,
+            self.workbook_token,
+            True,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,8 +131,14 @@ class SheetsProfile:
             payload.get("spreadsheet_url"),
             payload.get("workbook_token"),
         )
+        initialized = payload.get("projection_initialized", False)
+        if not isinstance(initialized, bool):
+            raise TypeError("stored projection initialization flag is invalid")
         if workbook_values == (None, None, None):
+            if initialized:
+                raise ValueError("missing workbook cannot be initialized")
             return profile
         if not all(isinstance(value, str) for value in workbook_values):
             raise ValueError("stored workbook binding is incomplete")
-        return profile.with_workbook(*workbook_values)  # type: ignore[arg-type]
+        configured = profile.with_workbook(*workbook_values)  # type: ignore[arg-type]
+        return configured.with_initialized_projection() if initialized else configured
