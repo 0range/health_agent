@@ -85,7 +85,8 @@ class HealthcheckReader:
     ) -> tuple[date | None, date | None, datetime | None]:
         collected, issued = session.execute(
             select(func.max(Document.collected_date), func.max(Document.issued_date)).where(
-                Document.profile_id == profile_id
+                Document.profile_id == profile_id,
+                Document.observations.any(),
             )
         ).one()
         received = session.scalar(
