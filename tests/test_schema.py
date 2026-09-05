@@ -280,7 +280,7 @@ def test_downgrade_refuses_to_erase_non_default_profile(
             text("DELETE FROM profiles WHERE id = :id"), {"id": second_profile_id}
         )
 
-    assert revision == "0006_health_reminders"
+    assert revision == "0007_google_sheets"
 
 
 def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
@@ -320,7 +320,7 @@ def test_downgrade_refuses_to_collapse_multiple_source_occurrences(
             text("SELECT version_num FROM alembic_version")
         )
 
-    assert revision == "0006_health_reminders"
+    assert revision == "0007_google_sheets"
 
 
 def test_fresh_migrations_can_downgrade_to_base_and_upgrade_again(
@@ -340,7 +340,7 @@ def test_fresh_migrations_can_downgrade_to_base_and_upgrade_again(
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
 
-    assert revision == "0006_health_reminders"
+    assert revision == "0007_google_sheets"
 
 
 def test_observation_page_must_exist_in_its_document(session: Session) -> None:

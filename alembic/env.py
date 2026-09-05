@@ -4,11 +4,12 @@ from logging.config import fileConfig
 
 from alembic import context
 from health_agent.config import Settings
+from health_agent.google_sheets import models as google_sheets_models
 from health_agent.models import Base
 from health_agent.reminders import models as reminder_models
 from health_agent.whoop import models as whoop_models
 
-_ = reminder_models, whoop_models
+_ = google_sheets_models, reminder_models, whoop_models
 
 config = context.config
 if config.config_file_name is not None:
@@ -37,7 +38,9 @@ def run_migrations_online() -> None:
         from sqlalchemy import engine_from_config
 
         connectable = engine_from_config(
-            config.get_section(config.config_ini_section, {}), prefix="sqlalchemy.", poolclass=None
+            config.get_section(config.config_ini_section, {}),
+            prefix="sqlalchemy.",
+            poolclass=None,
         )
 
     if hasattr(connectable, "connect"):

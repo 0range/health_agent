@@ -342,10 +342,13 @@ def set_document_medical_dates(
     if collected_date is None and issued_date is None:
         raise ValueError("at least one medical date is required")
     document = session.scalar(
-        select(Document).where(
+        select(Document)
+        .where(
             Document.id == document_id,
             Document.profile_id == profile_id,
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     if document is None:
         raise ValueError("document does not exist for this profile")
@@ -463,6 +466,8 @@ def _profile_observation(
             LabObservation.id == observation_id,
             Document.profile_id == profile_id,
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     ).one()
 
 

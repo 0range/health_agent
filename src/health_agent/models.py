@@ -216,7 +216,10 @@ class LabObservation(Base):
 
 class ReviewItem(Base):
     __tablename__ = "review_items"
-    __table_args__ = (UniqueConstraint("observation_id"),)
+    __table_args__ = (
+        UniqueConstraint("observation_id"),
+        UniqueConstraint("id", "observation_id", name="uq_review_items_id_observation"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     observation_id: Mapped[UUID] = mapped_column(

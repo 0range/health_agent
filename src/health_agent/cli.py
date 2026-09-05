@@ -42,6 +42,19 @@ from health_agent.google_drive.stores import (
     LocalSyncStateStore,
     LocalTokenStore,
 )
+from health_agent.google_sheets.api import GoogleSheetsGateway
+from health_agent.google_sheets.oauth import SheetsOAuth
+from health_agent.google_sheets.service import (
+    SheetsService,
+    SheetsSyncFailure,
+    WorkbookOwnershipError,
+)
+from health_agent.google_sheets.sources import collect_source_statuses
+from health_agent.google_sheets.stores import (
+    LocalSheetsProfileStore,
+    LocalSheetsStateStore,
+    LocalSheetsTokenStore,
+)
 from health_agent.importer import (
     approve_observation,
     correct_observation,
@@ -116,6 +129,7 @@ question_app = typer.Typer(
     help="Ask profile-scoped questions from verified health data."
 )
 reminder_app = typer.Typer(help="Manage explicitly confirmed health reminders.")
+sheets_app = typer.Typer(help="Publish labs and review decisions in Google Sheets.")
 QUESTION_PROFILE_OPTION = typer.Option(..., "--profile-id")
 app.add_typer(review_app, name="review")
 app.add_typer(dashboard_app, name="dashboard")
@@ -129,6 +143,7 @@ app.add_typer(drive_app, name="drive")
 app.add_typer(automation_app, name="automation")
 app.add_typer(question_app, name="question")
 app.add_typer(reminder_app, name="reminder")
+app.add_typer(sheets_app, name="sheets")
 
 
 @app.callback()
@@ -1475,6 +1490,112 @@ def sync_drive(profile_id: UUID, full: bool = False) -> None:
     )
 
 
+@sheets_app.command("configure")
+def configure_sheets(
+    profile_id: UUID,
+    reuse_drive_binding: bool = typer.Option(
+        True, "--reuse-drive-binding/--no-reuse-drive-binding"
+    ),
+    reset_unknown_creation: bool = typer.Option(
+        False,
+        "--reset-unknown-creation",
+        help="Allow one new workbook create after checking Drive for an orphan.",
+    ),
+) -> None:
+    """Configure one generated spreadsheet for a local health profile."""
+    settings = Settings()
+    permission_id: str | None = None
+    email: str | None = None
+    try:
+        if reuse_drive_binding:
+            verified = LocalTokenStore(settings.google_drive_root).load_verified(
+                str(profile_id)
+            )
+            if verified is not None:
+                permission_id = verified[0].permission_id
+                email = verified[0].email
+        profile = _build_sheets_service(settings).configure(
+            profile_id,
+            expected_permission_id=permission_id,
+            expected_email=email,
+            reset_unknown_creation=reset_unknown_creation,
+        )
+    except Exception:  # noqa: BLE001 - local paths/accounts stay private
+        typer.echo("status=failed safe_error=sheets_configuration_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        f"status=configured profile={profile.profile_id} "
+        f"account_bound={'yes' if profile.expected_permission_id else 'no'} "
+        f"spreadsheet={'ready' if profile.spreadsheet_id else 'pending'}"
+    )
+
+
+@sheets_app.command("authorize")
+def authorize_sheets(profile_id: UUID, force: bool = False) -> None:
+    """Authorize exact Sheets scopes and verify the selected Google account."""
+    try:
+        _build_sheets_service(Settings()).authorize(
+            profile_id, force=force, interactive=True
+        )
+    except Exception:  # noqa: BLE001 - OAuth details stay private
+        typer.echo("status=failed safe_error=sheets_authorization_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"status=authorized profile={profile_id}")
+
+
+@sheets_app.command("sync")
+def sync_sheets(profile_id: UUID) -> None:
+    """Import review decisions and refresh managed profile projections."""
+    try:
+        report = _build_sheets_service(Settings()).sync(profile_id)
+    except WorkbookOwnershipError:
+        typer.echo("status=failed safe_error=workbook_mismatch", err=True)
+        raise typer.Exit(code=1) from None
+    except SheetsSyncFailure as error:
+        typer.echo(f"status=failed safe_error={error.safe_code}", err=True)
+        raise typer.Exit(code=1) from None
+    except Exception:  # noqa: BLE001 - remote cells and API bodies stay private
+        typer.echo("status=failed safe_error=sheets_sync_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        " ".join(
+            (
+                "status=succeeded",
+                f"profile={profile_id}",
+                f"spreadsheet={report.spreadsheet_id}",
+                f"decisions={report.decisions_applied}",
+                f"replayed={report.decisions_replayed}",
+                f"labs={report.lab_rows}",
+                f"review={report.review_rows}",
+                f"sources={report.source_rows}",
+            )
+        )
+    )
+
+
+@sheets_app.command("status")
+def sheets_status(profile_id: UUID) -> None:
+    """Show local Sheets readiness without refreshing OAuth or using the network."""
+    try:
+        status = _build_sheets_service(Settings()).status(profile_id)
+    except Exception:  # noqa: BLE001 - local configuration details stay private
+        typer.echo("status=failed safe_error=sheets_status_failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        " ".join(
+            (
+                f"status={'configured' if status.configured else 'missing'}",
+                f"profile={profile_id}",
+                f"oauth={status.authorization}",
+                f"spreadsheet={'ready' if status.spreadsheet_configured else 'pending'}",
+                f"last_sync={status.last_status or 'never'}",
+                f"last_success={status.last_success_at or 'never'}",
+                f"last_error={status.safe_error_code or 'none'}",
+            )
+        )
+    )
+
+
 def _require_database_profile(settings: Settings, profile_id: UUID) -> None:
     with session_scope(build_engine(settings)) as session:
         if session.scalar(select(Profile.id).where(Profile.id == profile_id)) is None:
@@ -1516,6 +1637,37 @@ def _telegram_admin(settings: Settings) -> TelegramAdminService:
     )
 
 
+def _build_sheets_service(settings: Settings) -> SheetsService:
+    profiles = LocalSheetsProfileStore(settings.google_sheets_root)
+    tokens = LocalSheetsTokenStore(settings.google_sheets_root)
+    state = LocalSheetsStateStore(settings.google_sheets_root)
+
+    def gateway(credentials):  # type: ignore[no-untyped-def]
+        return GoogleSheetsGateway.from_credentials(
+            credentials,
+            timeout_seconds=settings.google_sheets_http_timeout_seconds,
+        )
+
+    oauth = SheetsOAuth(
+        settings.google_sheets_client_secrets,
+        profiles,
+        tokens,
+        gateway,
+        timeout_seconds=settings.google_sheets_http_timeout_seconds,
+    )
+    engine = build_engine(settings)
+    return SheetsService(
+        profiles,
+        state,
+        oauth,
+        gateway,
+        lambda: session_scope(engine),
+        lambda session, profile_id: collect_source_statuses(
+            settings, session, profile_id, sheets_oauth=oauth
+        ),
+    )
+
+
 def _profile_exists(settings: Settings, profile_id: UUID) -> bool:
     with session_scope(build_engine(settings)) as session:
         return (
@@ -1548,6 +1700,9 @@ def _automation_components(
     settings.gmail_root = _repository_relative(repository_root, settings.gmail_root)
     settings.google_drive_root = _repository_relative(
         repository_root, settings.google_drive_root
+    )
+    settings.google_sheets_root = _repository_relative(
+        repository_root, settings.google_sheets_root
     )
     settings.automation_root = _repository_relative(
         repository_root, settings.automation_root
