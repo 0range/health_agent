@@ -564,12 +564,17 @@ def _human_time(value: datetime) -> str:
 
 
 def _human_action(card: ConnectorCard) -> str:
-    if card.error_code == "rate_limited":
+    status_allows_error_remediation = card.status in {"ready", "configured"}
+    if status_allows_error_remediation and card.error_code == "rate_limited":
         return (
             "Подождите следующей автоматической попытки; "
             "переподключение не требуется."
         )
-    if card.error_code is not None and card.error_code not in _AUTH_ERROR_CODES:
+    if (
+        status_allows_error_remediation
+        and card.error_code is not None
+        and card.error_code not in _AUTH_ERROR_CODES
+    ):
         return (
             "Повторите синхронизацию позже. Если ошибка повторится, "
             "откройте подробности."

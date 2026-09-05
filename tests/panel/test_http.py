@@ -197,6 +197,16 @@ def test_safe_error_never_renders_as_connected() -> None:
         (
             ConnectorCard(
                 "whoop",
+                "reauth_required",
+                "Аккаунт требует внимания.",
+                error_code="sync_failed",
+            ),
+            "Подключите или переподключите WHOOP.",
+            "Повторите синхронизацию позже",
+        ),
+        (
+            ConnectorCard(
+                "whoop",
                 "ready",
                 "Аккаунт требует внимания.",
                 error_code="rate_limited",
