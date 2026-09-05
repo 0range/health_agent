@@ -213,6 +213,41 @@ class ReminderRepository:
         ).all()
         return tuple(_snapshot(row) for row in rows)
 
+    def pending_proposal_for_delivery(
+        self, profile_id: UUID, reminder_id: UUID
+    ) -> Reminder | None:
+        """Lock and revalidate a proposal immediately before external delivery."""
+
+        row = self._row_by_id(profile_id, reminder_id, lock=True)
+        if (
+            row.status != ReminderStatus.PENDING_CONFIRMATION.value
+            or row.proposal_notified_at is not None
+        ):
+            return None
+        return _snapshot(row)
+
+    def due_occurrence_for_delivery(
+        self,
+        profile_id: UUID,
+        reminder_id: UUID,
+        *,
+        delivery_revision: int,
+        now: datetime,
+    ) -> Reminder | None:
+        """Lock and revalidate one occurrence, fencing stale revisions."""
+
+        timestamp = require_aware_utc(now)
+        row = self._row_by_id(profile_id, reminder_id, lock=True)
+        if (
+            row.status != ReminderStatus.SCHEDULED.value
+            or row.confirmed_at is None
+            or row.delivery_revision != delivery_revision
+            or row.due_at > timestamp
+            or row.delivered_at is not None
+        ):
+            return None
+        return _snapshot(row)
+
     def mark_proposal_notified(
         self, profile_id: UUID, reminder_id: UUID, *, notified_at: datetime
     ) -> bool:

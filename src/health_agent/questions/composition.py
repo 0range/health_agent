@@ -35,6 +35,8 @@ from health_agent.questions.service import (
     HealthQuestionResponder,
     QuestionAnswerResult,
 )
+from health_agent.reminders.telegram import DatabaseReminderCommands
+from health_agent.telegram.actions import PreparedTelegramTextActions
 from health_agent.telegram.api import TelegramBotAPI
 from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.service import TelegramLongPoller, TelegramUpdateService
@@ -115,7 +117,9 @@ class TelegramHealthQuestionService:
     """Adapt only the authenticated Telegram context to the question boundary."""
 
     def __init__(
-        self, application: QuestionApplication, reply_store: PrivateReplyStore | None = None
+        self,
+        application: QuestionApplication,
+        reply_store: PrivateReplyStore | None = None,
     ) -> None:
         self._application = application
         self._reply_store = reply_store
@@ -129,8 +133,11 @@ class TelegramHealthQuestionService:
             if prepared is not None:
                 return prepared
         answer = self._application.answer(
-            question.context.profile_id, question.text,
-            request_id=delivery_request_id(question.context.bot_id, question.context.update_id),
+            question.context.profile_id,
+            question.text,
+            request_id=delivery_request_id(
+                question.context.bot_id, question.context.update_id
+            ),
         ).text
         if self._reply_store is not None:
             return self._reply_store.put(question.context, answer)
@@ -345,7 +352,9 @@ def build_telegram_question_runtime(
     messenger_factory: Callable[
         [int, TelegramGateway, TelegramState], TelegramMessenger
     ] = TelegramMessenger,
-    update_service_factory: Callable[..., TelegramUpdateService] = TelegramUpdateService,
+    update_service_factory: Callable[
+        ..., TelegramUpdateService
+    ] = TelegramUpdateService,
     poller_factory: Callable[..., TelegramLongPoller] = TelegramLongPoller,
     medical_inbox: MedicalInbox | None = None,
     status_reader: Callable[[UUID], QuestionStatus] | None = None,
@@ -358,20 +367,25 @@ def build_telegram_question_runtime(
     database provenance pipeline.
     """
 
-    credential = token_store_factory(settings.effective_telegram_token_file).load_verified()
+    credential = token_store_factory(
+        settings.effective_telegram_token_file
+    ).load_verified()
     state = state_factory(settings.telegram_state_file)
     state.register_bot(credential.bot_id, credential.username)
     gateway = gateway_factory(credential.token)
     application = question_application_factory(settings)
-    question_service = TelegramHealthQuestionService(
-        application, PrivateReplyStore(settings.telegram_root / "prepared-replies")
-    )
+    engine = engine_factory(settings)
+    reply_store = PrivateReplyStore(settings.telegram_root / "prepared-replies")
+    question_service = TelegramHealthQuestionService(application, reply_store)
     commands = ReadOnlyQuestionCommands(
         status_reader or (lambda profile_id: question_status(settings, profile_id))
     )
     messenger = messenger_factory(credential.bot_id, gateway, state)
     inbox = medical_inbox or TelegramMedicalInbox(
-        engine_factory(settings), FileVault(settings.vault_root), settings.temporary_root
+        engine, FileVault(settings.vault_root), settings.temporary_root
+    )
+    text_actions = PreparedTelegramTextActions(
+        DatabaseReminderCommands(engine), reply_store
     )
     updates = update_service_factory(
         credential.bot_id,
@@ -382,6 +396,7 @@ def build_telegram_question_runtime(
         commands,
         inbox,
         staging_root=settings.telegram_staging_root,
+        text_actions=text_actions,
     )
     return TelegramQuestionRuntime(
         poller_factory(credential.bot_id, gateway, state, updates)
