@@ -84,7 +84,7 @@ def test_inference_is_separate_from_window_selection(
     if intent in {QuestionIntent.SLEEP_RECOVERY, QuestionIntent.WEIGHT_TREND}:
         assert context.limitations[0].prevents_requested_inference
         assert context.limitations[0].prevents_entire_answer is blocked
-        assert "weight change cannot be established" in result.text
+        assert "нельзя определить изменение веса" in result.text
     else:
         assert context.limitations == ()
     if intent is QuestionIntent.SLEEP_RECOVERY:
@@ -205,9 +205,9 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
     context = build_context(session, DEFAULT_PROFILE_ID, "weight trend", clock=lambda: NOW)
 
     assert [(item.source, item.value, item.unit) for item in context.evidence] == [
-        (EvidenceSource.SLEEP, "7", "hours"),
+        (EvidenceSource.SLEEP, "7", "ч"),
         (EvidenceSource.RECOVERY, "82", "%"),
-        (EvidenceSource.WEIGHT, "74.5", "kg"),
+        (EvidenceSource.WEIGHT, "74.5", "кг"),
     ]
     assert [item.citation_label for item in context.evidence] == [
         "[SLEEP1]",
@@ -217,7 +217,7 @@ def test_context_uses_normalized_whoop_and_current_weight_without_raw_fields(
     assert not hasattr(context.evidence[0], "raw_record_id")
     assert not hasattr(context.evidence[0], "external_id")
     weight = next(item for item in context.evidence if item.source is EvidenceSource.WEIGHT)
-    assert weight.metric == "WHOOP current weight (synced as of)"
+    assert weight.metric == "Текущий вес WHOOP (на момент синхронизации)"
     assert weight.time_semantics is EvidenceTimeSemantics.SYNC_AS_OF
     assert context.limitations[0].code is ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY
 

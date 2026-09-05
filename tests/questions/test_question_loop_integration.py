@@ -332,7 +332,7 @@ def test_bound_telegram_question_uses_only_profile_scoped_cited_evidence(
     chat_id, reply = gateway.sent[0]
     assert chat_id == 1001
     assert "[LAB1]" in reply and "[SLEEP1]" in reply
-    assert "Sources:" in reply
+    assert "Источники:" in reply
     assert "Other-profile-secret-marker" not in reply
     assert "999" not in reply
     assert state.audit_rows("updates")[0]["status"] == "replied"

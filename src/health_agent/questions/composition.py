@@ -60,12 +60,20 @@ from health_agent.telegram.types import (
 )
 from health_agent.vault import FileVault
 
-QUESTION_STATUS_UNAVAILABLE = "Health-question status is temporarily unavailable."
-SYNC_INSTRUCTIONS = "Synchronization is not started from Telegram."
+QUESTION_STATUS_UNAVAILABLE = "Сейчас не удалось получить состояние данных о здоровье."
+SYNC_INSTRUCTIONS = "Синхронизация не запускается из Telegram."
 ATTACHMENT_NEEDS_ATTENTION_TEXT = (
-    "This attachment needs attention and was not imported. Use an approved local "
-    "medical-ingestion workflow."
+    "Этот файл требует проверки и не импортирован. Используйте разрешённый локальный "
+    "процесс импорта медицинских данных."
 )
+_SOURCE_LABELS = {
+    EvidenceSource.LAB: "анализы",
+    EvidenceSource.SLEEP: "сон",
+    EvidenceSource.RECOVERY: "восстановление",
+    EvidenceSource.CYCLE: "циклы",
+    EvidenceSource.WORKOUT: "тренировки",
+    EvidenceSource.WEIGHT: "вес",
+}
 
 
 class ContextBuilderFactory(Protocol):
@@ -162,9 +170,9 @@ class ReadOnlyQuestionCommands:
         status = self._status_reader(command.context.profile_id)
         if not status.available:
             return QUESTION_STATUS_UNAVAILABLE
-        parts = ["Health data status:"]
+        parts = ["Состояние данных о здоровье:"]
         parts.extend(
-            f"{source.value}={status.source_counts.get(source, 0)}"
+            f"{_SOURCE_LABELS[source]}={status.source_counts.get(source, 0)}"
             for source in EvidenceSource
         )
         return " ".join(parts)
@@ -177,8 +185,8 @@ def sync_instructions(profile_id: UUID) -> str:
     """Return existing, profile-bound connector invocations without mutating state."""
 
     return (
-        f"{SYNC_INSTRUCTIONS} Run locally: health-agent gmail sync {profile_id} "
-        f"and/or health-agent whoop sync --profile-id {profile_id}."
+        f"{SYNC_INSTRUCTIONS} Запустите локально: health-agent gmail sync {profile_id} "
+        f"и/или health-agent whoop sync --profile-id {profile_id}."
     )
 
 
@@ -268,12 +276,13 @@ class TelegramMedicalInbox:
                 size_bytes,
                 "received",
                 (
-                    "Medical PDF"
+                    "Медицинский PDF-файл"
                     if provenance.validated_media_type == "application/pdf"
-                    else "Medical image"
+                    else "Медицинское изображение"
                 )
-                + " received and stored. It may need review before use. "
-                "Use /review to check one extracted item. OCR may be unavailable.",
+                + " получен и сохранён. Перед использованием данные могут потребовать "
+                "проверки. Используйте /review, чтобы проверить один извлечённый "
+                "показатель. Распознавание текста (OCR) может быть недоступно.",
                 external_reference=str(report.document_id),
             )
         finally:
