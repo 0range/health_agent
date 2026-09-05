@@ -53,13 +53,20 @@ class DatabaseReminderCommands:
         if name not in REMINDER_COMMANDS:
             return None
         try:
-            return self._execute(context.profile_id, name, parts[1:])
+            return self._execute(
+                context.profile_id,
+                name,
+                parts[1:],
+                action_key=f"telegram:{context.bot_id}:{context.update_id}",
+            )
         except (ReminderNotFound, InvalidReminderTransition):
             return self.unavailable_text
         except ValueError:
             return self.usage_text
 
-    def _execute(self, profile_id: UUID, name: str, arguments: list[str]) -> str:
+    def _execute(
+        self, profile_id: UUID, name: str, arguments: list[str], *, action_key: str
+    ) -> str:
         expected = 2 if name in {"reminder_snooze", "reminder_reschedule"} else 1
         if len(arguments) != expected:
             raise ValueError("invalid_reminder_command")
@@ -68,13 +75,13 @@ class DatabaseReminderCommands:
         with session_scope(self._engine) as session:
             repository = ReminderRepository(session)
             if name == "reminder_confirm":
-                repository.confirm(profile_id, code, now=now)
+                repository.confirm(profile_id, code, now=now, action_key=action_key)
                 return "Напоминание подтверждено и поставлено в расписание."
             if name == "reminder_cancel":
-                repository.cancel(profile_id, code, now=now)
+                repository.cancel(profile_id, code, now=now, action_key=action_key)
                 return "Напоминание отменено."
             if name == "reminder_done":
-                repository.complete(profile_id, code, now=now)
+                repository.complete(profile_id, code, now=now, action_key=action_key)
                 return "Напоминание отмечено как выполненное."
             if name == "reminder_snooze":
                 reminder = repository.snooze(
@@ -82,6 +89,7 @@ class DatabaseReminderCommands:
                     code,
                     duration=parse_snooze_duration(arguments[1]),
                     now=now,
+                    action_key=action_key,
                 )
                 return f"Напоминание перенесено на {_local_due(reminder)}."
             reminder = repository.get(profile_id, code)
@@ -92,6 +100,7 @@ class DatabaseReminderCommands:
                 due_at=due_at,
                 timezone_name=reminder.timezone_name,
                 now=now,
+                action_key=action_key,
             )
             return f"Напоминание перенесено на {_local_due(moved)}."
 

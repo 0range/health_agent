@@ -94,10 +94,12 @@ class HealthReminder(Base):
 class HealthReminderEvent(Base):
     __tablename__ = "health_reminder_events"
     __table_args__ = (
+        UniqueConstraint("action_key", name="uq_health_reminder_events_action_key"),
         ForeignKeyConstraint(
             ["reminder_id", "profile_id"],
             ["health_reminders.id", "health_reminders.profile_id"],
             name="fk_health_reminder_events_reminder_profile",
+            ondelete="CASCADE",
         ),
     )
 
@@ -105,6 +107,7 @@ class HealthReminderEvent(Base):
     reminder_id: Mapped[UUID] = mapped_column(index=True)
     profile_id: Mapped[UUID] = mapped_column(index=True)
     event_type: Mapped[str] = mapped_column(String(100))
+    action_key: Mapped[str | None] = mapped_column(String(200))
     event_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

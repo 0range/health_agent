@@ -15,8 +15,8 @@ OTHER_PROFILE_ID = UUID("00000000-0000-0000-0000-000000000002")
 NOW = datetime(2026, 9, 5, 7, 0, tzinfo=UTC)
 
 
-def _context(profile_id: UUID) -> MessageContext:
-    return MessageContext(1, profile_id, 10, 10, 20, 30, NOW, NOW)
+def _context(profile_id: UUID, update_id: int = 30) -> MessageContext:
+    return MessageContext(1, profile_id, 10, 10, 20, update_id, NOW, NOW)
 
 
 def _proposal(engine: Engine) -> str:
@@ -42,20 +42,24 @@ def test_exact_commands_mutate_only_bound_profile(clean_database: Engine) -> Non
     code = _proposal(clean_database)
     commands = DatabaseReminderCommands(clean_database, clock=lambda: NOW)
 
-    confirmed = commands.handle(_context(PROFILE_ID), f"/reminder_confirm {code}")
-    denied = commands.handle(_context(OTHER_PROFILE_ID), f"/reminder_done {code}")
-    snoozed = commands.handle(_context(PROFILE_ID), f"/reminder_snooze {code} 2h")
+    confirmed = commands.handle(_context(PROFILE_ID, 1), f"/reminder_confirm {code}")
+    denied = commands.handle(_context(OTHER_PROFILE_ID, 2), f"/reminder_done {code}")
+    snooze_context = _context(PROFILE_ID, 3)
+    snoozed = commands.handle(snooze_context, f"/reminder_snooze {code} 2h")
+    repeated_snooze = commands.handle(snooze_context, f"/reminder_snooze {code} 2h")
     moved = commands.handle(
-        _context(PROFILE_ID), f"/reminder_reschedule {code} 2026-09-07T10:30"
+        _context(PROFILE_ID, 4), f"/reminder_reschedule {code} 2026-09-07T10:30"
     )
-    done = commands.handle(_context(PROFILE_ID), f"/reminder_done {code}")
+    done_context = _context(PROFILE_ID, 5)
+    done = commands.handle(done_context, f"/reminder_done {code}")
 
     assert confirmed is not None and "подтверждено" in confirmed.casefold()
     assert denied == commands.unavailable_text
     assert snoozed is not None and "перенесено" in snoozed.casefold()
+    assert repeated_snooze == snoozed
     assert moved is not None and "2026-09-07 10:30" in moved
     assert done is not None and "выполненн" in done.casefold()
-    assert commands.handle(_context(PROFILE_ID), f"/reminder_done {code}") == done
+    assert commands.handle(done_context, f"/reminder_done {code}") == done
 
 
 def test_cancel_pending_and_reject_malformed_without_llm(

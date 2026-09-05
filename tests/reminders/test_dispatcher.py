@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import Engine
@@ -11,7 +12,7 @@ from health_agent.reminders.dispatcher import ReminderDispatcher
 from health_agent.reminders.repository import ReminderRepository
 from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.stores import SqliteTelegramState
-from health_agent.telegram.types import TelegramIdentity
+from health_agent.telegram.types import TelegramGateway, TelegramIdentity
 
 BOT_ID = 111
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -31,7 +32,7 @@ def _messenger(path: Path, gateway: FakeGateway, profile_id: UUID = PROFILE_ID):
     state = SqliteTelegramState(path)
     state.register_bot(BOT_ID, "health_bot")
     state.bind_identity(BOT_ID, TelegramIdentity(101, profile_id, 101))
-    return TelegramMessenger(BOT_ID, gateway, state)
+    return TelegramMessenger(BOT_ID, cast(TelegramGateway, gateway), state)
 
 
 def _propose(engine: Engine, *, code: str = "safe-code-1"):

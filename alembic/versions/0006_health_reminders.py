@@ -89,6 +89,7 @@ def upgrade() -> None:
         sa.Column("reminder_id", sa.Uuid(), nullable=False),
         sa.Column("profile_id", sa.Uuid(), nullable=False),
         sa.Column("event_type", sa.String(length=100), nullable=False),
+        sa.Column("action_key", sa.String(length=200), nullable=True),
         sa.Column(
             "event_data", postgresql.JSONB(astext_type=sa.Text()), nullable=False
         ),
@@ -100,6 +101,9 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "action_key", name="uq_health_reminder_events_action_key"
+        ),
     )
     op.create_index(
         "ix_health_reminder_events_reminder_id",

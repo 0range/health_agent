@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -18,6 +19,8 @@ from health_agent.reminders.models import (
     ReminderStatusSummary,
 )
 from health_agent.reminders.time import require_aware_utc, validate_timezone
+
+_PUBLIC_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,31}$")
 
 
 class ReminderNotFound(LookupError):
@@ -60,7 +63,11 @@ class ReminderRepository:
         }
         if self.session.get(Profile, profile_id) is None:
             raise ReminderNotFound("profile_or_reminder_not_found")
-        code = _bounded(public_code or secrets.token_urlsafe(9), "public_code", 32)
+        code = _bounded(
+            public_code or f"r{secrets.token_urlsafe(9)}", "public_code", 32
+        )
+        if _PUBLIC_CODE.fullmatch(code) is None:
+            raise ValueError("invalid_public_code")
         row = HealthReminder(
             profile_id=profile_id,
             public_code=code,
@@ -97,10 +104,17 @@ class ReminderRepository:
         return tuple(_snapshot(row) for row in rows)
 
     def confirm(
-        self, profile_id: UUID, public_code: str, *, now: datetime | None = None
+        self,
+        profile_id: UUID,
+        public_code: str,
+        *,
+        now: datetime | None = None,
+        action_key: str | None = None,
     ) -> Reminder:
         timestamp = require_aware_utc(now or _now())
         row = self._row(profile_id, public_code, lock=True)
+        if self._action_replayed(row, "confirmed", action_key):
+            return _snapshot(row)
         if row.status == ReminderStatus.SCHEDULED.value:
             return _snapshot(row)
         if row.status != ReminderStatus.PENDING_CONFIRMATION.value:
@@ -108,7 +122,7 @@ class ReminderRepository:
         row.status = ReminderStatus.SCHEDULED.value
         row.confirmed_at = timestamp
         row.updated_at = timestamp
-        self._event(row, "confirmed", timestamp)
+        self._event(row, "confirmed", timestamp, action_key=action_key)
         self.session.flush()
         return _snapshot(row)
 
@@ -119,6 +133,7 @@ class ReminderRepository:
         *,
         duration: timedelta,
         now: datetime | None = None,
+        action_key: str | None = None,
     ) -> Reminder:
         if duration <= timedelta(0) or duration > timedelta(days=365):
             raise ValueError("invalid_snooze_duration")
@@ -130,6 +145,7 @@ class ReminderRepository:
             timezone_name=None,
             timestamp=timestamp,
             event_type="snoozed",
+            action_key=action_key,
         )
 
     def reschedule(
@@ -140,6 +156,7 @@ class ReminderRepository:
         due_at: datetime,
         timezone_name: str,
         now: datetime | None = None,
+        action_key: str | None = None,
     ) -> Reminder:
         timestamp = require_aware_utc(now or _now())
         return self._move(
@@ -149,13 +166,21 @@ class ReminderRepository:
             timezone_name=validate_timezone(timezone_name).key,
             timestamp=timestamp,
             event_type="rescheduled",
+            action_key=action_key,
         )
 
     def complete(
-        self, profile_id: UUID, public_code: str, *, now: datetime | None = None
+        self,
+        profile_id: UUID,
+        public_code: str,
+        *,
+        now: datetime | None = None,
+        action_key: str | None = None,
     ) -> Reminder:
         timestamp = require_aware_utc(now or _now())
         row = self._row(profile_id, public_code, lock=True)
+        if self._action_replayed(row, "completed", action_key):
+            return _snapshot(row)
         if row.status == ReminderStatus.COMPLETED.value:
             return _snapshot(row)
         if row.status != ReminderStatus.SCHEDULED.value:
@@ -163,15 +188,22 @@ class ReminderRepository:
         row.status = ReminderStatus.COMPLETED.value
         row.completed_at = timestamp
         row.updated_at = timestamp
-        self._event(row, "completed", timestamp)
+        self._event(row, "completed", timestamp, action_key=action_key)
         self.session.flush()
         return _snapshot(row)
 
     def cancel(
-        self, profile_id: UUID, public_code: str, *, now: datetime | None = None
+        self,
+        profile_id: UUID,
+        public_code: str,
+        *,
+        now: datetime | None = None,
+        action_key: str | None = None,
     ) -> Reminder:
         timestamp = require_aware_utc(now or _now())
         row = self._row(profile_id, public_code, lock=True)
+        if self._action_replayed(row, "cancelled", action_key):
+            return _snapshot(row)
         if row.status == ReminderStatus.CANCELLED.value:
             return _snapshot(row)
         if row.status not in {
@@ -182,7 +214,7 @@ class ReminderRepository:
         row.status = ReminderStatus.CANCELLED.value
         row.cancelled_at = timestamp
         row.updated_at = timestamp
-        self._event(row, "cancelled", timestamp)
+        self._event(row, "cancelled", timestamp, action_key=action_key)
         self.session.flush()
         return _snapshot(row)
 
@@ -323,8 +355,11 @@ class ReminderRepository:
         timezone_name: str | None,
         timestamp: datetime,
         event_type: str,
+        action_key: str | None,
     ) -> Reminder:
         row = self._row(profile_id, public_code, lock=True)
+        if self._action_replayed(row, event_type, action_key):
+            return _snapshot(row)
         if row.status != ReminderStatus.SCHEDULED.value:
             raise InvalidReminderTransition("reminder_transition_not_allowed")
         target_zone = timezone_name or row.timezone_name
@@ -344,6 +379,7 @@ class ReminderRepository:
             event_type,
             timestamp,
             {"due_at": due_at.isoformat(), "timezone": target_zone},
+            action_key=action_key,
         )
         self.session.flush()
         return _snapshot(row)
@@ -380,16 +416,38 @@ class ReminderRepository:
         event_type: str,
         occurred_at: datetime,
         data: dict[str, object] | None = None,
+        *,
+        action_key: str | None = None,
     ) -> None:
         self.session.add(
             HealthReminderEvent(
                 reminder_id=row.id,
                 profile_id=row.profile_id,
                 event_type=event_type,
+                action_key=_action_key(action_key),
                 event_data=data or {},
                 occurred_at=occurred_at,
             )
         )
+
+    def _action_replayed(
+        self, row: HealthReminder, event_type: str, action_key: str | None
+    ) -> bool:
+        normalized = _action_key(action_key)
+        if normalized is None:
+            return False
+        previous = self.session.scalar(
+            select(HealthReminderEvent.event_type).where(
+                HealthReminderEvent.profile_id == row.profile_id,
+                HealthReminderEvent.reminder_id == row.id,
+                HealthReminderEvent.action_key == normalized,
+            )
+        )
+        if previous is None:
+            return False
+        if previous != event_type:
+            raise InvalidReminderTransition("reminder_action_conflict")
+        return True
 
 
 def _snapshot(row: HealthReminder) -> Reminder:
@@ -418,6 +476,12 @@ def _bounded(value: str, name: str, maximum: int) -> str:
     if not result or len(result) > maximum:
         raise ValueError(f"invalid_{name}")
     return result
+
+
+def _action_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _bounded(value, "action_key", 200)
 
 
 def _limit(value: int) -> int:

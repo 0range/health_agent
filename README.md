@@ -138,6 +138,22 @@ uv run health-agent telegram run
 Границы и подключение описаны в
 [инструкции Telegram-коннектора](docs/integrations/telegram.md).
 
+## Напоминания
+
+Напоминание хранится как неактивное предложение, пока владелец профиля явно не
+подтвердит его в личном Telegram. После подтверждения отдельный локальный
+LaunchAgent проверяет сроки раз в минуту; выполнить, отложить, перенести или
+отменить напоминание можно готовой Telegram-командой без обращения к LLM.
+Причина и источник сохраняются вместе с полной историей переходов.
+
+```bash
+uv run health-agent reminder status PROFILE_UUID
+uv run health-agent reminder render --env-file /полный/путь/к/.env
+uv run health-agent reminder install --env-file /полный/путь/к/.env
+```
+
+Полный сценарий: [подтверждённые напоминания](docs/runbooks/reminders.md).
+
 ## Фоновое обновление на Mac
 
 Один локальный LaunchAgent может раз в четыре часа последовательно обновлять

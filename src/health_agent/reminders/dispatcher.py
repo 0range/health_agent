@@ -11,9 +11,8 @@ from sqlalchemy.orm import Session
 
 from health_agent.db import session_scope
 from health_agent.reminders.models import Reminder
-from health_agent.reminders.repository import ReminderNotFound, ReminderRepository
+from health_agent.reminders.repository import ReminderRepository
 from health_agent.reminders.telegram import due_message, proposal_message
-from health_agent.telegram.api import TelegramAPIError
 from health_agent.telegram.messenger import TelegramMessenger
 
 
@@ -82,7 +81,7 @@ class ReminderDispatcher:
                 ):
                     raise RuntimeError("proposal_ack_rejected")
                 return int(report.sent > 0), int(report.previously_sent > 0), 0
-        except (ReminderNotFound, TelegramAPIError, RuntimeError, ValueError):
+        except Exception:  # noqa: BLE001 -- isolate profiles; expose counts only
             return 0, 0, 1
 
     def _deliver_due(self, candidate: Reminder, now: datetime) -> tuple[int, int, int]:
@@ -113,5 +112,5 @@ class ReminderDispatcher:
                 ):
                     raise RuntimeError("due_ack_rejected")
                 return int(report.sent > 0), int(report.previously_sent > 0), 0
-        except (ReminderNotFound, TelegramAPIError, RuntimeError, ValueError):
+        except Exception:  # noqa: BLE001 -- isolate profiles; expose counts only
             return 0, 0, 1
