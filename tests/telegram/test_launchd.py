@@ -214,6 +214,35 @@ def test_paths_reject_relative_public_and_symlinked_environment(tmp_path: Path) 
         TelegramLaunchdPaths.resolve(environment_file=linked, **common)
 
 
+def test_managed_plists_and_logs_fail_closed_on_hostile_targets(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    outside = tmp_path / "outside"
+    outside.write_text("keep", encoding="utf-8")
+    paths.rendered_plist.parent.mkdir(parents=True)
+    paths.rendered_plist.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="unsafe_path"):
+        TelegramLaunchdManager(paths, platform="darwin").render()
+    paths.rendered_plist.unlink()
+    paths.stdout_log.parent.mkdir(parents=True, exist_ok=True)
+    paths.stdout_log.symlink_to(outside)
+    with pytest.raises(TelegramLaunchdError, match="unsafe_log_path"):
+        rotate_telegram_logs(paths)
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_loaded_install_rejects_non_private_managed_plist(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    launchctl = FakeLaunchctl()
+    manager = TelegramLaunchdManager(
+        paths, launchctl=launchctl, platform="darwin"
+    )
+    manager.install()
+    paths.installed_plist.chmod(0o644)
+
+    with pytest.raises(TelegramLaunchdError, match="unsafe_plist_path"):
+        manager.install()
+
+
 def test_log_rotation_is_private_bounded_and_refuses_running_service(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.stdout_log.parent.mkdir(parents=True)
@@ -221,13 +250,23 @@ def test_log_rotation_is_private_bounded_and_refuses_running_service(tmp_path: P
     paths.stderr_log.write_bytes(b"small")
     old = paths.stdout_log.with_name("telegram-stdout.log.1")
     old.write_text("old", encoding="utf-8")
+    paths.stderr_log.with_name("telegram-stderr.log.1").write_text(
+        "old", encoding="utf-8"
+    )
+    paths.stderr_log.with_name("telegram-stderr.log.1").chmod(0o644)
 
     rotate_telegram_logs(paths)
 
     assert paths.stdout_log.stat().st_size == 0
     assert old.stat().st_size == TELEGRAM_LOG_ROTATE_BYTES + 1
     assert paths.stderr_log.read_bytes() == b"small"
-    for path in (paths.stdout_log, paths.stderr_log, old, paths.lock_file):
+    for path in (
+        paths.stdout_log,
+        paths.stderr_log,
+        old,
+        paths.stderr_log.with_name("telegram-stderr.log.1"),
+        paths.lock_file,
+    ):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
     held = GlobalRunLock(paths.lock_file)
     assert held.acquire()
@@ -299,3 +338,19 @@ def test_system_child_reopens_active_logs_after_rotation(
     assert paths.stdout_log.with_name("telegram-stdout.log.1").stat().st_size == (
         TELEGRAM_LOG_ROTATE_BYTES + 1
     )
+
+
+def test_runner_releases_lock_when_child_raises(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+
+    class FailingChild:
+        def run(self, *_args, **_kwargs) -> int:
+            raise OSError("private child details")
+
+    class SuccessfulChild:
+        def run(self, *_args, **_kwargs) -> int:
+            return 0
+
+    with pytest.raises(OSError, match="private child details"):
+        TelegramServiceRunner(paths, child=FailingChild()).run()
+    assert TelegramServiceRunner(paths, child=SuccessfulChild()).run().status == "stopped"

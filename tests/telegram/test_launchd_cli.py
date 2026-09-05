@@ -153,4 +153,3 @@ def test_real_component_builder_rejects_relative_or_public_env_before_child(
     assert "telegram_service_configuration_failed" in relative.stderr
     assert "telegram_service_configuration_failed" in non_private.stderr
     assert "SECRET" not in non_private.output
-

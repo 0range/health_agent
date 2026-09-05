@@ -71,4 +71,3 @@ assert "SECRET" not in result.output
 - [ ] Update the Telegram runbook with the five operator commands, owned files, restart/stop semantics, live-only validation, and distinction from connector/reminder LaunchAgents.
 - [ ] Run focused Telegram/automation/reminder tests, then full `uv run --offline pytest -q`, `uv run --offline ruff check .`, `uv run --offline mypy src`, `uv lock --check`, `git diff --check`, CLI help and plist parse smokes. Do not run install or the service wrapper outside fakes.
 - [ ] Write the implementation report, generate `.superpowers/sdd/2026-09-05-telegram-launchd/review-18d97a3..<HEAD>.diff`, self-review, and commit the final documentation/package.
-

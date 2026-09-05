@@ -51,4 +51,3 @@ install/reload/rollback, stop/remove, private rotation, single instance, safe
 child environment and exit propagation. Tests never load launchd, call Telegram,
 read real credentials, or run the long-poller. Live install and delivery remain
 an explicit owner smoke test after merge.
-

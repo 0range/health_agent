@@ -285,6 +285,7 @@ class TelegramLaunchdManager:
     def remove(self) -> str:
         self._require_macos()
         for path in (self.paths.installed_plist, self.paths.rendered_plist):
+            reject_symlink_components(path)
             if path.is_symlink() or (path.exists() and not path.is_file()):
                 raise TelegramLaunchdError("unsafe_plist_path")
         self.stop()
@@ -298,9 +299,14 @@ class TelegramLaunchdManager:
 
     def _installed_bytes(self) -> bytes | None:
         path = self.paths.installed_plist
+        reject_symlink_components(path)
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise TelegramLaunchdError("unsafe_plist_path")
-        return path.read_bytes() if path.exists() else None
+        if not path.exists():
+            return None
+        if stat.S_IMODE(path.stat().st_mode) != 0o600:
+            raise TelegramLaunchdError("unsafe_plist_path")
+        return path.read_bytes()
 
     def _restore(self, content: bytes | None) -> None:
         path = self.paths.installed_plist
@@ -339,6 +345,8 @@ def _rotate_telegram_logs_locked(paths: TelegramLaunchdPaths) -> None:
                 candidate.exists() and not candidate.is_file()
             ):
                 raise TelegramLaunchdError("unsafe_log_path")
+        if rotated.exists():
+            rotated.chmod(0o600)
         if path.exists() and path.stat().st_size > TELEGRAM_LOG_ROTATE_BYTES:
             if rotated.exists():
                 rotated.unlink()
