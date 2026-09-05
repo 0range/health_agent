@@ -32,7 +32,16 @@ It shows six stable areas in this order:
 Connector-specific states map into three user states: `connected`,
 `not_synced`, and `action_required`. The card headline and main copy are in
 Russian and state what the user should understand or do. Healthy cards do not
-show a command.
+show a command. A successful synchronization always wins over a merely
+`configured` technical status: when `last_success_at` exists, the card cannot
+say that synchronization has never run.
+
+Visible remediation follows the failure kind rather than the connector alone.
+Authorization failures ask the user to connect or reconnect. Rate limiting asks
+them to wait for the next attempt and explicitly says that reconnection is not
+needed. Operational synchronization failures ask them to retry or inspect the
+status, never to reconnect. Safe codes and exact CLI commands remain secondary
+technical details.
 
 UUIDs, account identifiers, exact ISO timestamps, safe error codes, and CLI
 commands remain available only inside a native collapsed `details` element.
