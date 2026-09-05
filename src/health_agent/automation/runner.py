@@ -26,9 +26,7 @@ class JobExecutor(Protocol):
 
 
 class SubprocessJobExecutor:
-    def __init__(
-        self, executable: Path, env_file: Path, working_directory: Path
-    ) -> None:
+    def __init__(self, executable: Path, env_file: Path, working_directory: Path) -> None:
         self.executable = executable
         self.env_file = env_file
         self.working_directory = working_directory
@@ -93,17 +91,9 @@ class AutomationRunner:
         try:
             acquired = self.lock.acquire()
         except Exception:  # noqa: BLE001 - emit only a fixed, content-free code
-            return (
-                AutomationResult(
-                    "runner", "none", "none", "none", "failed", "lock_unavailable"
-                ),
-            )
+            return (AutomationResult("runner", "none", "none", "none", "failed", "lock_unavailable"),)
         if not acquired:
-            return (
-                AutomationResult(
-                    "runner", "none", "none", "none", "skipped", "already_running"
-                ),
-            )
+            return (AutomationResult("runner", "none", "none", "none", "skipped", "already_running"),)
         try:
             if self.before_jobs is not None:
                 try:
@@ -128,11 +118,7 @@ class AutomationRunner:
                         force_full or self.state.full_due(job, now)
                     )
                 except Exception:  # noqa: BLE001 - local state details are private
-                    results.append(
-                        AutomationResult(
-                            *job.key, "none", "failed", "state_read_failed"
-                        )
-                    )
+                    results.append(AutomationResult(*job.key, "none", "failed", "state_read_failed"))
                     continue
                 mode: AutomationMode = "full" if full else "incremental"
                 if job.not_ready_code is not None:
@@ -148,24 +134,18 @@ class AutomationRunner:
                 try:
                     result = self.executor.execute(job, mode)
                 except Exception:  # noqa: BLE001 - injected/connector details stay private
-                    result = AutomationResult(
-                        *job.key, mode, "failed", "executor_failed"
-                    )
+                    result = AutomationResult(*job.key, mode, "failed", "executor_failed")
                 if mode == "full" and result.status == "succeeded":
                     try:
                         self.state.mark_full_success(job, now)
                     except Exception:  # noqa: BLE001 - do not claim an undurable full
-                        result = AutomationResult(
-                            *job.key, mode, "failed", "state_write_failed"
-                        )
+                        result = AutomationResult(*job.key, mode, "failed", "state_write_failed")
                 results.append(result)
             return tuple(results)
         finally:
             self.lock.release()
 
-    def _discover(
-        self,
-    ) -> tuple[tuple[AutomationJob, ...], tuple[AutomationResult, ...]]:
+    def _discover(self) -> tuple[tuple[AutomationJob, ...], tuple[AutomationResult, ...]]:
         jobs: list[AutomationJob] = []
         failures: list[AutomationResult] = []
         for adapter in self.adapters:
@@ -174,12 +154,7 @@ class AutomationRunner:
             except Exception:  # noqa: BLE001 - configuration details remain private
                 failures.append(
                     AutomationResult(
-                        adapter.source,
-                        "none",
-                        "none",
-                        "none",
-                        "failed",
-                        "discovery_failed",
+                        adapter.source, "none", "none", "none", "failed", "discovery_failed"
                     )
                 )
         return tuple(sorted(jobs, key=lambda job: job.key)), tuple(failures)
