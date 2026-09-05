@@ -17,7 +17,7 @@ from health_agent.panel.http import (
     _cli_guidance,
     serve_panel,
 )
-from health_agent.panel.models import ConnectorCard, ProfileSummary
+from health_agent.panel.models import ConnectorCard, PanelDestination, ProfileSummary
 from health_agent.panel.service import PanelService
 
 
@@ -86,7 +86,18 @@ def application(
     profile = ProfileSummary(uuid4(), name)
     drive = FakeDrive()
     service = PanelService(
-        FakeProfiles({profile.id: profile}), (FakeReader(card),), drive=drive
+        FakeProfiles({profile.id: profile}),
+        (FakeReader(card),),
+        drive=drive,
+        destinations=(
+            PanelDestination("metabase", "Дашборды", "http://127.0.0.1:53000"),
+            PanelDestination(
+                "google_sheets",
+                "Google Таблица",
+                None,
+                "Появится после подключения Google Таблицы",
+            ),
+        ),
     )
     return (
         PanelApplication(service, csrf_token="test-csrf-token", port=port),
@@ -123,14 +134,93 @@ def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     assert response.status == 200
     assert "Профиль: Анна" in page
     assert "WHOOP" in page
-    assert "Готово" in page
-    assert "Последняя успешная операция" in page
-    assert "действий не требуется" in page
+    assert "Подключено" in page
+    assert "Последняя синхронизация" in page
+    assert "Всё работает" not in page  # Drive still needs configuration.
+    assert "Нужно ваше внимание" in page
+    assert '<details class="technical-details">' in page
     assert "health-agent whoop auth" not in page
     assert "Настроить Google Drive" in page
+    assert 'href="http://127.0.0.1:53000"' in page
+    assert "Появится после подключения Google Таблицы" in page
     assert 'name="csrf_token" value="test-csrf-token"' in page
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"]
+
+
+def test_profile_page_maps_unsynced_and_action_states_to_human_russian() -> None:
+    unsynced = ConnectorCard(
+        "gmail", "ready", "Аккаунт подключён.", last_success_at=None
+    )
+    app, profile, _ = application(card=unsynced)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+
+    assert "Gmail" in page
+    assert "Синхронизация ещё не запускалась" in page
+    assert "Нужно действие" in page  # Drive is not configured.
+    assert "Технический статус: ready" in page
+
+
+def test_profile_page_has_semantic_sections_and_collapsed_identifiers() -> None:
+    card = ConnectorCard(
+        "whoop",
+        "reauth_required",
+        "Нужно снова подключить аккаунт.",
+        error_code="reauth_required",
+        account_ids=("personal<unsafe>",),
+    )
+    app, profile, _ = application(card=card)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+
+    assert page.count("<h1") == 1
+    assert 'aria-labelledby="system-status"' in page
+    assert 'aria-labelledby="destinations"' in page
+    assert '<details class="profile-details">' in page
+    assert f"ID профиля: {profile.id}" in page
+    assert "personal&lt;unsafe&gt;" in page
+    assert "Код ошибки: reauth_required" in page
+    assert "personal<unsafe>" not in page
+
+
+def test_destination_renderer_rejects_unsafe_urls_and_escapes_copy() -> None:
+    profile = ProfileSummary(uuid4(), "Анна")
+    service = PanelService(
+        FakeProfiles({profile.id: profile}),
+        destinations=(
+            PanelDestination(
+                "metabase",
+                '<img src=x onerror="boom">',
+                "https://attacker.example/?token=secret",
+                '<script>alert("fallback")</script>',
+            ),
+        ),
+    )
+    app = PanelApplication(service, csrf_token="test-csrf-token", port=8766)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+
+    assert "attacker.example" not in page
+    assert "token=secret" not in page
+    assert "<script>" not in page
+    assert "&lt;img src=x onerror=&quot;boom&quot;&gt;" in page
+    assert "&lt;script&gt;alert(&quot;fallback&quot;)&lt;/script&gt;" in page
+
+
+def test_destination_renderer_accepts_only_verified_google_sheet_shape() -> None:
+    profile = ProfileSummary(uuid4(), "Анна")
+    sheet_url = "https://docs.google.com/spreadsheets/d/verified-sheet-id-123456/edit"
+    service = PanelService(
+        FakeProfiles({profile.id: profile}),
+        destinations=(PanelDestination("google_sheets", "Google Таблица", sheet_url),),
+    )
+    app = PanelApplication(service, csrf_token="test-csrf-token", port=8766)
+
+    page = text(request(app, "GET", f"/profiles/{profile.id}"))
+
+    assert f'href="{sheet_url}"' in page
+    assert 'rel="noreferrer"' in page
 
 
 def test_profile_page_renders_telegram_status_with_the_profile_option() -> None:

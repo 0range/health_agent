@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from hmac import compare_digest
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,7 +14,12 @@ from secrets import token_urlsafe
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 
-from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
+from health_agent.panel.models import (
+    ConnectorCard,
+    PanelDestination,
+    ProfilePanel,
+    ProfileSummary,
+)
 from health_agent.panel.service import PanelService, ProfileNotFoundError
 
 MAX_FORM_BYTES = 4 * 1024
@@ -29,18 +37,40 @@ _SECURITY_HEADERS = {
     ),
 }
 
-_STATUS_LABELS = {
-    "ready": "Готово",
-    "configured": "Настроено",
-    "not_connected": "Не подключено",
-    "not_configured": "Не настроено",
-    "not_bound": "Не привязано",
-    "needs_authorization": "Нужна авторизация",
-    "reauth_required": "Нужно переподключение",
-    "credential_invalid": "Нужно проверить учётные данные",
-    "status_unavailable": "Статус недоступен",
-    "not_available": "Пока недоступно",
+_PRODUCT_STATUS_LABELS = {
+    "connected": "Подключено",
+    "not_synced": "Синхронизация ещё не запускалась",
+    "action_required": "Нужно действие",
 }
+_CONNECTOR_LABELS = {
+    "whoop": "WHOOP",
+    "drive": "Google Drive",
+    "gmail": "Gmail",
+    "telegram": "Telegram",
+    "reminders": "Напоминания",
+    "database": "Локальная база",
+}
+_CONNECTOR_ORDER = {
+    connector: index
+    for index, connector in enumerate(
+        ("whoop", "drive", "gmail", "telegram", "reminders", "database")
+    )
+}
+_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+_GOOGLE_SHEET_PATH = re.compile(r"/spreadsheets/d/[A-Za-z0-9_-]{8,300}(?:/edit)?/?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,24 +412,37 @@ def _page(title: str, content: str) -> str:
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title><style>
-body{{font-family:system-ui,sans-serif;margin:0;background:#f5f7fa;color:#172033}} main{{max-width:960px;margin:auto;padding:2rem 1rem}}
-a{{color:#075985}} .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}} .card,form{{background:#fff;border-radius:.6rem;padding:1rem;box-shadow:0 1px 3px #0002}}
-.status{{font-weight:700}} label,input,textarea,button{{display:block;font:inherit}} input,textarea{{box-sizing:border-box;margin:.4rem 0 1rem;padding:.5rem;width:min(100%,40rem)}} textarea{{min-height:7rem}} button{{padding:.5rem .8rem}} .muted{{color:#536174}} .notice{{background:#dcfce7;border-radius:.4rem;padding:.8rem}} .notice.error{{background:#fee2e2}}
+*{{box-sizing:border-box}} body{{font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;margin:0;background:#f3f6f4;color:#17231d;line-height:1.5}} main{{max-width:1120px;margin:auto;padding:2.5rem 1.25rem 4rem}}
+a{{color:#176b45;text-underline-offset:.18em}} a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{{outline:3px solid #6bbf92;outline-offset:3px}}
+h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;margin:.4rem 0 1rem;letter-spacing:-.035em}} h2{{font-size:1.25rem;margin:0 0 1rem}} h3{{font-size:1.05rem;margin:0}} section{{margin-top:2rem}}
+.eyebrow{{color:#176b45;font-size:.78rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}} .lede,.muted{{color:#53665b}} .lede{{font-size:1.05rem;max-width:44rem}}
+.profile-list,.cards,.destinations{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:1rem;padding:0;list-style:none}}
+.profile-link,.card,.destination,form,.settings{{background:#fff;border:1px solid #dce5df;border-radius:1rem;box-shadow:0 8px 28px #1838240b}}
+.profile-link{{display:block;padding:1.2rem;text-decoration:none;font-weight:750}} .profile-link:hover{{border-color:#8fb9a2}}
+.card{{padding:1.15rem;min-width:0}} .card-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:.75rem}} .card p{{margin:.7rem 0 0}}
+.status-pill{{border-radius:999px;display:inline-block;font-size:.74rem;font-weight:800;line-height:1.25;padding:.35rem .6rem;white-space:normal;text-align:center}} [data-state="connected"] .status-pill{{background:#dcf5e6;color:#145c39}} [data-state="not_synced"] .status-pill{{background:#fff0c7;color:#6f4d00}} [data-state="action_required"] .status-pill{{background:#ffe1df;color:#8b2822}}
+.rollup{{background:#173d2c;color:#fff;border-radius:1.2rem;padding:1.25rem 1.4rem;margin:1.5rem 0}} .rollup strong{{font-size:1.15rem}} .rollup p{{margin:.3rem 0 0;color:#d8e9df}}
+.action{{font-weight:700}} details{{margin-top:1rem}} summary{{cursor:pointer;font-weight:700;min-height:44px;display:flex;align-items:center}} .technical-details{{border-top:1px solid #e1e8e3;padding-top:.25rem;color:#526057;font-size:.88rem;overflow-wrap:anywhere}} .technical-details p{{margin:.45rem 0}}
+.profile-details{{display:inline-block;color:#53665b}} .profile-details summary{{font-size:.9rem}} .destination{{padding:1rem}} .destination a{{display:flex;min-height:44px;align-items:center;font-weight:800}} .destination p{{margin:.35rem 0 0;color:#53665b}}
+.settings{{padding:0 1.15rem;margin-top:2rem}} .settings>summary{{font-size:1.05rem}} form{{border:0;box-shadow:none;padding:0 0 1.25rem}} label,input,textarea,button{{display:block;font:inherit}} input,textarea{{background:#fbfcfb;border:1px solid #9eada4;border-radius:.55rem;margin:.45rem 0 1rem;padding:.75rem;width:100%;max-width:44rem}} textarea{{min-height:8rem;resize:vertical}} button{{background:#176b45;border:0;border-radius:.55rem;color:#fff;cursor:pointer;font-weight:800;min-height:44px;padding:.65rem 1rem}} .notice{{background:#dcf5e6;border-radius:.7rem;padding:.85rem 1rem}} .notice.error{{background:#ffe1df}} .back{{display:inline-flex;min-height:44px;align-items:center}}
+@media (max-width:560px){{main{{padding:1.35rem .9rem 3rem}} .card-head{{display:block}} .status-pill{{margin-top:.65rem}} .rollup{{border-radius:.9rem}}}}
 </style></head><body><main>{content}</main></body></html>"""
 
 
 def _render_home(profiles: tuple[ProfileSummary, ...], csrf_token: str) -> str:
     profile_items = (
         "".join(
-            f'<li><a href="/profiles/{profile.id}">{escape(profile.name)}</a></li>'
+            f'<li><a class="profile-link" href="/profiles/{profile.id}">'
+            f'{escape(profile.name)}<br><span class="muted">Открыть обзор →</span></a></li>'
             for profile in profiles
         )
-        or "<li>Профилей пока нет.</li>"
+        or '<li class="muted">Профилей пока нет.</li>'
     )
-    content = f"""<h1>Health Agent</h1><p class="muted">Локальная панель управления профилями и подключениями.</p>
-<section aria-labelledby="profiles"><h2 id="profiles">Профили</h2><ul>{profile_items}</ul></section>
-<form method="post" action="/profiles"><h2>Создать профиль</h2><label for="name">Имя</label><input id="name" name="name" aria-label="Имя нового профиля" required maxlength="255">
-<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Создать</button></form>"""
+    content = f"""<p class="eyebrow">Локально на этом Mac</p><h1>Health Agent</h1>
+<p class="lede">Профили, подключения и состояние системы — без медицинских данных на экране.</p>
+<section aria-labelledby="profiles"><h2 id="profiles">Профили</h2><ul class="profile-list">{profile_items}</ul></section>
+<details class="settings"><summary>Добавить профиль</summary><form method="post" action="/profiles"><h2>Создать профиль</h2><label for="name">Имя</label><input id="name" name="name" aria-label="Имя нового профиля" required maxlength="255">
+<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Создать</button></form></details>"""
     return _page("Health Agent — профили", content)
 
 
@@ -410,26 +453,69 @@ def _render_profile(
     notice: str | None = None,
     notice_is_error: bool = False,
 ) -> str:
-    cards = "".join(_render_card(card, panel.profile.id) for card in panel.connectors)
+    ordered_cards = tuple(
+        sorted(
+            panel.connectors,
+            key=lambda card: (
+                _CONNECTOR_ORDER.get(card.connector, 999),
+                card.connector,
+            ),
+        )
+    )
+    cards = "".join(
+        _render_card(card, panel.profile.id, index)
+        for index, card in enumerate(ordered_cards)
+    )
+    product_states = tuple(_product_status(card) for card in ordered_cards)
+    action_count = product_states.count("action_required")
+    unsynced_count = product_states.count("not_synced")
+    if action_count:
+        rollup_title = f"Нужно ваше внимание: {action_count}."
+        rollup_detail = (
+            "Откройте карточки с красным статусом — там указано следующее действие."
+        )
+    elif unsynced_count:
+        rollup_title = f"Подключено, ждём первую синхронизацию: {unsynced_count}."
+        rollup_detail = (
+            "После первого успешного запуска статус обновится автоматически."
+        )
+    else:
+        rollup_title = "Всё работает."
+        rollup_detail = "Подключения и локальные компоненты доступны."
     notice_html = ""
     if notice:
         notice_class = "notice error" if notice_is_error else "notice"
         notice_html = f'<p class="{notice_class}" role="status">{escape(notice)}</p>'
     folders = "\n".join(panel.drive_folder_ids)
-    content = f"""<p><a href="/">← Все профили</a></p><h1>Профиль: {escape(panel.profile.name)}</h1>
-{notice_html}<section aria-labelledby="connectors"><h2 id="connectors">Подключения</h2><div class="cards">{cards}</div></section>
-<form method="post" action="/profiles/{panel.profile.id}/drive"><h2>Настроить Google Drive</h2>
+    destinations = (
+        "".join(_render_destination(destination) for destination in panel.destinations)
+        or '<p class="muted">Быстрых ссылок пока нет.</p>'
+    )
+    content = f"""<a class="back" href="/">← Все профили</a><p class="eyebrow">Ежедневный обзор</p><h1>Профиль: {escape(panel.profile.name)}</h1>
+<details class="profile-details"><summary>Техническая информация профиля</summary><p>ID профиля: {panel.profile.id}</p></details>
+{notice_html}<div class="rollup" role="status"><strong>{rollup_title}</strong><p>{rollup_detail}</p></div>
+<section aria-labelledby="system-status"><h2 id="system-status">Состояние системы</h2><div class="cards">{cards}</div></section>
+<section aria-labelledby="destinations"><h2 id="destinations">Открыть</h2><div class="destinations">{destinations}</div></section>
+<details class="settings"><summary>Настройки Google Drive</summary><form method="post" action="/profiles/{panel.profile.id}/drive"><h2>Настроить Google Drive</h2>
 <p class="muted">Одна или несколько папок, по одной ссылке или ID на строке. Сохранение заменит текущий список.</p>
 <label for="drive-folders">Ссылки на папки</label><textarea id="drive-folders" name="folders" required maxlength="3000" autocomplete="off" spellcheck="false">{escape(folders)}</textarea>
-<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Сохранить папки</button></form>"""
+<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Сохранить папки</button></form></details>"""
     return _page(f"Health Agent — {panel.profile.name}", content)
 
 
-def _render_card(card: ConnectorCard, profile_id: UUID) -> str:
-    label = _STATUS_LABELS.get(card.status, "Статус неизвестен")
-    last_success = (
-        card.last_success_at.isoformat() if card.last_success_at else "ещё не было"
-    )
+def _render_card(card: ConnectorCard, profile_id: UUID, index: int) -> str:
+    product_status = _product_status(card)
+    label = _PRODUCT_STATUS_LABELS[product_status]
+    connector_label = _CONNECTOR_LABELS.get(card.connector, card.connector)
+    heading_id = f"connector-{index}"
+    last_success = ""
+    if card.last_success_at is not None:
+        last_success = (
+            f'<p class="muted">Последняя синхронизация: '
+            f"{escape(_human_time(card.last_success_at))}</p>"
+        )
+    elif product_status == "not_synced":
+        last_success = '<p class="muted">Успешной синхронизации ещё не было.</p>'
     error = f"<p>Код ошибки: {escape(card.error_code)}</p>" if card.error_code else ""
     accounts = ""
     if card.account_ids:
@@ -438,9 +524,103 @@ def _render_card(card: ConnectorCard, profile_id: UUID) -> str:
             escape(account_id) for account_id in card.account_ids
         )
         accounts = f"<p>{account_label}: {account_values}</p>"
-    return f"""<article class="card"><h3>{escape(card.connector.upper())}</h3><p class="status">{label}</p>
-<p>{escape(card.detail)}</p>{accounts}<p>Последняя успешная операция: {escape(last_success)}</p>{error}
-<p class="muted">Следующее действие: {escape(_cli_guidance(card, profile_id))}</p></article>"""
+    action = ""
+    if product_status == "action_required":
+        action = f'<p class="action">{escape(_human_action(card))}</p>'
+    raw_time = (
+        f"<p>Точное время: {escape(card.last_success_at.isoformat())}</p>"
+        if card.last_success_at
+        else ""
+    )
+    guidance = _cli_guidance(card, profile_id)
+    return f"""<article class="card" data-state="{product_status}" aria-labelledby="{heading_id}">
+<div class="card-head"><h3 id="{heading_id}">{escape(connector_label)}</h3><span class="status-pill">{label}</span></div>
+<p>{escape(card.detail)}</p>{last_success}{action}<details class="technical-details"><summary>Подробности</summary>
+<p>Технический статус: {escape(card.status)}</p>{accounts}{raw_time}{error}<p>Команда проверки: {escape(guidance)}</p></details></article>"""
+
+
+def _product_status(card: ConnectorCard) -> str:
+    if card.status == "ready":
+        if card.last_success_at is not None or card.connector in {
+            "telegram",
+            "reminders",
+            "database",
+        }:
+            return "connected"
+        return "not_synced"
+    if card.status == "configured":
+        return "not_synced"
+    return "action_required"
+
+
+def _human_time(value: datetime) -> str:
+    return (
+        f"{value.day} {_MONTHS[value.month - 1]} {value.year}, "
+        f"{value.hour:02d}:{value.minute:02d}"
+    )
+
+
+def _human_action(card: ConnectorCard) -> str:
+    if card.connector == "drive":
+        return (
+            "Добавьте папку Google Drive ниже."
+            if card.status == "not_configured"
+            else "Переподключите Google Drive."
+        )
+    if card.connector == "whoop":
+        return "Подключите или переподключите WHOOP."
+    if card.connector == "gmail":
+        return "Подключите или переподключите Gmail."
+    if card.connector == "telegram":
+        return "Завершите подключение Telegram."
+    if card.connector == "reminders":
+        return "Подтвердите или обработайте напоминания в Telegram."
+    if card.connector == "database":
+        return "Проверьте, что локальная база запущена."
+    return "Откройте подробности и проверьте локальную настройку."
+
+
+def _render_destination(destination: PanelDestination) -> str:
+    label = escape(destination.label)
+    safe_url = _safe_destination_url(destination)
+    if safe_url is not None:
+        return (
+            f'<article class="destination"><a href="{escape(safe_url, quote=True)}" '
+            f'rel="noreferrer">{label} →</a><p>Открыть локально</p></article>'
+        )
+    unavailable = destination.unavailable_text or "Сейчас недоступно"
+    return (
+        f'<article class="destination"><strong>{label}</strong>'
+        f"<p>{escape(unavailable)}</p></article>"
+    )
+
+
+def _safe_destination_url(destination: PanelDestination) -> str | None:
+    if destination.url is None:
+        return None
+    try:
+        parsed = urlsplit(destination.url)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    if destination.key == "metabase":
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        try:
+            is_loopback = ipaddress.ip_address(parsed.hostname or "").is_loopback
+        except ValueError:
+            is_loopback = parsed.hostname == "localhost"
+        return destination.url if is_loopback else None
+    if (
+        destination.key == "google_sheets"
+        and parsed.scheme == "https"
+        and parsed.hostname == "docs.google.com"
+        and _GOOGLE_SHEET_PATH.fullmatch(parsed.path)
+    ):
+        return destination.url
+    return None
 
 
 def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
