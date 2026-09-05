@@ -49,3 +49,14 @@ WHOOP remains the weight source. Extraction supplies data to the insight layer;
 overall medical interpretation, clinical significance of trends and safe next
 steps are not implemented here. Missing date/ambiguous range/unknown unit remain
 explicitly unresolved, never fabricated to improve coverage.
+
+## Final integrated implementation gate —20811a5
+
+Latest requested main `d52fb6f` merged cleanly as `20811a5`, preserving Russian
+Telegram UX and the lab integration. Full offline pytest: **864passed**,5inherited
+PyMuPDF/SWIG deprecation warnings. Ruff clean; mypy src/new lab tests109files clean;
+offline lock and diff clean. Broad mypy's13inherited errors remain as listed above.
+The full migration roundtrip, metadata comparison, CLI and post-sync integration
+tests are included in this run. Independent whole-branch review requested against
+`.superpowers/sdd/2026-09-05-real-lab-extraction/review-d52fb6f..20811a5.diff`;
+no readiness verdict is claimed until that review returns.

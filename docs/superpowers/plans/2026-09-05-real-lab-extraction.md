@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.13, SQLAlchemy/PostgreSQL, PyMuPDF, Apple Vision, official OpenAI Responses, Typer, pytest.
 
+**Execution checkpoint:** Tasks1–4 implemented using RED→GREEN tests; Tasks1–3 independently approved. Latest main d52fb6f merged at20811a5; full864pytest/Ruff/source+newtests mypy/lock/diff pass (inherited5SWIG warnings and13broader-test mypy errors recorded in final report). Task4/whole-branch review pending; original task checklists below remain the planning record.
+
 ## Global Constraints
 
 - Never use live APIs, credentials or personal records; tests are synthetic/offline.
