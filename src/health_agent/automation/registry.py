@@ -15,6 +15,7 @@ from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.stores import LocalGmailProfileStore
 from health_agent.google_drive.stores import LocalProfileStore
+from health_agent.google_sheets.stores import LocalSheetsProfileStore
 from health_agent.whoop.models import WhoopConnection
 
 
@@ -32,9 +33,9 @@ class WhoopJobAdapter:
     def discover(self, settings: Settings) -> Iterable[AutomationJob]:
         with session_scope(build_engine(settings)) as session:
             rows = session.execute(
-                select(WhoopConnection.profile_id, WhoopConnection.account_name).order_by(
+                select(
                     WhoopConnection.profile_id, WhoopConnection.account_name
-                )
+                ).order_by(WhoopConnection.profile_id, WhoopConnection.account_name)
             ).all()
         return tuple(
             AutomationJob(
@@ -42,7 +43,14 @@ class WhoopJobAdapter:
                 str(profile_id),
                 account_name,
                 True,
-                ("whoop", "sync", "--profile-id", str(profile_id), "--account", account_name),
+                (
+                    "whoop",
+                    "sync",
+                    "--profile-id",
+                    str(profile_id),
+                    "--account",
+                    account_name,
+                ),
             )
             for profile_id, account_name in rows
         )
@@ -149,7 +157,9 @@ class DriveJobAdapter:
                 ("drive", "sync", profile.profile_id),
                 (
                     None
-                    if _token_present(directory / "token.json", settings.google_drive_root)
+                    if _token_present(
+                        directory / "token.json", settings.google_drive_root
+                    )
                     else "oauth_not_ready"
                 ),
             )
@@ -159,6 +169,35 @@ class DriveJobAdapter:
         )
 
 
-def configured_job_adapters(settings: Settings, executable: Path) -> tuple[JobAdapter, ...]:
+@dataclass(frozen=True, slots=True)
+class SheetsJobAdapter:
+    source: AutomationSource = "sheets"
+
+    def discover(self, settings: Settings) -> Iterable[AutomationJob]:
+        store = LocalSheetsProfileStore(settings.google_sheets_root)
+        return tuple(
+            AutomationJob(
+                "sheets",
+                profile.profile_id,
+                "main",
+                False,
+                ("sheets", "sync", profile.profile_id),
+                (
+                    None
+                    if _token_present(
+                        directory / "token.json", settings.google_sheets_root
+                    )
+                    else "oauth_not_ready"
+                ),
+            )
+            for directory in _profile_directories(settings.google_sheets_root)
+            if _has_profile_file(directory)
+            for profile in (store.load(directory.name),)
+        )
+
+
+def configured_job_adapters(
+    settings: Settings, executable: Path
+) -> tuple[JobAdapter, ...]:
     del settings, executable
-    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter())
+    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), SheetsJobAdapter())

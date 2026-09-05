@@ -68,7 +68,7 @@ class SheetsReviewDecisionAudit(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    profile_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id"), index=True)
+    profile_id: Mapped[UUID] = mapped_column(index=True)
     review_item_id: Mapped[UUID] = mapped_column(
         ForeignKey("review_items.id"), index=True
     )

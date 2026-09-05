@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -16,7 +18,7 @@ from health_agent.google_sheets.stores import (
     LocalSheetsProfileStore,
     LocalSheetsTokenStore,
 )
-from health_agent.google_sheets.types import SheetsAccountIdentity
+from health_agent.google_sheets.types import SheetsAccountIdentity, SheetsGateway
 
 
 class IdentityGateway:
@@ -55,8 +57,11 @@ def test_authorize_verifies_expected_identity_before_publishing(
         Path("missing"),
         profiles,
         tokens,
-        lambda _: IdentityGateway(
-            SheetsAccountIdentity("different", "other@example.com")
+        cast(
+            Callable[[Credentials], SheetsGateway],
+            lambda _: IdentityGateway(
+                SheetsAccountIdentity("different", "other@example.com")
+            ),
         ),
     )
     monkeypatch.setattr(oauth, "stage", lambda *args, **kwargs: _credentials())
@@ -82,8 +87,11 @@ def test_load_rejects_extra_scope(tmp_path: Path) -> None:
         Path("missing"),
         profiles,
         tokens,
-        lambda _: IdentityGateway(
-            SheetsAccountIdentity("permission", "me@example.com")
+        cast(
+            Callable[[Credentials], SheetsGateway],
+            lambda _: IdentityGateway(
+                SheetsAccountIdentity("permission", "me@example.com")
+            ),
         ),
     )
     with pytest.raises(SheetsOAuthScopeError):

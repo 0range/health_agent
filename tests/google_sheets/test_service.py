@@ -20,6 +20,7 @@ from health_agent.google_sheets.stores import (
 from health_agent.google_sheets.types import (
     CreatedWorkbook,
     SheetsAccountIdentity,
+    SheetValue,
     WorkbookBinding,
     WorkbookProjection,
 )
@@ -49,7 +50,7 @@ class FakeGateway:
         self.created = 0
         self.writes = 0
         self.review_reads = 0
-        self.review_rows = ()
+        self.review_rows: tuple[tuple[SheetValue, ...], ...] = ()
         self.latest: WorkbookProjection | None = None
         self.fail_next_write = False
 

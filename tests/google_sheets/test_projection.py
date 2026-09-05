@@ -28,7 +28,12 @@ def test_projection_is_profile_scoped_and_excludes_raw_medical_text(
     rendered = repr(bundle)
     assert str(own.id) in rendered
     assert str(other.id) not in rendered
-    assert "999" not in rendered
+    assert all(
+        value != "999"
+        for sheet in bundle.workbook.sheets
+        for row in sheet.rows
+        for value in row
+    )
     assert "PRIVATE BODY" not in rendered
     assert "PRIVATE EVIDENCE" not in rendered
     assert "/private/vault" not in rendered

@@ -52,7 +52,9 @@ def atomic_private_write(path: Path, content: bytes) -> None:
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise RuntimeError("unsafe_path")
-    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}."
+    )
     temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
@@ -84,7 +86,9 @@ class AutomationState:
         if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
             raise RuntimeError("unsafe_path")
         payload = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or not isinstance(payload.get("full_success", {}), dict):
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("full_success", {}), dict
+        ):
             raise TypeError("invalid_state")
         return payload
 
@@ -109,7 +113,9 @@ class AutomationState:
         checkpoints[self._key(job)] = now.astimezone(UTC).isoformat()
         atomic_private_write(
             self.path,
-            (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+            (
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+            ).encode(),
         )
 
 

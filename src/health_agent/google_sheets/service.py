@@ -85,22 +85,28 @@ class SheetsService:
     ) -> SheetsProfile:
         with self.sessions() as session:
             session.get_one(Profile, profile_id)
+        if self.profiles.exists(str(profile_id)):
+            existing = self.profiles.load(str(profile_id))
+            expected_permission_id = (
+                expected_permission_id or existing.expected_permission_id
+            )
+            expected_email = expected_email or existing.expected_email
+        else:
+            existing = None
         profile = SheetsProfile.create(
             str(profile_id),
             expected_permission_id=expected_permission_id,
             expected_email=expected_email,
         )
-        if self.profiles.exists(str(profile_id)):
-            existing = self.profiles.load(str(profile_id))
-            if existing.spreadsheet_id is not None:
-                profile = SheetsProfile(
-                    profile.profile_id,
-                    profile.expected_permission_id,
-                    profile.expected_email,
-                    existing.spreadsheet_id,
-                    existing.spreadsheet_url,
-                    existing.workbook_token,
-                )
+        if existing is not None and existing.spreadsheet_id is not None:
+            profile = SheetsProfile(
+                profile.profile_id,
+                profile.expected_permission_id,
+                profile.expected_email,
+                existing.spreadsheet_id,
+                existing.spreadsheet_url,
+                existing.workbook_token,
+            )
         self.profiles.save(profile)
         return profile
 

@@ -20,6 +20,9 @@ External/Testing она истекает через семь дней; для ф
 
 Google Drive-коннектор проходит общий медицинский импорт и проверен на mocked API
 и disposable PostgreSQL; перед реальными данными остаётся OAuth и live smoke.
+Google Sheets создаёт одну понятную таблицу на профиль: подтверждённая история
+анализов, пакетная проверка сомнений и свежесть источников. PostgreSQL остаётся
+источником истины, а решения из таблицы возвращаются с audit trail.
 Telegram уже соединён с профильно-изолированным контуром вопросов на проверенных
 анализах и нормализованных WHOOP-данных; живой BotFather/OpenAI запуск всё ещё
 требует отдельной проверки владельцем без чувствительных данных.
@@ -138,10 +141,26 @@ uv run health-agent telegram run
 Границы и подключение описаны в
 [инструкции Telegram-коннектора](docs/integrations/telegram.md).
 
+## Google Sheets
+
+После настройки создаётся одна приватная таблица с листами `Lab history`,
+`Needs review` и `Sources`. В `Needs review` изменяются только решение и, при
+необходимости, исправленные значение/единица/показатель.
+
+```bash
+uv run health-agent sheets configure PROFILE_UUID
+uv run health-agent sheets authorize PROFILE_UUID
+uv run health-agent sheets sync PROFILE_UUID
+uv run health-agent sheets status PROFILE_UUID
+```
+
+Точные права OAuth, правила проверки и восстановление описаны в
+[инструкции Google Sheets](docs/google-sheets.md).
+
 ## Фоновое обновление на Mac
 
 Один локальный LaunchAgent может раз в четыре часа последовательно обновлять
-WHOOP, Gmail и Google Drive. Ошибка или 30-минутный таймаут одного источника не
+WHOOP, Gmail, Google Drive и Google Sheets. Ошибка или 30-минутный таймаут одного источника не
 останавливает следующие. Полная сверка каждого отдельного аккаунта выполняется
 при первом запуске и затем раз в семь дней; остальные запуски инкрементальные.
 

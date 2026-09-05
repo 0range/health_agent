@@ -194,7 +194,12 @@ class LaunchdManager:
         if loaded and self.launchctl.run(("bootout", self.service)) != 0:
             self._restore_installed(previous_bytes)
             raise LaunchdError("launchctl_bootout_failed")
-        if self.launchctl.run(("bootstrap", self.domain, str(self.paths.installed_plist))) != 0:
+        if (
+            self.launchctl.run(
+                ("bootstrap", self.domain, str(self.paths.installed_plist))
+            )
+            != 0
+        ):
             self._restore_installed(previous_bytes)
             if loaded and previous_bytes is not None:
                 self.launchctl.run(
@@ -264,7 +269,9 @@ def rotate_safe_logs(paths: LaunchdPaths) -> None:
     for path in (paths.stdout_log, paths.stderr_log):
         rotated = path.with_name(f"{path.name}.1")
         for candidate in (path, rotated):
-            if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+            if candidate.is_symlink() or (
+                candidate.exists() and not candidate.is_file()
+            ):
                 raise LaunchdError("unsafe_log_path")
         if path.exists() and path.stat().st_size > LOG_ROTATE_BYTES:
             if rotated.exists():

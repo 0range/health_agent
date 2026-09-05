@@ -150,11 +150,16 @@ class GoogleSheetsGateway:
                     }
                 ]
             sheets.append(sheet)
-        payload = _execute(
-            self._sheets.spreadsheets().create(
+        # Workbook creation is not safely idempotent. Do not retry an ambiguous
+        # transport failure and risk producing several private spreadsheets.
+        payload = cast(
+            dict[str, Any],
+            self._sheets.spreadsheets()
+            .create(
                 body={"properties": {"title": title}, "sheets": sheets},
                 fields="spreadsheetId,spreadsheetUrl",
             )
+            .execute(num_retries=0),
         )
         spreadsheet_id = str(payload["spreadsheetId"])
         return CreatedWorkbook(
