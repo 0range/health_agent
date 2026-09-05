@@ -42,6 +42,17 @@
 - [ ] Wire optional snapshot into Q&A prompt preserving existing safety, citation guard and reply contracts. Latest lab context must no longer silently discard results older than 30 days. Existing labels remain valid; every newly supplied patient signal must cite existing context evidence or have supported labels included in the validator. Guard max prompt size and no raw document text.
 - [ ] Run focused tests and Ruff/mypy for changes, self-review, commit and report. Controller owns one final integrated suite and live smoke, no production API calls in agent work.
 
+### Task 3: Explain and contain rejected extraction requests
+
+**Files:** Modify `src/health_agent/lab_extraction/openai.py`, `types.py`, `service.py` and focused `tests/lab_extraction` tests; update `docs/lab-extraction.md`.
+
+**Interfaces:** Keep extractor API and existing queue schema. Add application-owned safe codes `cloud_quota_exhausted`, `cloud_rate_limited`, `cloud_auth_required`, `cloud_request_rejected`. Preserve `cloud_outcome_unknown` for timeouts/transport/ambiguous server outcomes. No raw exception strings escape.
+
+- [ ] Add synthetic official SDK exception tests: HTTP 429 with `credit_balance_exhausted` or `insufficient_quota` maps to quota; other 429 to rate-limited; 401/403 to auth; 400/422 to rejected; timeout/5xx remains unknown. Do not inspect or copy arbitrary response text, request IDs or provider messages.
+- [ ] Implement fixed allowlisted error mapping before generic fallback. Continue charging existing local attempt budget conservatively; do not reset counters or weaken explicit acknowledgement for existing unknown outcomes.
+- [ ] Add service regression proving a quota/auth/rate-limit error stops further cloud calls in that run while leaving remaining local processing possible. Existing local-only operation and review safety remain intact.
+- [ ] Run focused tests/Ruff/mypy, self-review, commit and report. No real API requests or production mutations. Document user-visible diagnosis/recovery without secrets.
+
 ## Controller integration checklist
 
 - [ ] Diagnose first two cloud failures safely before further medical requests; preserve budget and no silent retries of unknown outcomes.
