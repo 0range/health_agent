@@ -50,6 +50,12 @@ overall medical interpretation, clinical significance of trends and safe next
 steps are not implemented here. Missing date/ambiguous range/unknown unit remain
 explicitly unresolved, never fabricated to improve coverage.
 
+Numeric reference bounds remain in source_unit; downstream must not compare them
+blindly with a converted normalized_value. Printed source_flag is source evidence,
+including in correction lineage, not a recomputed abnormality flag. Current
+question context consumes verified normalized values but does not yet expose
+these newly available range/flag fields; extending that is insight-layer work.
+
 ## Final integrated implementation gate —20811a5
 
 Latest requested main `d52fb6f` merged cleanly as `20811a5`, preserving Russian
