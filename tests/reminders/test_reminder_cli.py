@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 from sqlalchemy import Engine
@@ -81,8 +82,16 @@ def test_dispatch_cli_uses_global_lock_and_safe_counts(
     lock = Lock()
     monkeypatch.setattr(
         "health_agent.cli._reminder_dispatch_components",
-        lambda path: (Dispatcher(), lock),
+        lambda path: (
+            Dispatcher(),
+            lock,
+            SimpleNamespace(
+                stdout_log=tmp_path / "stdout.log",
+                stderr_log=tmp_path / "stderr.log",
+            ),
+        ),
     )
+    monkeypatch.setattr("health_agent.cli.rotate_reminder_logs", lambda paths: None)
 
     result = CliRunner().invoke(
         app, ["reminder", "dispatch", "--env-file", str(env_file)]

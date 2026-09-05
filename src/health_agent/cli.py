@@ -70,15 +70,11 @@ from health_agent.questions.models import EvidenceSource
 from health_agent.reminders.dispatcher import DispatchReport, ReminderDispatcher
 from health_agent.reminders.launchd import (
     REMINDER_LABEL,
-    ReminderLaunchdError,
     ReminderLaunchdManager,
     ReminderLaunchdPaths,
+    rotate_reminder_logs,
 )
-from health_agent.reminders.repository import (
-    InvalidReminderTransition,
-    ReminderNotFound,
-    ReminderRepository,
-)
+from health_agent.reminders.repository import ReminderRepository
 from health_agent.reminders.telegram import parse_snooze_duration
 from health_agent.reminders.time import parse_local_datetime
 from health_agent.staging import (
@@ -969,7 +965,7 @@ def propose_health_reminder(
                 due_at=due_at,
                 timezone_name=timezone_name,
             )
-    except (ReminderNotFound, RuntimeError, ValueError):
+    except Exception:  # noqa: BLE001 -- database details stay local
         typer.echo("status=failed safe_error=reminder_proposal_failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(
@@ -991,7 +987,7 @@ def list_health_reminders(profile_id: UUID) -> None:
         typer.echo(
             f"code={reminder.public_code} status={reminder.status.value} "
             f"due_at={reminder.due_at.isoformat()} timezone={reminder.timezone_name} "
-            f"title={reminder.title}"
+            f"title={_one_line(reminder.title)}"
         )
 
 
@@ -1043,7 +1039,7 @@ def snooze_health_reminder(profile_id: UUID, code: str, duration: str) -> None:
             reminder = ReminderRepository(session).snooze(
                 profile_id, code, duration=parse_snooze_duration(duration)
             )
-    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+    except Exception:  # noqa: BLE001 -- database details stay local
         typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(
@@ -1068,7 +1064,7 @@ def reschedule_health_reminder(
                 due_at=due_at,
                 timezone_name=timezone_name,
             )
-    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+    except Exception:  # noqa: BLE001 -- database details stay local
         typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(
@@ -1083,11 +1079,12 @@ def dispatch_health_reminders(
 ) -> None:
     """Deliver pending proposals and due confirmed reminders once."""
     try:
-        dispatcher, lock = _reminder_dispatch_components(env_file)
+        dispatcher, lock, paths = _reminder_dispatch_components(env_file)
         if not lock.acquire():
             typer.echo("status=skipped safe_error=already_running")
             return
         try:
+            rotate_reminder_logs(paths)
             report = dispatcher.run()
         finally:
             lock.release()
@@ -1570,7 +1567,7 @@ def _run_reminder_transition(profile_id: UUID, code: str, action: str) -> None:
                 reminder = repository.cancel(profile_id, code)
             else:
                 raise ValueError("invalid_reminder_action")
-    except (InvalidReminderTransition, ReminderNotFound, RuntimeError, ValueError):
+    except Exception:  # noqa: BLE001 -- database details stay local
         typer.echo("status=failed safe_error=reminder_transition_failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(f"status={reminder.status.value} profile_id={profile_id} code={code}")
@@ -1605,8 +1602,8 @@ def _reminder_settings(env_file: Path) -> tuple[Settings, Path, Path]:
 
 def _reminder_dispatch_components(
     env_file: Path,
-) -> tuple[ReminderDispatcher, GlobalRunLock]:
-    settings, _, _ = _reminder_settings(env_file)
+) -> tuple[ReminderDispatcher, GlobalRunLock, ReminderLaunchdPaths]:
+    settings, repository_root, resolved_env = _reminder_settings(env_file)
     credential = PrivateBotTokenStore(
         settings.effective_telegram_token_file
     ).load_verified()
@@ -1615,7 +1612,13 @@ def _reminder_dispatch_components(
     gateway = TelegramBotAPI(credential.token)
     messenger = TelegramMessenger(credential.bot_id, gateway, state)
     dispatcher = ReminderDispatcher(build_engine(settings), messenger)
-    return dispatcher, GlobalRunLock(settings.automation_root / "reminders.lock")
+    paths = ReminderLaunchdPaths.resolve(
+        automation_root=settings.automation_root,
+        executable=_current_console_script(),
+        environment_file=resolved_env,
+        working_directory=repository_root,
+    )
+    return dispatcher, GlobalRunLock(paths.lock_file), paths
 
 
 def _reminder_launchd_manager(env_file: Path) -> ReminderLaunchdManager:
@@ -1645,7 +1648,7 @@ def _run_reminder_launchd(action: str, env_file: Path) -> None:
             status = manager.remove()
         else:
             raise ValueError("invalid_launchd_action")
-    except (ReminderLaunchdError, RuntimeError, ValueError):
+    except Exception:  # noqa: BLE001 -- never leak private filesystem details
         typer.echo("status=failed safe_error=reminder_launchd_failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(f"status={status} label={REMINDER_LABEL}")
@@ -1664,6 +1667,10 @@ def _print_reminder_dispatch_report(report: DispatchReport) -> None:
             )
         )
     )
+
+
+def _one_line(value: str) -> str:
+    return " ".join(value.split())
 
 
 def _repository_relative(repository_root: Path, path: Path) -> Path:
