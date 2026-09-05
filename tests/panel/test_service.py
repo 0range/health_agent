@@ -20,19 +20,27 @@ from health_agent.google_drive.stores import (
     LocalTokenStore,
 )
 from health_agent.google_drive.types import DriveAccountIdentity
-from health_agent.models import Profile
-from health_agent.panel.models import ConnectorCard, ProfilePanel, ProfileSummary
+from health_agent.models import DEFAULT_PROFILE_ID, Profile
+from health_agent.panel.models import (
+    ConnectorCard,
+    PanelDestination,
+    ProfilePanel,
+    ProfileSummary,
+)
 from health_agent.panel.service import (
+    DatabaseStatusReader,
     DriveConfiguration,
     GmailStatusReader,
     PanelService,
     ProfileNotFoundError,
+    ReminderStatusReader,
     SqlAlchemyProfileRepository,
     TelegramStatusReader,
     _local_telegram_status,
     _whoop_card,
     build_panel_service,
 )
+from health_agent.reminders.repository import ReminderRepository
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import (
     TelegramIdentity,
@@ -97,6 +105,77 @@ def test_lists_profiles_by_repository_order_and_creates_a_profile() -> None:
 
     assert created.name == "New profile"
     assert service.list_profiles() == (alpha, beta, created)
+
+
+def test_reminder_status_reader_is_profile_scoped_and_aggregate_only(
+    clean_database: Engine,
+) -> None:
+    other_id = uuid4()
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=other_id, name="Other"))
+        session.flush()
+        repository = ReminderRepository(session)
+        repository.propose(
+            profile_id=DEFAULT_PROFILE_ID,
+            title="private blood test title",
+            reason="private medical reason",
+            source_type="manual",
+            source_reference="private reference",
+            due_at=datetime(2030, 1, 1, tzinfo=UTC),
+            timezone_name="UTC",
+        )
+        other = repository.propose(
+            profile_id=other_id,
+            title="other private title",
+            reason="other private reason",
+            source_type="manual",
+            source_reference="other private reference",
+            due_at=datetime(2030, 1, 1, tzinfo=UTC),
+            timezone_name="UTC",
+            public_code="rother1",
+        )
+        repository.confirm(other_id, other.public_code)
+
+    reader = ReminderStatusReader(lambda: session_scope(clean_database))
+    own = reader.cards(DEFAULT_PROFILE_ID)[0]
+    other_card = reader.cards(other_id)[0]
+
+    assert own.status == "action_required"
+    assert own.detail == (
+        "Ожидают подтверждения: 1 · Запланировано: 0 · Пора отправить: 0"
+    )
+    assert other_card.status == "ready"
+    assert other_card.detail == (
+        "Ожидают подтверждения: 0 · Запланировано: 1 · Пора отправить: 0"
+    )
+    assert "private" not in repr((own, other_card))
+
+
+def test_database_reader_and_destinations_are_exposed_without_health_data(
+    clean_database: Engine,
+) -> None:
+    profiles = SqlAlchemyProfileRepository(lambda: session_scope(clean_database))
+    destinations = (
+        PanelDestination("metabase", "Дашборд", "http://127.0.0.1:53000"),
+        PanelDestination(
+            "google_sheets",
+            "Google Таблица",
+            None,
+            "Появится после подключения Google Таблицы",
+        ),
+    )
+    service = PanelService(
+        profiles,
+        (DatabaseStatusReader(lambda: session_scope(clean_database)),),
+        destinations=destinations,
+    )
+
+    panel = service.profile(DEFAULT_PROFILE_ID)
+
+    assert panel.connectors[0] == ConnectorCard(
+        "database", "ready", "Локальная база доступна."
+    )
+    assert panel.destinations == destinations
 
 
 def test_sqlalchemy_profiles_are_serialized_before_session_scope_closes(
