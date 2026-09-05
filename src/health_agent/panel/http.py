@@ -6,7 +6,7 @@ import ipaddress
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from hmac import compare_digest
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,6 +16,8 @@ from uuid import UUID
 
 from health_agent.panel.models import (
     ConnectorCard,
+    DataCoverage,
+    HealthcheckSnapshot,
     PanelDestination,
     ProfilePanel,
     ProfileSummary,
@@ -125,6 +127,17 @@ class PanelApplication:
         method = method.upper()
         path = parsed.path
         if method == "GET":
+            if path == "/healthcheck":
+                try:
+                    snapshot = self._service.healthcheck()
+                except Exception:  # noqa: BLE001 - keep database details private.
+                    return self._html(
+                        503,
+                        _message_page(
+                            "Состояние системы временно недоступно. Повторите позже."
+                        ),
+                    )
+                return self._html(200, _render_healthcheck(snapshot))
             if path == "/":
                 return self._html(
                     200, _render_home(self._service.list_profiles(), self._csrf_token)
@@ -154,6 +167,8 @@ class PanelApplication:
                 return self._not_found()
             return self._not_found()
         if method == "POST":
+            if path == "/healthcheck":
+                return self._method_not_allowed("GET")
             if path == "/profiles":
                 return self._create_profile(headers, body)
             profile_id = _profile_action_id_from_path(path, "drive")
@@ -161,6 +176,8 @@ class PanelApplication:
                 return self._configure_drive(profile_id, headers, body)
             return self._not_found()
         if path == "/":
+            return self._method_not_allowed("GET")
+        if path == "/healthcheck":
             return self._method_not_allowed("GET")
         if _profile_id_from_path(path) is not None:
             return self._method_not_allowed("GET")
@@ -450,6 +467,7 @@ def _render_home(profiles: tuple[ProfileSummary, ...], csrf_token: str) -> str:
     )
     content = f"""<p class="eyebrow">Локально на этом Mac</p><h1>Health Agent</h1>
 <p class="lede">Профили, подключения и состояние системы — без медицинских данных на экране.</p>
+<p><a href="/healthcheck">Открыть проверку состояния →</a></p>
 <section aria-labelledby="profiles"><h2 id="profiles">Профили</h2><ul class="profile-list">{profile_items}</ul></section>
 <details class="settings"><summary>Добавить профиль</summary><form method="post" action="/profiles"><h2>Создать профиль</h2><label for="name">Имя</label><input id="name" name="name" aria-label="Имя нового профиля" required maxlength="255">
 <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Создать</button></form></details>"""
@@ -501,7 +519,7 @@ def _render_profile(
         "".join(_render_destination(destination) for destination in panel.destinations)
         or '<p class="muted">Быстрых ссылок пока нет.</p>'
     )
-    content = f"""<a class="back" href="/">← Все профили</a><p class="eyebrow">Ежедневный обзор</p><h1>Профиль: {escape(panel.profile.name)}</h1>
+    content = f"""<a class="back" href="/">← Все профили</a> · <a href="/healthcheck">Проверка состояния</a><p class="eyebrow">Ежедневный обзор</p><h1>Профиль: {escape(panel.profile.name)}</h1>
 <details class="profile-details"><summary>Техническая информация профиля</summary><p>ID профиля: {panel.profile.id}</p></details>
 {notice_html}<div class="rollup" role="status"><strong>{rollup_title}</strong><p>{rollup_detail}</p></div>
 <section aria-labelledby="system-status"><h2 id="system-status">Состояние системы</h2><div class="cards">{cards}</div></section>
@@ -553,6 +571,8 @@ def _product_status(card: ConnectorCard) -> str:
     if card.error_code is not None:
         return "action_required"
     if card.status in {"ready", "configured"}:
+        if card.connector == "telegram" and card.status == "configured":
+            return "action_required"
         if card.last_success_at is not None or card.connector in {
             "telegram",
             "reminders",
@@ -561,6 +581,68 @@ def _product_status(card: ConnectorCard) -> str:
             return "connected"
         return "not_synced"
     return "action_required"
+
+
+def _render_healthcheck(snapshot: HealthcheckSnapshot) -> str:
+    if not snapshot.profiles:
+        profiles_html = '<p class="muted">Профилей пока нет.</p>'
+    else:
+        profiles_html = "".join(
+            _render_healthcheck_profile(item.panel, item.coverage)
+            for item in snapshot.profiles
+        )
+    content = f"""<a class="back" href="/">← Все профили</a><p class="eyebrow">Локальная диагностика</p>
+<h1>Проверка состояния</h1><p class="lede">Только сохранённое локальное состояние; внешние сервисы не опрашиваются.</p>
+<p class="muted">Проверено: {escape(_human_time(snapshot.checked_at))}</p>{profiles_html}"""
+    return _page("Health Agent — проверка состояния", content)
+
+
+def _render_healthcheck_profile(panel: ProfilePanel, coverage: DataCoverage) -> str:
+    cards = "".join(
+        _render_card(card, panel.profile.id, index)
+        for index, card in enumerate(
+            sorted(
+                panel.connectors,
+                key=lambda card: (_CONNECTOR_ORDER.get(card.connector, 999), card.connector),
+            )
+        )
+    )
+    if coverage.status == "unknown":
+        data = (
+            '<article class="card" data-state="action_required"><h3>Покрытие данных</h3>'
+            '<span class="status-pill">Неизвестно</span><p>Локальные данные временно недоступны.</p>'
+            '<p class="action">Проверьте локальную базу и повторите позже.</p></article>'
+        )
+    elif coverage.status == "empty":
+        data = (
+            '<article class="card" data-state="action_required"><div class="card-head">'
+            '<h3>Покрытие данных</h3><span class="status-pill">Нет данных</span></div>'
+            '<p>Для профиля пока нет сохранённых данных.</p>'
+            '<p class="action">Подключите источник и запустите первую синхронизацию.</p></article>'
+        )
+    else:
+        data = _render_coverage(coverage)
+    return f"""<section><h2>Профиль: {escape(panel.profile.name)}</h2>
+<div class="cards">{cards}{data}</div></section>"""
+
+
+def _render_coverage(coverage: DataCoverage) -> str:
+    def day(value: date | None) -> str:
+        return "нет данных" if value is None else value.isoformat()
+
+    received = (
+        "нет данных"
+        if coverage.latest_received_at is None
+        else _human_time(coverage.latest_received_at)
+    )
+    return f"""<article class="card" data-state="connected"><div class="card-head"><h3>Покрытие данных</h3>
+<span class="status-pill">Доступно</span></div>
+<p>Последняя дата данных WHOOP: {escape(day(coverage.latest_whoop_date))}</p>
+<p>Последняя дата сдачи анализа: {escape(day(coverage.latest_lab_collected_date))}</p>
+<p>Последняя дата выдачи анализа: {escape(day(coverage.latest_lab_issued_date))}</p>
+<p class="muted">Последний файл получен: {escape(received)}</p>
+<p>Ожидают извлечения: {coverage.pending_extraction_count or 0} · Требуют проверки: {coverage.needs_review_count or 0} · Проверены: {coverage.verified_count or 0}</p>
+</article>"""
 
 
 def _human_time(value: datetime) -> str:

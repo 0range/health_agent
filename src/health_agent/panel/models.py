@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 
@@ -78,3 +78,33 @@ class ProfilePanel:
                 destination.to_dict() for destination in self.destinations
             ],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DataCoverage:
+    """Dates and workflow counts safe for an operational status screen."""
+
+    status: str
+    latest_whoop_date: date | None = None
+    latest_lab_collected_date: date | None = None
+    latest_lab_issued_date: date | None = None
+    latest_received_at: datetime | None = None
+    pending_extraction_count: int | None = None
+    needs_review_count: int | None = None
+    verified_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthcheckProfile:
+    """Connector state and local data coverage for exactly one profile."""
+
+    panel: ProfilePanel
+    coverage: DataCoverage
+
+
+@dataclass(frozen=True, slots=True)
+class HealthcheckSnapshot:
+    """One immutable, read-only healthcheck result."""
+
+    checked_at: datetime
+    profiles: tuple[HealthcheckProfile, ...]
