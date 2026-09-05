@@ -281,6 +281,46 @@ def test_wrong_workbook_binding_aborts_before_review_or_write(
     assert gateway.writes == writes
 
 
+def test_untouched_literal_equals_unit_is_syncable_without_decision(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        add_observation(session, DEFAULT_PROFILE_ID, source_unit="=synthetic-unit")
+    gateway = FakeGateway()
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    service.sync(DEFAULT_PROFILE_ID)
+    report = service.sync(DEFAULT_PROFILE_ID)
+    assert report.decisions_applied == 0
+    assert gateway.writes == 2
+
+
+def test_changed_literal_equals_unit_aborts_before_projection_write(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        add_observation(session, DEFAULT_PROFILE_ID, source_unit="=synthetic-unit")
+    gateway = FakeGateway()
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    service.sync(DEFAULT_PROFILE_ID)
+    changed = list(gateway.review_rows[1])
+    changed[6] = "=changed-unit"
+    gateway.review_rows = (gateway.review_rows[0], tuple(changed))
+    writes = gateway.writes
+    with pytest.raises(SheetsSyncFailure, match="review_grid_invalid"):
+        service.sync(DEFAULT_PROFILE_ID)
+    assert gateway.writes == writes
+
+
 def test_remote_write_failure_keeps_decision_and_next_run_converges(
     tmp_path: Path, clean_database
 ) -> None:

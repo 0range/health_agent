@@ -78,8 +78,8 @@ def test_parser_rejects_missing_header(session: Session) -> None:
         parse_decisions((), _bundle(session).known_reviews, DEFAULT_PROFILE_ID)
 
 
-@pytest.mark.parametrize("column", (0, 12, 13))
-def test_parser_rejects_formula_decisions_and_machine_cells(
+@pytest.mark.parametrize("column", (12, 13))
+def test_parser_rejects_formula_like_editable_cells(
     session: Session, column: int
 ) -> None:
     add_observation(session, DEFAULT_PROFILE_ID)
@@ -91,6 +91,34 @@ def test_parser_rejects_formula_decisions_and_machine_cells(
             (REVIEW_HEADERS, tuple(decision_formula)),
             bundle.known_reviews,
             DEFAULT_PROFILE_ID,
+        )
+
+
+def test_parser_accepts_trusted_literal_equals_in_immutable_unit(
+    session: Session,
+) -> None:
+    add_observation(session, DEFAULT_PROFILE_ID, source_unit="=synthetic-unit")
+    bundle = _bundle(session)
+    assert (
+        parse_decisions(
+            (REVIEW_HEADERS, bundle.pending_reviews[0].values()),
+            bundle.known_reviews,
+            DEFAULT_PROFILE_ID,
+        )
+        == ()
+    )
+
+
+def test_parser_rejects_changed_literal_equals_in_immutable_unit(
+    session: Session,
+) -> None:
+    add_observation(session, DEFAULT_PROFILE_ID, source_unit="=synthetic-unit")
+    bundle = _bundle(session)
+    row = list(bundle.pending_reviews[0].values())
+    row[6] = "=changed-unit"
+    with pytest.raises(ReviewGridError, match="ownership or version"):
+        parse_decisions(
+            (REVIEW_HEADERS, tuple(row)), bundle.known_reviews, DEFAULT_PROFILE_ID
         )
 
 
