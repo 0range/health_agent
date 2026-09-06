@@ -227,7 +227,25 @@ FROM valid_rows ORDER BY canonical_name, chart_unit LIMIT 80"""
 
 def _visualization(spec: LabCardSpec) -> dict[str, Any]:
     if spec.display == "table":
-        return {}
+        return {
+            "column_settings": {
+                '["name","date"]': {"column_title": "Дата"},
+                '["name","analyte"]': {"column_title": "Исследование"},
+                '["name","source_value"]': {"column_title": "Результат"},
+                '["name","source_unit"]': {"column_title": "Единица"},
+                '["name","reference_text"]': {"column_title": "Референс"},
+                '["name","source_flag"]': {"column_title": "Флаг источника"},
+                '["name","comparison"]': {
+                    "column_title": "Сравнение",
+                    "value_remappings": [
+                        {"value": "below", "new_value": "Ниже референса"},
+                        {"value": "within", "new_value": "В референсе"},
+                        {"value": "above", "new_value": "Выше референса"},
+                        {"value": "unknown", "new_value": "Не определено"},
+                    ],
+                },
+            }
+        }
     return {
         "graph.dimensions": ["date_label"],
         "graph.metrics": list(spec.metrics),

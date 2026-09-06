@@ -4,6 +4,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, cast
+from uuid import UUID
 
 import httpx
 import pytest
@@ -15,6 +16,7 @@ from typer.testing import CliRunner
 
 from health_agent import cli
 from health_agent.config import Settings
+from health_agent.lab_dashboard import LabDashboardResult
 from health_agent.metabase import (
     LAB_HISTORY_QUERY,
     MetabaseBootstrapResult,
@@ -86,11 +88,15 @@ class FakeMetabase:
             return self._update(request, self.cards, payload)
         if method == "GET" and path.startswith("/api/dashboard/"):
             dashboard_id = int(path.rsplit("/", 1)[-1])
-            dashboard = next(row for row in self.dashboards if row["id"] == dashboard_id)
+            dashboard = next(
+                row for row in self.dashboards if row["id"] == dashboard_id
+            )
             return self._response(request, dashboard)
         if method == "PUT" and path.startswith("/api/dashboard/"):
             dashboard_id = int(path.rsplit("/", 1)[-1])
-            dashboard = next(row for row in self.dashboards if row["id"] == dashboard_id)
+            dashboard = next(
+                row for row in self.dashboards if row["id"] == dashboard_id
+            )
             dashboard.update(payload)
             return self._response(request, dashboard)
         return httpx.Response(404, request=request)
@@ -294,7 +300,9 @@ def test_bootstrap_repairs_drifted_same_named_objects(
     assert fake_metabase.dashboards[0]["collection_id"] == 7
     assert fake_metabase.cards[0]["collection_id"] == 7
     assert fake_metabase.cards[0]["display"] == "line"
-    assert fake_metabase.cards[0]["dataset_query"]["native"]["query"] == LAB_HISTORY_QUERY
+    assert (
+        fake_metabase.cards[0]["dataset_query"]["native"]["query"] == LAB_HISTORY_QUERY
+    )
     assert fake_metabase.cards[0]["visualization_settings"] == {
         "graph.dimensions": ["date", "canonical_name"],
         "graph.metrics": ["normalized_value"],
@@ -353,16 +361,20 @@ def test_dashboard_reader_repairs_existing_privileges_and_membership(
                     "has_table_privilege('health_dashboard', 'lab_observations', 'UPDATE')"
                 )
             ).one()
-            default_privileges = connection.execute(
-                text(
-                    "SELECT DISTINCT privilege.privilege_type::text "
-                    "FROM pg_default_acl defaults "
-                    "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) privilege "
-                    "JOIN pg_roles grantee ON grantee.oid = privilege.grantee "
-                    "WHERE grantee.rolname = 'health_dashboard' "
-                    "ORDER BY privilege.privilege_type::text"
+            default_privileges = (
+                connection.execute(
+                    text(
+                        "SELECT DISTINCT privilege.privilege_type::text "
+                        "FROM pg_default_acl defaults "
+                        "CROSS JOIN LATERAL aclexplode(defaults.defaclacl) privilege "
+                        "JOIN pg_roles grantee ON grantee.oid = privilege.grantee "
+                        "WHERE grantee.rolname = 'health_dashboard' "
+                        "ORDER BY privilege.privilege_type::text"
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             database_grants = connection.execute(
                 text(
                     "SELECT database_object.datname, privilege.privilege_type::text "
@@ -414,7 +426,9 @@ def test_dashboard_reader_fails_closed_when_role_owns_an_object(
     ensure_dashboard_reader(settings, engine=engine)
     with engine.begin() as connection:
         connection.execute(text("DROP TABLE IF EXISTS health_dashboard_owned_test"))
-        connection.execute(text("CREATE TABLE health_dashboard_owned_test (id integer)"))
+        connection.execute(
+            text("CREATE TABLE health_dashboard_owned_test (id integer)")
+        )
         connection.execute(
             text("ALTER TABLE health_dashboard_owned_test OWNER TO health_dashboard")
         )
@@ -454,3 +468,59 @@ def test_dashboard_setup_prints_only_safe_identifiers(
         "url=http://127.0.0.1:53000/dashboard/3 "
         "admin_email=health-agent@localhost.local\n"
     )
+
+
+def test_lab_dashboard_setup_sanitizes_provisioning_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "private provider diagnostic"
+    monkeypatch.setattr(cli, "_profile_exists", lambda *_: True)
+    monkeypatch.setattr(
+        cli,
+        "bootstrap_lab_dashboard",
+        lambda *_: (_ for _ in ()).throw(RuntimeError(secret)),
+    )
+
+    result = CliRunner().invoke(cli.app, ["dashboard", "setup-labs"])
+
+    assert result.exit_code == 1
+    assert "safe_error_code=dashboard_setup_failed" in result.output
+    assert secret not in result.output
+
+
+def test_lab_dashboard_setup_checks_profile_then_saves_destination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    profile = UUID(int=1)
+    saved: list[tuple[UUID, str, int]] = []
+    monkeypatch.setattr(
+        cli, "Settings", lambda: Settings(connector_state_root=tmp_path)
+    )
+    monkeypatch.setattr(cli, "_profile_exists", lambda *_: True)
+    monkeypatch.setattr(
+        cli,
+        "bootstrap_lab_dashboard",
+        lambda *_: LabDashboardResult(7, (8, 9), "http://127.0.0.1:53000/dashboard/7"),
+    )
+
+    class Store:
+        def __init__(self, *_: object) -> None:
+            pass
+
+        def save(self, *args) -> None:
+            saved.append(args)
+
+    monkeypatch.setattr(cli, "DashboardDestinationStore", Store)
+    result = CliRunner().invoke(
+        cli.app, ["dashboard", "setup-labs", "--profile-id", str(profile)]
+    )
+    assert result.exit_code == 0
+    assert saved == [(profile, "labs", 7)]
+
+    monkeypatch.setattr(cli, "_profile_exists", lambda *_: False)
+    saved.clear()
+    rejected = CliRunner().invoke(
+        cli.app, ["dashboard", "setup-labs", "--profile-id", str(profile)]
+    )
+    assert rejected.exit_code != 0
+    assert saved == []

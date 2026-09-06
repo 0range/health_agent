@@ -15,10 +15,19 @@ from health_agent.panel.http import (
     MAX_FORM_BYTES,
     PanelApplication,
     _cli_guidance,
+    _safe_destination_url,
     serve_panel,
 )
 from health_agent.panel.models import ConnectorCard, PanelDestination, ProfileSummary
 from health_agent.panel.service import PanelService
+
+
+@pytest.mark.parametrize("key", ("metabase_labs", "metabase_whoop"))
+def test_profile_dashboard_destination_keys_accept_only_local_urls(key: str) -> None:
+    local = PanelDestination(key, "Dashboard", "https://localhost:5443/dashboard/7")
+    remote = PanelDestination(key, "Dashboard", "https://example.com/dashboard/7")
+    assert _safe_destination_url(local) == local.url
+    assert _safe_destination_url(remote) is None
 
 
 @dataclass

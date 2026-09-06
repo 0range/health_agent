@@ -42,6 +42,12 @@ def test_specs_are_unit_specific_profile_bound_and_unaggregated() -> None:
     specs = lab_card_specs(PROFILE, (FERRITIN,))
     assert len(specs) == 2
     assert specs[0].display == "table"
+    assert (
+        lab_dashboard._visualization(specs[0])["column_settings"][
+            '["name","comparison"]'
+        ]["column_title"]
+        == "Сравнение"
+    )
     assert "1000" in specs[0].description
     assert "Ферритин" in specs[1].name and "ng/mL" in specs[1].name
     assert all(str(PROFILE) in spec.query for spec in specs)

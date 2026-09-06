@@ -525,10 +525,14 @@ def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
     settings = Settings()
     if not _profile_exists(settings, profile_id):
         raise typer.BadParameter("profile does not exist", param_hint="--profile-id")
-    result = bootstrap_whoop_dashboard(settings, profile_id)
-    DashboardDestinationStore(
-        settings.connector_state_root, settings.metabase_url
-    ).save(profile_id, "whoop", result.dashboard_id)
+    try:
+        result = bootstrap_whoop_dashboard(settings, profile_id)
+        DashboardDestinationStore(
+            settings.connector_state_root, settings.metabase_url
+        ).save(profile_id, "whoop", result.dashboard_id)
+    except Exception:  # noqa: BLE001 -- provisioning details stay local
+        typer.echo("status=failed safe_error_code=dashboard_setup_failed", err=True)
+        raise typer.Exit(1) from None
     typer.echo(
         " ".join(
             (
@@ -548,10 +552,14 @@ def setup_lab_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
     settings = Settings()
     if not _profile_exists(settings, profile_id):
         raise typer.BadParameter("profile does not exist", param_hint="--profile-id")
-    result = bootstrap_lab_dashboard(settings, profile_id)
-    DashboardDestinationStore(
-        settings.connector_state_root, settings.metabase_url
-    ).save(profile_id, "labs", result.dashboard_id)
+    try:
+        result = bootstrap_lab_dashboard(settings, profile_id)
+        DashboardDestinationStore(
+            settings.connector_state_root, settings.metabase_url
+        ).save(profile_id, "labs", result.dashboard_id)
+    except Exception:  # noqa: BLE001 -- provisioning details stay local
+        typer.echo("status=failed safe_error_code=dashboard_setup_failed", err=True)
+        raise typer.Exit(1) from None
     typer.echo(
         f"status=ready profile_id={profile_id} dashboard_id={result.dashboard_id} "
         f"cards={len(result.card_ids)} url={result.dashboard_url}"

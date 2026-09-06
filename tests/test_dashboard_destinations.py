@@ -30,3 +30,20 @@ def test_destination_store_rejects_remote_origin_and_invalid_record(tmp_path) ->
     assert (
         DashboardDestinationStore(tmp_path, "http://127.0.0.1:53000").load(owner) == {}
     )
+
+
+def test_destination_store_accepts_local_https_and_rejects_bool_id(tmp_path) -> None:
+    store = DashboardDestinationStore(tmp_path, "https://localhost:5443")
+    try:
+        store.save(UUID(int=1), "labs", True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("boolean dashboard id accepted")
+    (tmp_path / "dashboards").mkdir()
+    record = tmp_path / "dashboards" / f"{UUID(int=1)}.json"
+    record.write_text(
+        '{"profile_id":"00000000-0000-0000-0000-000000000001",'
+        '"origin":"https://localhost:5443","labs":7.5}'
+    )
+    assert store.load(UUID(int=1)) == {}
