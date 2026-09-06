@@ -325,7 +325,10 @@ class ExtractionQueue:
         *,
         cloud: bool,
         unresolved: bool = False,
+        cloud_method: str = "openai_structured",
     ) -> int:
+        if cloud_method not in {"openai_structured", "yandex_structured"}:
+            raise ExtractionError("cloud_request_rejected")
         with session_scope(self.engine) as session:
             # Same first lock as explicit review/date transitions. Never hold it
             # during OCR/OpenAI and never overwrite a reviewed observation.
@@ -422,7 +425,7 @@ class ExtractionQueue:
             job.candidate_count += inserted
             job.source_text_sha256, job.extraction_method = (
                 digest,
-                "openai_structured" if cloud else "local_text",
+                cloud_method if cloud else "local_text",
             )
             job.local_completed = True
             if cloud or not unresolved:

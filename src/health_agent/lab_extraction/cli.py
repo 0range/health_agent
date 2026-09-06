@@ -44,17 +44,32 @@ def configure(
             help="Explicit permission to send bounded page text to OpenAI.",
         ),
     ] = False,
+    cloud: Annotated[
+        bool,
+        typer.Option(
+            "--cloud/--no-cloud",
+            help="Explicit permission for the selected cloud provider.",
+        ),
+    ] = False,
     disabled: bool = False,
     daily_budget: Annotated[int, typer.Option(min=1, max=100)] = 20,
 ) -> None:
     """Enable local processing; cloud is disabled unless explicitly requested."""
+    service = _call(build_service)
+    if openai and service.settings.ai_provider != "openai":
+        typer.echo("status=failed safe_error=cloud_provider_consent_required")
+        raise typer.Exit(1)
+    enabled_cloud = cloud or openai
     _call(
-        lambda: build_service().configure(
-            profile_id, enabled=not disabled, openai=openai, daily_budget=daily_budget
+        lambda: service.configure(
+            profile_id,
+            enabled=not disabled,
+            cloud=enabled_cloud,
+            daily_budget=daily_budget,
         )
     )
     typer.echo(
-        f"status=succeeded profile={profile_id} enabled={str(not disabled).lower()} cloud_enabled={str(openai).lower()} daily_budget={daily_budget}"
+        f"status=succeeded profile={profile_id} enabled={str(not disabled).lower()} cloud_enabled={str(enabled_cloud).lower()} daily_budget={daily_budget}"
     )
 
 

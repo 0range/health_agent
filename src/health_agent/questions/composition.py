@@ -21,6 +21,7 @@ from uuid import UUID
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from health_agent.ai.yandex import YandexResponsesResponder
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
 from health_agent.importer import ImportReport, import_document
@@ -437,9 +438,11 @@ def build_telegram_question_runtime(
     )
 
 
-def _build_responder(settings: Settings) -> OpenAIResponsesResponder:
+def _build_responder(settings: Settings) -> OpenAIResponsesResponder | YandexResponsesResponder:
     """Validate the exact local responder configuration used by ``ask``."""
 
+    if settings.ai_provider == "yandex":
+        return YandexResponsesResponder(settings)
     return OpenAIResponsesResponder(
         settings.load_openai_api_key(),
         model=settings.openai_model,

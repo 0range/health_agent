@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlsplit
+from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -140,6 +141,23 @@ class Settings(BaseSettings):
     openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
         default="low", validation_alias="OPENAI_REASONING_EFFORT"
     )
+    ai_provider: Literal["openai", "yandex"] = Field(
+        default="openai", validation_alias="AI_PROVIDER"
+    )
+    yandex_api_key: SecretStr | None = Field(
+        default=None, validation_alias="YANDEX_API_KEY"
+    )
+    yandex_api_key_file: Path = Field(
+        default=Path(".tokens/yandex-api-key"),
+        validation_alias="YANDEX_API_KEY_FILE",
+    )
+    yandex_folder_id: str = Field(default="", validation_alias="YANDEX_FOLDER_ID")
+    yandex_model: str = Field(
+        default="qwen3.6-35b-a3b", validation_alias="YANDEX_MODEL"
+    )
+    yandex_allowed_profile_ids: tuple[UUID, ...] = Field(
+        default=(), validation_alias="YANDEX_ALLOWED_PROFILE_IDS"
+    )
     panel_host: str = Field(default="127.0.0.1", validation_alias="PANEL_HOST")
     panel_port: int = Field(
         default=8766, ge=1, le=65535, validation_alias="PANEL_PORT"
@@ -271,6 +289,33 @@ class Settings(BaseSettings):
             raise ValueError("OPENAI API key file must have mode 0600") from error
         except (OSError, ValueError) as error:
             raise ValueError("OPENAI API key file is invalid") from error
+        return SecretStr(value)
+
+    def load_yandex_api_key(self) -> SecretStr:
+        """Return the separate Yandex key using the same private-file policy."""
+        if self.yandex_api_key is not None:
+            value = self.yandex_api_key.get_secret_value().strip()
+            if value:
+                return SecretStr(value)
+            raise ValueError("Yandex API key is not configured")
+        path = self.yandex_api_key_file
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "r", encoding="utf-8") as key_file:
+                file_stat = os.fstat(key_file.fileno())
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise ValueError
+                if stat.S_IMODE(file_stat.st_mode) != 0o600:
+                    raise PermissionError
+                value = key_file.read().strip()
+            if not value:
+                raise ValueError
+        except FileNotFoundError as error:
+            raise ValueError("Yandex API key is not configured") from error
+        except PermissionError as error:
+            raise ValueError("Yandex API key file must have mode 0600") from error
+        except (OSError, ValueError) as error:
+            raise ValueError("Yandex API key file is invalid") from error
         return SecretStr(value)
 
     @model_validator(mode="after")

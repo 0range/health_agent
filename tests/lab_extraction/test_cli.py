@@ -6,8 +6,10 @@ from typer.testing import CliRunner
 import health_agent.cli as main_cli
 import health_agent.lab_extraction.cli as extraction_cli
 from health_agent.cli import app
+from health_agent.config import Settings
 from health_agent.db import session_scope
 from health_agent.lab_extraction.models import LabExtractionJob
+from health_agent.lab_extraction.service import LabExtractionService
 from health_agent.lab_extraction.types import ExtractionError
 from health_agent.models import DEFAULT_PROFILE_ID, LabObservation, ReviewStatus
 from lab_extraction.test_service import Cloud, add_page, service
@@ -56,6 +58,33 @@ def test_cli_invalid_bounds_and_native_exception_are_content_free(monkeypatch):
     assert result.exit_code == 1
     assert "safe_error=extraction_failed" in result.output
     assert "SECRET" not in result.output
+
+
+def test_cli_uses_neutral_cloud_optin_and_rejects_openai_name_for_yandex(
+    clean_database, tmp_path, monkeypatch
+):
+    configured = Settings(
+        _env_file=None,
+        ai_provider="yandex",
+        yandex_folder_id="synthetic-folder",
+        yandex_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
+        vault_root=tmp_path / "vault",
+        temporary_root=tmp_path / "tmp",
+    )
+    worker = LabExtractionService(
+        clean_database, configured, cloud_extractor=Cloud()
+    )
+    monkeypatch.setattr(extraction_cli, "build_service", lambda: worker)
+    runner = CliRunner()
+    profile = str(DEFAULT_PROFILE_ID)
+    rejected = runner.invoke(
+        app, ["lab-extract", "configure", profile, "--openai"]
+    )
+    assert rejected.exit_code == 1
+    assert "cloud_provider_consent_required" in rejected.output
+    accepted = runner.invoke(app, ["lab-extract", "configure", profile, "--cloud"])
+    assert accepted.exit_code == 0
+    assert "cloud_enabled=true" in accepted.output
 
 
 def test_cli_unknown_retry_requires_explicit_ack(clean_database, tmp_path, monkeypatch):
