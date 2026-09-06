@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -39,6 +40,36 @@ def _body(event: CalendarEvent) -> dict[str, Any]:
     }
 
 
+def _remote_instant(value: object, timezone_name: str) -> datetime:
+    if not isinstance(value, dict) or value.get("timeZone") != timezone_name:
+        raise ValueError("invalid_remote_calendar_time")
+    raw = value.get("dateTime")
+    if not isinstance(raw, str) or "date" in value:
+        raise ValueError("invalid_remote_calendar_time")
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as error:
+        raise ValueError("invalid_remote_calendar_time") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("invalid_remote_calendar_time")
+    return parsed.astimezone(UTC)
+
+
+def _managed_equal(
+    remote: dict[str, Any], desired: dict[str, Any], timezone_name: str
+) -> bool:
+    if any(
+        remote.get(key) != desired[key]
+        for key in ("summary", "description", "visibility")
+    ):
+        return False
+    return _remote_instant(remote.get("start"), timezone_name) == _remote_instant(
+        desired["start"], timezone_name
+    ) and _remote_instant(remote.get("end"), timezone_name) == _remote_instant(
+        desired["end"], timezone_name
+    )
+
+
 class CalendarService:
     def __init__(self, profiles, tokens, oauth, gateway_factory):
         self.profiles, self.tokens, self.oauth, self.gateway_factory = (
@@ -50,6 +81,7 @@ class CalendarService:
 
     def sync(self, event: CalendarEvent) -> CalendarResult:
         eid = event_id(event.profile_id, event.visit_id)
+        gateway = None
         try:
             profile = self.profiles.load(event.profile_id)
             token = self.tokens.load_verified(event.profile_id)
@@ -94,6 +126,7 @@ class CalendarService:
                 or not isinstance(remote.get("etag"), str)
                 or private.get("profile_id") != str(event.profile_id)
                 or private.get("visit_id") != str(event.visit_id)
+                or private.get("managed_by") != "health-agent-visit-v1"
                 or remote.get("attendees")
             ):
                 return CalendarResult(
@@ -110,7 +143,7 @@ class CalendarService:
                 )
                 return CalendarResult(eid, "cancelled")
             desired = _body(event)
-            if all(remote.get(k) == v for k, v in desired.items() if k != "id"):
+            if _managed_equal(remote, desired, event.timezone_name):
                 return CalendarResult(eid, "unchanged", remote.get("htmlLink"))
             updated = gateway.patch(
                 profile.encoded_calendar_id,
@@ -129,3 +162,8 @@ class CalendarService:
             return CalendarResult(
                 eid, "deferred", safe_error="calendar_configuration_invalid"
             )
+        finally:
+            if gateway is not None:
+                close = getattr(gateway, "close", None)
+                if close is not None:
+                    close()

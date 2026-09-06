@@ -10,6 +10,17 @@ from google.oauth2.credentials import Credentials
 BASE_URL = "https://www.googleapis.com/calendar/v3"
 
 
+class _BorrowedTransport(httpx.BaseTransport):
+    def __init__(self, transport: httpx.BaseTransport):
+        self._transport = transport
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return self._transport.handle_request(request)
+
+    def close(self) -> None:
+        pass
+
+
 class CalendarAPIError(RuntimeError):
     def __init__(self, status: int = 0):
         self.status = status
@@ -34,9 +45,19 @@ class GoogleCalendarGateway:
         if not isinstance(credentials.token, str) or not credentials.token:
             raise CalendarAPIError(401)
         self._authorization = f"Bearer {credentials.token}"
+        transport = _BorrowedTransport(http) if http is not None else None
         self._client = httpx.Client(
-            timeout=timeout_seconds, follow_redirects=False, transport=http
+            timeout=timeout_seconds, follow_redirects=False, transport=transport
         )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
     def _request(
         self,

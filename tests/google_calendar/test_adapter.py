@@ -17,6 +17,10 @@ class FakeGateway:
         self.events = {}
         self.insert_count = 0
         self.patch_count = 0
+        self.close_count = 0
+
+    def close(self):
+        self.close_count += 1
 
     def get(self, calendar_id, event_id):
         return self.events.get(event_id)
@@ -85,7 +89,9 @@ def test_create_update_repeat_cancel_and_escaped_content(tmp_path: Path):
     gateway = FakeGateway()
     service = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway)
     assert service.sync(item).status == "created"
+    assert gateway.close_count == 1
     assert service.sync(item).status == "unchanged"
+    assert gateway.close_count == 2
     assert gateway.insert_count == 1
     assert (
         "&lt;script&gt;"
@@ -211,3 +217,35 @@ def test_oauth_failure_makes_no_calendar_request(tmp_path: Path):
     ).sync(item)
     assert result.safe_error == "invalid_oauth_scopes"
     assert calls == []
+
+
+def test_equivalent_offsets_and_extra_private_properties_are_unchanged(tmp_path: Path):
+    item = event()
+    profiles, tokens = configured(tmp_path, item.profile_id)
+    gateway = FakeGateway()
+    service = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway)
+    service.sync(item)
+    stored = gateway.events[event_id(item.profile_id, item.visit_id)]
+    stored["start"]["dateTime"] = "2026-09-08T10:00:00+03:00"
+    stored["end"]["dateTime"] = "2026-09-08T11:00:00+03:00"
+    stored["extendedProperties"]["private"]["unrelated"] = "preserve"
+    assert service.sync(item).status == "unchanged"
+    assert gateway.patch_count == 0
+
+
+def test_missing_marker_and_all_day_event_fail_closed(tmp_path: Path):
+    item = event()
+    profiles, tokens = configured(tmp_path, item.profile_id)
+    for mutation in ("marker", "all_day"):
+        gateway = FakeGateway()
+        remote = {**_body(item), "etag": '"1"'}
+        if mutation == "marker":
+            remote["extendedProperties"]["private"].pop("managed_by")
+        else:
+            remote["start"] = {"date": "2026-09-08"}
+        gateway.events[event_id(item.profile_id, item.visit_id)] = remote
+        result = CalendarService(
+            profiles, tokens, FakeOAuth(), lambda _, gateway=gateway: gateway
+        ).sync(item)
+        assert result.status == "deferred" and gateway.patch_count == 0
+        assert gateway.close_count == 1

@@ -111,9 +111,15 @@ class CalendarOAuth:
 
     def authorize(self, profile_id, interactive=False, force=False):
         credentials = self.stage(profile_id, interactive=interactive, force=force)
-        identity = self.gateway_factory(credentials).userinfo(
-            "https://openidconnect.googleapis.com/v1/userinfo"
-        )
+        gateway = self.gateway_factory(credentials)
+        try:
+            identity = gateway.userinfo(
+                "https://openidconnect.googleapis.com/v1/userinfo"
+            )
+        finally:
+            close = getattr(gateway, "close", None)
+            if close is not None:
+                close()
         subject, email = identity.get("sub"), identity.get("email")
         if (
             not isinstance(subject, str)

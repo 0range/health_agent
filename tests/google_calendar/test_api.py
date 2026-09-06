@@ -13,6 +13,10 @@ class Transport(httpx.BaseTransport):
     def __init__(self, statuses):
         self.statuses = iter(statuses)
         self.calls = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def handle_request(self, request):
         self.calls.append(request)
@@ -42,6 +46,8 @@ def test_real_gateway_uses_encoded_path_no_redirects_notifications_and_if_match(
     assert "/calendars/team%2Fa/events" in str(transport.calls[0].url)
     assert "sendUpdates=none" in str(transport.calls[1].url)
     assert transport.calls[2].headers["If-Match"] == '"etag"'
+    gateway.close()
+    assert transport.closed is False
 
 
 @pytest.mark.parametrize(

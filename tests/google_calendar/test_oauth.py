@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from google.oauth2.credentials import Credentials
 
+from health_agent.google_calendar.api import CalendarAPIError
 from health_agent.google_calendar.models import CalendarProfile
 from health_agent.google_calendar.oauth import SCOPES, CalendarOAuth, CalendarOAuthError
 from health_agent.google_calendar.stores import CalendarProfileStore, CalendarTokenStore
@@ -137,6 +138,8 @@ def test_fully_mocked_interactive_flow_verifies_and_publishes(
         return Flow()
 
     class Identity:
+        closed = False
+
         def userinfo(self, url):
             calls["userinfo"] = url
             return {
@@ -145,11 +148,15 @@ def test_fully_mocked_interactive_flow_verifies_and_publishes(
                 "email_verified": True,
             }
 
+        def close(self):
+            self.closed = True
+
     monkeypatch.setattr(
         "health_agent.google_calendar.oauth.InstalledAppFlow.from_client_secrets_file",
         from_file,
     )
-    service.gateway_factory = lambda _: Identity()
+    identity = Identity()
+    service.gateway_factory = lambda _: identity
     service.authorize(profile_id, interactive=True, force=True)
 
     assert calls["scopes"] == sorted(SCOPES)
@@ -163,3 +170,26 @@ def test_fully_mocked_interactive_flow_verifies_and_publishes(
     }
     assert calls["userinfo"] == "https://openidconnect.googleapis.com/v1/userinfo"
     assert tokens.load_verified(profile_id)["account_subject"] == "interactive-sub"
+    assert identity.closed
+
+
+def test_userinfo_gateway_closes_on_error(tmp_path: Path, monkeypatch):
+    profile_id = uuid4()
+    service, tokens = oauth(tmp_path, profile_id)
+    monkeypatch.setattr(service, "stage", lambda *_args, **_kwargs: credentials())
+
+    class BrokenIdentity:
+        closed = False
+
+        def userinfo(self, _url):
+            raise CalendarAPIError(500)
+
+        def close(self):
+            self.closed = True
+
+    gateway = BrokenIdentity()
+    service.gateway_factory = lambda _: gateway
+    with pytest.raises(CalendarAPIError, match="google_unavailable"):
+        service.authorize(profile_id)
+    assert gateway.closed
+    assert tokens.load_verified(profile_id) is None
