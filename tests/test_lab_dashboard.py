@@ -454,6 +454,32 @@ def test_exact_legacy_owned_queries_migrate_but_custom_sql_stays_blocked(
         bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
 
 
+def test_exact_pre_registry_expansion_queries_migrate_but_custom_sql_stays_blocked(
+    disposable_postgres: DisposablePostgres, db_session: Session
+) -> None:
+    add_row(db_session)
+    db_session.commit()
+    fake = NativeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings, engine = disposable_postgres.settings, disposable_postgres.engine
+    bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+
+    previous = lab_dashboard.lab_card_specs(
+        PROFILE, (FERRITIN,), _pre_registry_expansion=True
+    )
+    for card, spec in zip(fake.cards, previous, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+
+    bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    assert "тыс/мкл" in fake.cards[0]["dataset_query"]["native"]["query"]
+
+    for card, spec in zip(fake.cards, previous, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+    fake.cards[1]["dataset_query"]["native"]["query"] += "\n-- user edit"
+    with pytest.raises(ValueError, match="collision"):
+        bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+
+
 @pytest.mark.parametrize(
     "collision", ["duplicate", "collection", "database", "dashboard"]
 )

@@ -67,6 +67,9 @@ _LABELS = {
 } | {series.canonical_name: series.label for series in DEFAULT_SERIES}
 _MAX_SERIES = 80
 _OWNER = "health-agent:lab-history:v1"
+_PRE_REGISTRY_EXPANSION_UNITS = frozenset(
+    {"ед./л", "тыс/мкл", "*10^9/л", "10*9/литр", "10^9/литр"}
+)
 # Bound syntax before casts, including exponents, so hostile stored text cannot
 # cause PostgreSQL numeric overflow even when the planner reorders predicates.
 _NUMBER = (
@@ -85,7 +88,11 @@ def _profile(profile_id: UUID) -> str:
 
 
 def _history_cte(
-    profile_id: UUID, series: LabSeries | None = None, *, legacy: bool = False
+    profile_id: UUID,
+    series: LabSeries | None = None,
+    *,
+    legacy: bool = False,
+    pre_registry_expansion: bool = False,
 ) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
@@ -93,6 +100,11 @@ def _history_cte(
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
             if legacy and raw_unit == "пг/кл":
+                continue
+            if pre_registry_expansion and (
+                raw_unit in _PRE_REGISTRY_EXPANSION_UNITS
+                or (name == "prolactin" and unit == "uIU/mL")
+            ):
                 continue
             if unit not in units.split("|"):
                 continue
@@ -146,6 +158,7 @@ def lab_card_specs(
     *,
     _legacy: bool = False,
     _russian_comparison: bool = True,
+    _pre_registry_expansion: bool = False,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     russian_comparison = _russian_comparison and not _legacy
@@ -158,7 +171,11 @@ def lab_card_specs(
             raise ValueError("Lab series requires a canonical registry unit")
     detail = LabCardSpec(
         f"Анализы — исходные данные [{profile}]",
-        _history_cte(profile_id, legacy=_legacy)
+        _history_cte(
+            profile_id,
+            legacy=_legacy,
+            pre_registry_expansion=_pre_registry_expansion,
+        )
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
   CASE WHEN NOT compatible_range THEN {unknown}
@@ -183,7 +200,12 @@ LIMIT 1000""".format(
     charts = tuple(
         LabCardSpec(
             f"{item.label} — {item.unit} [{profile}]",
-            _history_cte(profile_id, item, legacy=_legacy)
+            _history_cte(
+                profile_id,
+                item,
+                legacy=_legacy,
+                pre_registry_expansion=_pre_registry_expansion,
+            )
             + (
                 """SELECT result_date AS date,
   parsed_value AS result,
@@ -310,8 +332,11 @@ def bootstrap_lab_dashboard(
         owned: list[dict[str, Any] | None] = []
         legacy_specs = lab_card_specs(profile_id, series, _legacy=True)
         deployed_specs = lab_card_specs(profile_id, series, _russian_comparison=False)
-        for spec, legacy_spec, deployed_spec in zip(
-            specs, legacy_specs, deployed_specs, strict=True
+        pre_registry_specs = lab_card_specs(
+            profile_id, series, _pre_registry_expansion=True
+        )
+        for spec, legacy_spec, deployed_spec, pre_registry_spec in zip(
+            specs, legacy_specs, deployed_specs, pre_registry_specs, strict=True
         ):
             candidates = [c for c in cards if c.get("name") == spec.name]
             if len(candidates) > 1:
@@ -329,6 +354,7 @@ def bootstrap_lab_dashboard(
                         (database["id"], spec.query),
                         (database["id"], legacy_spec.query),
                         (database["id"], deployed_spec.query),
+                        (database["id"], pre_registry_spec.query),
                     }
                 ):
                     raise ValueError("Lab card ownership collision")
