@@ -4,15 +4,17 @@ TL;DR: autonomous development in progress; user acceptance deferred until the en
 
 ## Current work
 
-1. Recurring reminders — implementing from plan 2026-09-06-recurring-reminders.
-2. Local doctor visits/questions/answers — implementing from plan 2026-09-06-doctor-visits.
+1. Recurring reminders — reviewed and merged (`9eac0c7`); production migration 0009 applied after private pg_dump backup. Combined suite: 1026 passed, three stale schema-head assertions need integration update (not a green full suite yet).
+2. Local doctor visits/questions/answers — implemented `ec7954c`, independent review in progress.
 3. Medical extraction — local audit found all 584 inherited pending rows unmapped, 571 with unsupported units; no mechanically safe bulk approval subset. Investigating initial importer and PDF geometry before changing evidence validation.
-4. Calendar adapter, shared UI/Telegram integration, lab history/Sheets/dashboard, five-scenario automated acceptance — remaining; no new owner interaction until needed for an actual access decision.
+4. Calendar adapter — implementing. Strict shared parser `4fd4fe6` — independent review in progress. Shared UI/Telegram integration, lab history/Sheets/dashboard, five-scenario automated acceptance — remaining; no new owner interaction until needed for an actual access decision.
 
 ## Deployment checkpoint before this run
 
 Yandex owner-only enabled, Qwen real QA with exact citations accepted; Telegram heartbeat ready and owner ping delivered. PostgreSQL local, Drive/Gmail/WHOOP/Sheets configured. 121 docs,289pages,7dated;584pending,0verified. Do not mistake pending count for extracted clinical coverage. Extraction requests stay budgeted; failed source matching must not be fixed by weakening global evidence validation.
 
 ## Decisions
+
+Temporary maintenance: disabled only owner lab extraction worker (budget20 unchanged) after confirming local parser pollution. Source sync/WHOOP/Telegram remain enabled; resume extraction after strict parser and archive reconciliation acceptance.
 
 Keep existing stack; no framework migration. Generic clinician question templates may be generated without inventing patient-specific advice. Screening intervals must be explicitly selected by user/clinician. Google Calendar code will use separate authorization and idempotent event IDs, with no attendee invitations. No synthetic test data in production.
