@@ -21,6 +21,8 @@ _MAX_TABLES = 10
 _MAX_ROWS = 200
 _MAX_COLUMNS = 8
 _MAX_WORDS = 10_000
+_MAX_DRAWINGS = 512
+_MAX_DRAWING_ITEMS = 4_096
 _MAX_CELL = 500
 _MAX_TEXT = 60_000
 _MAX_CANDIDATES = 40
@@ -203,7 +205,18 @@ def _physical_table_geometry(
     horizontal: set[tuple[float, float, float]] = set()
     header_top = min(cell.bbox[1] for cell in header_cells)
     header_bottom = max(cell.bbox[3] for cell in header_cells)
-    for drawing in page.get_drawings():
+    # PyMuPDF exposes drawings only as one eagerly materialized native call. Check its
+    # exact returned boundaries before accumulating or interpreting any geometry.
+    drawings = page.get_drawings()
+    if len(drawings) > _MAX_DRAWINGS:
+        raise ValueError(_ERROR)
+    item_count = 0
+    for drawing in drawings:
+        items = drawing.get("items", ())
+        item_count += len(items)
+        if item_count > _MAX_DRAWING_ITEMS:
+            raise ValueError(_ERROR)
+    for drawing in drawings:
         for item in drawing.get("items", ()):
             edges: tuple[tuple[pymupdf.Point, pymupdf.Point], ...]
             if item[0] == "re":

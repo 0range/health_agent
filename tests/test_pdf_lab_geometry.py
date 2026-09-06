@@ -6,7 +6,11 @@ import pymupdf
 import pytest
 
 from health_agent.lab_extraction.registry import canonical_name, normalize_registered
-from health_agent.pdf_lab_geometry import extract_lab_geometry
+from health_agent.pdf_lab_geometry import (
+    _MAX_DRAWING_ITEMS,
+    _MAX_DRAWINGS,
+    extract_lab_geometry,
+)
 
 
 def gridded_pdf(*, headers=None, rows=None, column_major=True, merged_at=None):
@@ -191,6 +195,35 @@ def test_kdl_rejects_word_bbox_crossing_physical_column_boundary():
     pdf.close()
 
     assert extract_lab_geometry(source, 1).rows == ()
+
+
+def test_kdl_rejects_excess_drawing_paths_with_safe_error():
+    pdf = pymupdf.open(stream=word_pdf(), filetype="pdf")
+    page = pdf[0]
+    for index in range(_MAX_DRAWINGS + 1):
+        y = 160 + (index % 100) * 0.01
+        page.draw_line((580, y), (590, y))
+    source = pdf.tobytes()
+    pdf.close()
+
+    with pytest.raises(ValueError, match="^invalid_pdf_geometry$"):
+        extract_lab_geometry(source, 1)
+
+
+def test_kdl_rejects_excess_nested_drawing_items_with_safe_error():
+    pdf = pymupdf.open(stream=word_pdf(), filetype="pdf")
+    page = pdf[0]
+    shape = page.new_shape()
+    for index in range(_MAX_DRAWING_ITEMS + 1):
+        y = 160 + (index % 100) * 0.01
+        shape.draw_line((580, y), (590, y))
+    shape.finish()
+    shape.commit()
+    source = pdf.tobytes()
+    pdf.close()
+
+    with pytest.raises(ValueError, match="^invalid_pdf_geometry$"):
+        extract_lab_geometry(source, 1)
 
 
 @pytest.mark.parametrize(

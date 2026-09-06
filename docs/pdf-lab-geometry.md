@@ -17,5 +17,9 @@ unresolved. The extractor does not parse or
 infer dates, rewrite source fields, persist observations, or alter the input.
 
 The implementation has explicit byte, page, table, word, row, cell, and output
-bounds. Malformed PDFs and invalid requested pages use the single public error
-code `invalid_pdf_geometry`; unsupported valid pages return an empty result.
+bounds. Vector geometry is additionally capped at 512 drawing paths and 4,096
+nested drawing items. PyMuPDF's drawing API materializes its native result as one
+call; the returned collection is size-checked before Python geometry accumulation
+or interpretation. Malformed PDFs and invalid requested pages use the single
+public error code `invalid_pdf_geometry`; unsupported valid pages return an empty
+result.
