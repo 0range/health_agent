@@ -99,8 +99,6 @@ class CalendarService:
                 return CalendarResult(
                     eid, "deferred", safe_error="remote_ownership_mismatch"
                 )
-            if recovered:
-                return CalendarResult(eid, "unchanged", remote.get("htmlLink"))
             if event.cancelled:
                 if remote.get("status") == "cancelled":
                     return CalendarResult(eid, "unchanged")

@@ -139,6 +139,8 @@ def test_409_and_unknown_write_reconcile_same_owned_id(tmp_path: Path):
             super().__init__()
             self.status, self.recovered = status, recovered
             self.get_count = 0
+            if recovered is not None:
+                self.events[recovered["id"]] = recovered
 
         def get(self, calendar_id, eid):
             self.get_count += 1
@@ -155,6 +157,12 @@ def test_409_and_unknown_write_reconcile_same_owned_id(tmp_path: Path):
             profiles, tokens, FakeOAuth(), lambda _, gateway=gateway: gateway
         ).sync(item)
         assert result.status == "unchanged" and gateway.insert_count == 1
+    older = {**owned, "summary": "Older title"}
+    gateway = Recovery(409, older)
+    result = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway).sync(
+        item
+    )
+    assert result.status == "updated" and gateway.patch_count == 1
     gateway = Recovery(0, None)
     result = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway).sync(
         item

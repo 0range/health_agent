@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-import httplib2  # type: ignore[import-untyped]
+import httpx
 from google.oauth2.credentials import Credentials
-from google_auth_httplib2 import AuthorizedHttp  # type: ignore[import-untyped]
 
 BASE_URL = "https://www.googleapis.com/calendar/v3"
 
@@ -33,12 +31,11 @@ class GoogleCalendarGateway:
     def __init__(
         self, credentials: Credentials, timeout_seconds: int = 30, *, http=None
     ):
-        transport = http or httplib2.Http(timeout=timeout_seconds)
-        self.http = AuthorizedHttp(
-            credentials,
-            http=transport,
-            refresh_status_codes=(),
-            max_refresh_attempts=0,
+        if not isinstance(credentials.token, str) or not credentials.token:
+            raise CalendarAPIError(401)
+        self._authorization = f"Bearer {credentials.token}"
+        self._client = httpx.Client(
+            timeout=timeout_seconds, follow_redirects=False, transport=http
         )
 
     def _request(
@@ -49,21 +46,23 @@ class GoogleCalendarGateway:
         headers: dict[str, str] | None = None,
     ):
         try:
-            response, content = self.http.request(
+            response = self._client.request(
+                method,
                 url,
-                method=method,
-                body=None if body is None else json.dumps(body),
-                headers={"Content-Type": "application/json", **(headers or {})},
-                redirections=0,
+                json=body,
+                headers={"Authorization": self._authorization, **(headers or {})},
             )
-        except Exception as error:
+        except httpx.HTTPError as error:
             raise CalendarAPIError() from error
-        status = int(response.status)
+        status = response.status_code
         if status == 404:
             return None
         if status < 200 or status >= 300:
             raise CalendarAPIError(status)
-        value = json.loads(content or b"{}")
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise CalendarAPIError() from error
         if not isinstance(value, dict):
             raise CalendarAPIError()
         return value

@@ -116,3 +116,50 @@ def test_expired_refresh_is_bounded_and_persisted(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(Credentials, "refresh", refresh)
     assert service.stage(profile_id, interactive=False).token == "refreshed"
     assert tokens.load_verified(profile_id)["credentials"]["token"] == "refreshed"
+
+
+def test_fully_mocked_interactive_flow_verifies_and_publishes(
+    tmp_path: Path, monkeypatch
+):
+    profile_id = uuid4()
+    service, tokens = oauth(tmp_path, profile_id)
+    service.client_secrets = tmp_path / "client.json"
+    service.client_secrets.write_text("{}")
+    calls = {}
+
+    class Flow:
+        def run_local_server(self, **kwargs):
+            calls["server"] = kwargs
+            return credentials()
+
+    def from_file(path, scopes):
+        calls["path"], calls["scopes"] = path, scopes
+        return Flow()
+
+    class Identity:
+        def userinfo(self, url):
+            calls["userinfo"] = url
+            return {
+                "sub": "interactive-sub",
+                "email": "Me@Example.test",
+                "email_verified": True,
+            }
+
+    monkeypatch.setattr(
+        "health_agent.google_calendar.oauth.InstalledAppFlow.from_client_secrets_file",
+        from_file,
+    )
+    service.gateway_factory = lambda _: Identity()
+    service.authorize(profile_id, interactive=True, force=True)
+
+    assert calls["scopes"] == sorted(SCOPES)
+    assert calls["server"] == {
+        "host": "127.0.0.1",
+        "port": 0,
+        "timeout_seconds": 300,
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "false",
+    }
+    assert calls["userinfo"] == "https://openidconnect.googleapis.com/v1/userinfo"
+    assert tokens.load_verified(profile_id)["account_subject"] == "interactive-sub"

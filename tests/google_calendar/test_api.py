@@ -1,6 +1,4 @@
-import json
-from types import SimpleNamespace
-
+import httpx
 import pytest
 from google.oauth2.credentials import Credentials
 
@@ -11,21 +9,23 @@ def credentials():
     return Credentials(token="access")
 
 
-class Transport:
+class Transport(httpx.BaseTransport):
     def __init__(self, statuses):
         self.statuses = iter(statuses)
         self.calls = []
 
-    def request(self, uri, method="GET", body=None, headers=None, **kwargs):
-        self.calls.append((uri, method, body, headers, kwargs))
+    def handle_request(self, request):
+        self.calls.append(request)
         status = next(self.statuses)
+        if isinstance(status, Exception):
+            raise status
         payload = {
             "id": "event",
             "sub": "subject",
             "email": "a@b.test",
             "email_verified": True,
         }
-        return SimpleNamespace(status=status), json.dumps(payload).encode()
+        return httpx.Response(status, json=payload, request=request)
 
 
 def test_real_gateway_uses_encoded_path_no_redirects_notifications_and_if_match():
@@ -38,10 +38,10 @@ def test_real_gateway_uses_encoded_path_no_redirects_notifications_and_if_match(
         gateway.userinfo("https://openidconnect.googleapis.com/v1/userinfo")["sub"]
         == "subject"
     )
-    assert all(call[4]["redirections"] == 0 for call in transport.calls)
-    assert "/calendars/team%2Fa/events" in transport.calls[0][0]
-    assert "sendUpdates=none" in transport.calls[1][0]
-    assert transport.calls[2][3]["If-Match"] == '"etag"'
+    assert gateway._client.follow_redirects is False
+    assert "/calendars/team%2Fa/events" in str(transport.calls[0].url)
+    assert "sendUpdates=none" in str(transport.calls[1].url)
+    assert transport.calls[2].headers["If-Match"] == '"etag"'
 
 
 @pytest.mark.parametrize(
@@ -59,4 +59,16 @@ def test_gateway_errors_are_safe_and_never_retry_writes(status, code):
     with pytest.raises(CalendarAPIError) as caught:
         gateway.insert("primary", {"id": "private"})
     assert caught.value.safe_code == code
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["insert", "patch"])
+def test_ambiguous_write_transport_failure_has_one_attempt(operation):
+    transport = Transport([httpx.ReadError("ambiguous")])
+    gateway = GoogleCalendarGateway(credentials(), http=transport)
+    with pytest.raises(CalendarAPIError, match="google_unavailable"):
+        if operation == "insert":
+            gateway.insert("primary", {"id": "private"})
+        else:
+            gateway.patch("primary", "private", {"summary": "x"}, '"etag"')
     assert len(transport.calls) == 1
