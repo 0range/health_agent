@@ -152,6 +152,48 @@ def test_cloud_requires_profile_optin_and_waits_for_per_run_budget(
     assert worker.status(DEFAULT_PROFILE_ID).waiting_cloud == 2
 
 
+def test_yandex_consent_denial_preserves_local_and_reserves_no_cloud_call(
+    clean_database, tmp_path
+):
+    add_page(clean_database, "Glucose\n5.1 mmol/L")
+    settings = Settings(
+        _env_file=None,
+        ai_provider="yandex",
+        yandex_folder_id="synthetic-folder",
+        vault_root=tmp_path / "vault",
+        temporary_root=tmp_path / "tmp",
+    )
+    worker = LabExtractionService(clean_database, settings)
+    worker.configure(DEFAULT_PROFILE_ID, cloud=True)
+    result = worker.run(DEFAULT_PROFILE_ID)
+    assert result.cloud_requests == 0
+    assert worker.status(DEFAULT_PROFILE_ID).cloud_requests_today == 0
+    with session_scope(clean_database) as session:
+        job = session.scalars(select(LabExtractionJob)).one()
+        assert job.safe_error_code == "cloud_provider_consent_required"
+        assert job.local_completed is True
+
+
+def test_yandex_records_actual_model_and_extraction_method(clean_database, tmp_path):
+    add_page(clean_database, "Glucose\n5.1 mmol/L")
+    cloud = Cloud()
+    settings = Settings(
+        _env_file=None,
+        ai_provider="yandex",
+        yandex_folder_id="synthetic-folder",
+        yandex_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
+        vault_root=tmp_path / "vault",
+        temporary_root=tmp_path / "tmp",
+    )
+    worker = LabExtractionService(clean_database, settings, cloud_extractor=cloud)
+    worker.configure(DEFAULT_PROFILE_ID, cloud=True)
+    assert worker.run(DEFAULT_PROFILE_ID).cloud_requests == 1
+    with session_scope(clean_database) as session:
+        job = session.scalars(select(LabExtractionJob)).one()
+        assert job.model_name == "gpt://synthetic-folder/qwen3.6-35b-a3b"
+        assert job.extraction_method == "yandex_structured"
+
+
 def test_unknown_cloud_outcome_is_not_retried_on_restart(clean_database, tmp_path):
     document_id = add_page(clean_database, "Glucose\n5.1 mmol/L")
     cloud = Cloud(error=ExtractionError("cloud_outcome_unknown"))

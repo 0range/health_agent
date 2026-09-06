@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import Engine
 
+from health_agent.ai.yandex import YandexLabExtractor, yandex_model_uri
 from health_agent.config import Settings
 from health_agent.lab_extraction.local import read_page
 from health_agent.lab_extraction.openai import OpenAILabExtractor
@@ -54,7 +55,11 @@ class LabExtractionService:
     ) -> None:
         self.engine, self.settings = engine, settings
         self.queue = ExtractionQueue(engine)
-        self.cloud = cloud_extractor or OpenAILabExtractor(settings)
+        self.cloud = cloud_extractor or (
+            YandexLabExtractor(settings)
+            if settings.ai_provider == "yandex"
+            else OpenAILabExtractor(settings)
+        )
         self.clock = clock or (lambda: datetime.now(UTC))
         self.local = local_reader or (
             lambda snapshot, page, vault, temporary: read_page(
@@ -68,10 +73,14 @@ class LabExtractionService:
         *,
         enabled: bool = True,
         openai: bool = False,
+        cloud: bool | None = None,
         daily_budget: int = 20,
     ) -> None:
         self.queue.configure(
-            profile_id, enabled=enabled, openai=openai, daily_budget=daily_budget
+            profile_id,
+            enabled=enabled,
+            openai=openai if cloud is None else cloud,
+            daily_budget=daily_budget,
         )
 
     def status(self, profile_id: UUID) -> QueueStatus:
@@ -127,10 +136,20 @@ class LabExtractionService:
                         raise ExtractionError("no_page_text")
                     if len(source_text) > MAX_CLOUD_CHARACTERS:
                         raise ExtractionError("cloud_input_limit")
+                    if (
+                        self.settings.ai_provider == "yandex"
+                        and profile_id not in self.settings.yandex_allowed_profile_ids
+                    ):
+                        raise ExtractionError("cloud_provider_consent_required")
+                    selected_model = (
+                        yandex_model_uri(self.settings)
+                        if self.settings.ai_provider == "yandex"
+                        else self.settings.openai_model
+                    )
                     reserved = self.queue.reserve_cloud(
                         claim,
                         self.clock().astimezone(UTC).date(),
-                        self.settings.openai_model,
+                        selected_model,
                         allowed=cloud_available and requests < cloud_limit,
                     )
                     if not reserved:
@@ -138,7 +157,15 @@ class LabExtractionService:
                     requests += 1
                     candidates = self.cloud.extract(profile_id, source_text)
                     inserted += self.queue.publish(
-                        claim, source_text, candidates, cloud=True
+                        claim,
+                        source_text,
+                        candidates,
+                        cloud=True,
+                        cloud_method=(
+                            "yandex_structured"
+                            if self.settings.ai_provider == "yandex"
+                            else "openai_structured"
+                        ),
                     )
                 except ExtractionError as error:
                     self.queue.fail(claim, error.safe_code)

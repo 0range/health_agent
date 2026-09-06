@@ -137,36 +137,41 @@ class OpenAILabExtractor:
             raise ExtractionError(_status_error_code(error)) from None
         except Exception:  # noqa: BLE001 -- response/transport details are private
             raise ExtractionError("cloud_outcome_unknown") from None
-        if getattr(response, "status", None) != "completed":
+        return parse_lab_response(response, text)
+
+
+def parse_lab_response(response: Any, text: str) -> tuple[Candidate, ...]:
+    """Validate a completed Responses envelope using the shared lab contract."""
+    if getattr(response, "status", None) != "completed":
+        raise ExtractionError("cloud_incomplete")
+    envelope = getattr(response, "output", None)
+    if not isinstance(envelope, (list, tuple)) or not envelope:
+        raise ExtractionError("cloud_invalid_output")
+    segments: list[str] = []
+    for item in envelope:
+        if getattr(item, "type", None) != "message":
+            continue
+        if getattr(item, "status", None) != "completed":
             raise ExtractionError("cloud_incomplete")
-        envelope = getattr(response, "output", None)
-        if not isinstance(envelope, (list, tuple)) or not envelope:
+        contents = getattr(item, "content", None)
+        if not isinstance(contents, (list, tuple)) or not contents:
             raise ExtractionError("cloud_invalid_output")
-        segments: list[str] = []
-        for item in envelope:
-            if getattr(item, "type", None) != "message":
-                continue
-            if getattr(item, "status", None) != "completed":
-                raise ExtractionError("cloud_incomplete")
-            contents = getattr(item, "content", None)
-            if not isinstance(contents, (list, tuple)) or not contents:
+        for content in contents:
+            kind = getattr(content, "type", None)
+            if kind == "refusal":
+                raise ExtractionError("cloud_refused")
+            if kind != "output_text":
                 raise ExtractionError("cloud_invalid_output")
-            for content in contents:
-                kind = getattr(content, "type", None)
-                if kind == "refusal":
-                    raise ExtractionError("cloud_refused")
-                if kind != "output_text":
-                    raise ExtractionError("cloud_invalid_output")
-                segment = getattr(content, "text", None)
-                if not isinstance(segment, str):
-                    raise ExtractionError("cloud_invalid_output")
-                segments.append(segment)
-        if not segments:
-            raise ExtractionError("cloud_invalid_output")
-        output = "".join(segments)
-        if len(output) > 80_000:
-            raise ExtractionError("cloud_invalid_output")
-        try:
-            return validate_candidates(json.loads(output), text)
-        except (TypeError, ValueError):
-            raise ExtractionError("cloud_invalid_output") from None
+            segment = getattr(content, "text", None)
+            if not isinstance(segment, str):
+                raise ExtractionError("cloud_invalid_output")
+            segments.append(segment)
+    if not segments:
+        raise ExtractionError("cloud_invalid_output")
+    output = "".join(segments)
+    if len(output) > 80_000:
+        raise ExtractionError("cloud_invalid_output")
+    try:
+        return validate_candidates(json.loads(output), text)
+    except (TypeError, ValueError):
+        raise ExtractionError("cloud_invalid_output") from None

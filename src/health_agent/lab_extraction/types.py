@@ -38,6 +38,8 @@ SAFE_CODES = frozenset(
         "extraction_disabled",
         "cloud_budget_or_optin_required",
         "openai_not_configured",
+        "yandex_not_configured",
+        "cloud_provider_consent_required",
         "cloud_input_limit",
         "cloud_quota_exhausted",
         "cloud_rate_limited",

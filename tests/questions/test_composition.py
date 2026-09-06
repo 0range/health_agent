@@ -12,6 +12,7 @@ from uuid import UUID
 
 import pytest
 
+from health_agent.ai.yandex import YandexResponsesResponder
 from health_agent.config import Settings
 from health_agent.importer import ImportReport
 from health_agent.questions.composition import (
@@ -22,6 +23,7 @@ from health_agent.questions.composition import (
     ReadOnlyQuestionCommands,
     TelegramHealthQuestionService,
     TelegramMedicalInbox,
+    _build_responder,
     build_telegram_question_runtime,
 )
 from health_agent.questions.models import EvidenceSource
@@ -371,3 +373,10 @@ def _attachment(profile_id: UUID) -> AttachmentProvenance:
         duration_seconds=None,
         source_external_id="telegram:99:123:1:unique-id",
     )
+
+
+def test_composition_selects_yandex_without_loading_a_key():
+    responder = _build_responder(
+        Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="synthetic")
+    )
+    assert isinstance(responder, YandexResponsesResponder)
