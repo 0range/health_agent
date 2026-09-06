@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from secrets import token_urlsafe
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from health_agent.panel.models import (
     ConnectorCard,
@@ -23,8 +24,9 @@ from health_agent.panel.models import (
     ProfileSummary,
 )
 from health_agent.panel.service import PanelService, ProfileNotFoundError
+from health_agent.panel.workflows import WorkflowSnapshot
 
-MAX_FORM_BYTES = 4 * 1024
+MAX_FORM_BYTES = 16 * 1024
 DEFAULT_PANEL_PORT = 8766
 
 _SECURITY_HEADERS = {
@@ -142,6 +144,19 @@ class PanelApplication:
                 return self._html(
                     200, _render_home(self._service.list_profiles(), self._csrf_token)
                 )
+            medical_id = _profile_action_id_from_path(path, "medical")
+            if medical_id is not None:
+                try:
+                    workflow = self._service.workflow_snapshot(medical_id)
+                except ProfileNotFoundError:
+                    return self._not_found()
+                except RuntimeError:
+                    return self._html(
+                        503, _message_page("Медицинские планы временно недоступны.")
+                    )
+                return self._html(
+                    200, _render_medical(medical_id, workflow, self._csrf_token)
+                )
             profile_id = _profile_id_from_path(path)
             if profile_id is not None:
                 try:
@@ -171,6 +186,9 @@ class PanelApplication:
                 return self._method_not_allowed("GET")
             if path == "/profiles":
                 return self._create_profile(headers, body)
+            medical_id = _profile_action_id_from_path(path, "medical")
+            if medical_id is not None:
+                return self._medical_action(medical_id, headers, body)
             profile_id = _profile_action_id_from_path(path, "drive")
             if profile_id is not None:
                 return self._configure_drive(profile_id, headers, body)
@@ -188,6 +206,60 @@ class PanelApplication:
         if _profile_action_id_from_path(path, "drive-saved") is not None:
             return self._method_not_allowed("GET")
         return self._not_found()
+
+    def _medical_action(
+        self, profile_id: UUID, headers: Mapping[str, str], body: bytes
+    ) -> PanelResponse:
+        if len(body) > MAX_FORM_BYTES:
+            return self._html(413, _message_page("Слишком большой запрос."))
+        if not _same_origin(_header(headers, "origin"), self._origin):
+            return self._html(
+                403, _message_page("Запрос отклонён проверкой источника.")
+            )
+        try:
+            pairs = parse_qsl(
+                body.decode(),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=8,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return self._html(400, _message_page("Некорректная форма."))
+        if len(pairs) != len({name for name, _ in pairs}):
+            return self._html(400, _message_page("Некорректная форма."))
+        fields = dict(pairs)
+        if not compare_digest(fields.pop("csrf_token", ""), self._csrf_token):
+            return self._html(403, _message_page("Запрос отклонён защитой формы."))
+        allowed = {
+            "operation",
+            "action_id",
+            "title",
+            "when",
+            "code",
+            "text",
+            "repeat_unit",
+            "repeat_every",
+        }
+        if (
+            not set(fields) <= allowed
+            or "operation" not in fields
+            or "action_id" not in fields
+        ):
+            return self._html(400, _message_page("Некорректная форма."))
+        try:
+            notice = self._service.workflow_action(profile_id, fields)
+            snapshot = self._service.workflow_snapshot(profile_id)
+        except ProfileNotFoundError:
+            return self._not_found()
+        except (KeyError, TypeError, ValueError, OverflowError, LookupError):
+            return self._html(400, _message_page("Проверьте поля формы и повторите."))
+        except RuntimeError:
+            return self._html(
+                503, _message_page("Медицинские планы временно недоступны.")
+            )
+        return self._html(
+            200, _render_medical(profile_id, snapshot, self._csrf_token, notice)
+        )
 
     def _create_profile(self, headers: Mapping[str, str], body: bytes) -> PanelResponse:
         if len(body) > MAX_FORM_BYTES:
@@ -451,7 +523,7 @@ h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;margin:.4rem 0 1rem;letter
 .rollup{{background:#173d2c;color:#fff;border-radius:1.2rem;padding:1.25rem 1.4rem;margin:1.5rem 0}} .rollup strong{{font-size:1.15rem}} .rollup p{{margin:.3rem 0 0;color:#d8e9df}}
 .action{{font-weight:700}} details{{margin-top:1rem}} summary{{cursor:pointer;font-weight:700;min-height:44px;display:flex;align-items:center}} .technical-details{{border-top:1px solid #e1e8e3;padding-top:.25rem;color:#526057;font-size:.88rem;overflow-wrap:anywhere}} .technical-details p{{margin:.45rem 0}}
 .profile-details{{display:inline-block;color:#53665b}} .profile-details summary{{font-size:.9rem}} .destination{{padding:1rem}} .destination a{{display:flex;min-height:44px;align-items:center;font-weight:800}} .destination p{{margin:.35rem 0 0;color:#53665b}}
-.settings{{padding:0 1.15rem;margin-top:2rem}} .settings>summary{{font-size:1.05rem}} form{{border:0;box-shadow:none;padding:0 0 1.25rem}} label,input,textarea,button{{display:block;font:inherit}} input,textarea{{background:#fbfcfb;border:1px solid #9eada4;border-radius:.55rem;margin:.45rem 0 1rem;padding:.75rem;width:100%;max-width:44rem}} textarea{{min-height:8rem;resize:vertical}} button{{background:#176b45;border:0;border-radius:.55rem;color:#fff;cursor:pointer;font-weight:800;min-height:44px;padding:.65rem 1rem}} .notice{{background:#dcf5e6;border-radius:.7rem;padding:.85rem 1rem}} .notice.error{{background:#ffe1df}} .back{{display:inline-flex;min-height:44px;align-items:center}}
+.settings{{padding:0 1.15rem;margin-top:2rem}} .settings>summary{{font-size:1.05rem}} form{{border:0;box-shadow:none;padding:0 0 1.25rem}} label,input,textarea,select,button{{display:block;font:inherit}} input,textarea,select{{background:#fbfcfb;border:1px solid #9eada4;border-radius:.55rem;margin:.45rem 0 1rem;padding:.75rem;width:100%;max-width:44rem}} textarea{{min-height:8rem;resize:vertical}} button{{background:#176b45;border:0;border-radius:.55rem;color:#fff;cursor:pointer;font-weight:800;min-height:44px;padding:.65rem 1rem}} .notice{{background:#dcf5e6;border-radius:.7rem;padding:.85rem 1rem}} .notice.error{{background:#ffe1df}} .back{{display:inline-flex;min-height:44px;align-items:center}}
 @media (max-width:560px){{main{{padding:1.35rem .9rem 3rem}} .card-head{{display:block}} .status-pill{{margin-top:.65rem}} .rollup{{border-radius:.9rem}}}}
 </style></head><body><main>{content}</main></body></html>"""
 
@@ -523,12 +595,101 @@ def _render_profile(
 <details class="profile-details"><summary>Техническая информация профиля</summary><p>ID профиля: {panel.profile.id}</p></details>
 {notice_html}<div class="rollup" role="status"><strong>{rollup_title}</strong><p>{rollup_detail}</p></div>
 <section aria-labelledby="system-status"><h2 id="system-status">Состояние системы</h2><div class="cards">{cards}</div></section>
-<section aria-labelledby="destinations"><h2 id="destinations">Открыть</h2><div class="destinations">{destinations}</div></section>
+<section aria-labelledby="destinations"><h2 id="destinations">Открыть</h2><p><a href="/profiles/{panel.profile.id}/medical">Визиты и напоминания →</a></p><div class="destinations">{destinations}</div></section>
 <details class="settings"><summary>Настройки Google Drive</summary><form method="post" action="/profiles/{panel.profile.id}/drive"><h2>Настроить Google Drive</h2>
 <p class="muted">Одна или несколько папок, по одной ссылке или ID на строке. Сохранение заменит текущий список.</p>
 <label for="drive-folders">Ссылки на папки</label><textarea id="drive-folders" name="folders" required maxlength="3000" autocomplete="off" spellcheck="false">{escape(folders)}</textarea>
 <input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}"><button type="submit">Сохранить папки</button></form></details>"""
     return _page(f"Health Agent — {panel.profile.name}", content)
+
+
+def _workflow_form(
+    profile_id: UUID, csrf: str, operation: str, controls: str, label: str
+) -> str:
+    return f'<form method="post" action="/profiles/{profile_id}/medical"><input type="hidden" name="csrf_token" value="{escape(csrf, quote=True)}"><input type="hidden" name="operation" value="{operation}"><input type="hidden" name="action_id" value="{token_urlsafe(24)}">{controls}<button type="submit">{escape(label)}</button></form>'
+
+
+def _render_medical(
+    profile_id: UUID, snapshot: WorkflowSnapshot, csrf: str, notice: str | None = None
+) -> str:
+    note_map = dict(snapshot.notes)
+    visits = (
+        "".join(
+            f'<article class="card"><h3>{escape(visit.title)}</h3><p>{escape(visit.public_code)} · {escape(visit.status)} · {visit.starts_at.astimezone(ZoneInfo(visit.timezone_name)):%Y-%m-%d %H:%M}</p>'
+            + "".join(
+                f"<p>{'Вопрос' if note.kind == 'question' else 'Ответ'}: {escape(note.text)}</p>"
+                for note in note_map.get(visit.public_code, ())
+            )
+            + "</article>"
+            for visit in snapshot.visits
+        )
+        or '<p class="muted">Визитов пока нет.</p>'
+    )
+    reminders = (
+        "".join(
+            f'<article class="card"><h3>{escape(item.title)}</h3><p>{escape(item.public_code)} · {escape(item.status.value)} · {item.due_at.astimezone(ZoneInfo(item.timezone_name)):%Y-%m-%d %H:%M}</p></article>'
+            for item in snapshot.reminders
+        )
+        or '<p class="muted">Активных напоминаний пока нет.</p>'
+    )
+    visit_options = "".join(
+        f'<option value="{escape(visit.public_code, quote=True)}">{escape(visit.title)} — {escape(visit.public_code)}</option>'
+        for visit in snapshot.visits
+    )
+    visit_code = (
+        f'<label>Визит</label><select name="code" required>{visit_options}</select>'
+    )
+    reminder_options = "".join(
+        f'<option value="{escape(item.public_code, quote=True)}">{escape(item.title)} — {escape(item.public_code)}</option>'
+        for item in snapshot.reminders
+    )
+    reminder_code = f'<label>Напоминание</label><select name="code" required>{reminder_options}</select>'
+    text = '<label>Текст</label><textarea name="text" required maxlength="10000"></textarea>'
+    forms = "".join(
+        (
+            _workflow_form(
+                profile_id,
+                csrf,
+                "visit_create",
+                '<label>Название визита</label><input name="title" required maxlength="200"><label>Дата и время</label><input name="when" type="datetime-local" required>',
+                "Создать визит",
+            ),
+            _workflow_form(
+                profile_id, csrf, "visit_question", visit_code + text, "Добавить вопрос"
+            ),
+            _workflow_form(
+                profile_id, csrf, "visit_answer", visit_code + text, "Добавить ответ"
+            ),
+            *(
+                _workflow_form(profile_id, csrf, op, visit_code, label)
+                for op, label in (
+                    ("visit_prepare", "Подготовить"),
+                    ("visit_done", "Завершить визит"),
+                    ("visit_cancel", "Отменить визит"),
+                )
+            ),
+            _workflow_form(
+                profile_id,
+                csrf,
+                "reminder_create",
+                '<label>Название напоминания</label><input name="title" required maxlength="500"><label>Дата и время</label><input name="when" type="datetime-local" required><label>Повтор</label><select name="repeat_unit"><option value="">Не повторять</option><option value="days">Дни</option><option value="months">Месяцы</option></select><label>Интервал</label><input name="repeat_every" type="number" min="1" max="3650">',
+                "Создать напоминание",
+            ),
+            *(
+                _workflow_form(profile_id, csrf, op, reminder_code, label)
+                for op, label in (
+                    ("reminder_confirm", "Подтвердить"),
+                    ("reminder_done", "Выполнено"),
+                    ("reminder_cancel", "Отменить напоминание"),
+                )
+            ),
+        )
+    )
+    notice_html = f'<p class="notice">{escape(notice)}</p>' if notice else ""
+    return _page(
+        "Визиты и напоминания",
+        f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Все даты вводятся в часовом поясе Europe/Moscow. События сохраняются локально; Calendar автоматически не публикуется.</p>{notice_html}<h2>Визиты (до 20)</h2>{visits}<h2>Напоминания (до 20)</h2>{reminders}<h2>Действия</h2>{forms}',
+    )
 
 
 def _render_card(card: ConnectorCard, profile_id: UUID, index: int) -> str:
@@ -603,7 +764,10 @@ def _render_healthcheck_profile(panel: ProfilePanel, coverage: DataCoverage) -> 
         for index, card in enumerate(
             sorted(
                 panel.connectors,
-                key=lambda card: (_CONNECTOR_ORDER.get(card.connector, 999), card.connector),
+                key=lambda card: (
+                    _CONNECTOR_ORDER.get(card.connector, 999),
+                    card.connector,
+                ),
             )
         )
     )
@@ -617,7 +781,7 @@ def _render_healthcheck_profile(panel: ProfilePanel, coverage: DataCoverage) -> 
         data = (
             '<article class="card" data-state="action_required"><div class="card-head">'
             '<h3>Покрытие данных</h3><span class="status-pill">Нет данных</span></div>'
-            '<p>Для профиля пока нет сохранённых данных.</p>'
+            "<p>Для профиля пока нет сохранённых данных.</p>"
             '<p class="action">Подключите источник и запустите первую синхронизацию.</p></article>'
         )
     else:
@@ -656,8 +820,7 @@ def _human_action(card: ConnectorCard) -> str:
     status_allows_error_remediation = card.status in {"ready", "configured"}
     if status_allows_error_remediation and card.error_code == "rate_limited":
         return (
-            "Подождите следующей автоматической попытки; "
-            "переподключение не требуется."
+            "Подождите следующей автоматической попытки; переподключение не требуется."
         )
     if (
         status_allows_error_remediation

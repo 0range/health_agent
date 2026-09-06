@@ -60,6 +60,7 @@ from health_agent.telegram.types import (
     TelegramState,
 )
 from health_agent.vault import FileVault
+from health_agent.visits.telegram import DatabaseVisitCommands
 
 QUESTION_STATUS_UNAVAILABLE = "Сейчас не удалось получить состояние данных о здоровье."
 SYNC_INSTRUCTIONS = "Синхронизация не запускается из Telegram."
@@ -403,13 +404,16 @@ def build_telegram_question_runtime(
     state.register_bot(credential.bot_id, credential.username)
     gateway = gateway_factory(credential.token)
     application = question_application_factory(settings)
-    engine = engine_factory(settings)
     reply_store = PrivateReplyStore(settings.telegram_root / "prepared-replies")
     question_service = TelegramHealthQuestionService(application, reply_store)
     engine = engine_factory(settings)
     text_actions = PreparedTelegramTextActions(
         CompositeTelegramTextActions(
-            (TelegramReviewActions(engine), DatabaseReminderCommands(engine))
+            (
+                TelegramReviewActions(engine),
+                DatabaseVisitCommands(engine),
+                DatabaseReminderCommands(engine),
+            )
         ),
         reply_store,
     )
@@ -438,7 +442,9 @@ def build_telegram_question_runtime(
     )
 
 
-def _build_responder(settings: Settings) -> OpenAIResponsesResponder | YandexResponsesResponder:
+def _build_responder(
+    settings: Settings,
+) -> OpenAIResponsesResponder | YandexResponsesResponder:
     """Validate the exact local responder configuration used by ``ask``."""
 
     if settings.ai_provider == "yandex":

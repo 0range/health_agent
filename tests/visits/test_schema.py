@@ -19,7 +19,7 @@ def test_metadata_and_empty_migration_roundtrip(clean_database):
         config.attributes["connection"] = connection
         command.downgrade(config, "0008_lab_extraction")
         assert "health_visits" not in inspect(connection).get_table_names()
-        command.upgrade(config, "0010_doctor_visits")
+        command.upgrade(config, "0011_medical_workflows")
         assert (
             compare_metadata(MigrationContext.configure(connection), Base.metadata)
             == []
