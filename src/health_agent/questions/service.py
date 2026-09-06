@@ -28,6 +28,12 @@ INSUFFICIENT_EVIDENCE_TEXT = (
 )
 
 _BRACKETED_TOKEN = re.compile(r"\[[^\[\]\r\n]*\]")
+_DOCUMENT_REPORT_REFERENCE = re.compile(
+    r"document:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})#page=([1-9][0-9]*)"
+)
+_VISIT_REPORT_REFERENCE = re.compile(
+    r"visit:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})#note=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
 MAX_RENDERED_REFERENCES = 6
 MAX_RENDERED_LIMITATIONS = 3
 MAX_RENDERED_METRIC_CHARACTERS = 160
@@ -275,7 +281,25 @@ def _render_report(item: SourceReport) -> str:
         if item.medical_date is not None
         else f"дата локального архива {item.recorded_at.isoformat()}"
     )
-    return f"- {item.citation_label} {kind}; {when}; {_display_bound(item.text, 160)}"
+    source_reference = _safe_report_reference(item)
+    source = f"; источник {source_reference}" if source_reference is not None else ""
+    return (
+        f"- {item.citation_label} {kind}; {when}{source}; "
+        f"{_display_bound(item.text, 160)}"
+    )
+
+
+def _safe_report_reference(item: SourceReport) -> str | None:
+    pattern = (
+        _DOCUMENT_REPORT_REFERENCE
+        if item.kind == "document_excerpt"
+        else _VISIT_REPORT_REFERENCE
+        if item.kind == "visit_answer"
+        else None
+    )
+    if pattern is None or pattern.fullmatch(item.source_reference) is None:
+        return None
+    return item.source_reference
 
 
 def _display_bound(value: str, maximum: int) -> str:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 import pytest
@@ -19,6 +19,7 @@ from health_agent.questions.models import (
     EvidenceSource,
     HealthQuestionContext,
     QuestionIntent,
+    SourceReport,
 )
 from health_agent.questions.service import (
     INSUFFICIENT_EVIDENCE_TEXT,
@@ -327,11 +328,61 @@ def test_blank_question_is_rejected_before_context_or_remote_work() -> None:
     assert responder.calls == []
 
 
+def test_report_footer_has_closed_source_identity_and_excludes_beyond_cap() -> None:
+    document_id = UUID("10000000-0000-4000-8000-000000000001")
+    visit_id = UUID("20000000-0000-4000-8000-000000000002")
+    note_id = UUID("30000000-0000-4000-8000-000000000003")
+    reports = (
+        SourceReport(
+            "[DOC1]",
+            "document_excerpt",
+            "Synthetic conclusion",
+            f"document:{document_id}#page=7",
+            date(2026, 9, 1),
+            NOW,
+        ),
+        SourceReport(
+            "[VISIT1]",
+            "visit_answer",
+            "Synthetic saved answer",
+            f"visit:{visit_id}#note={note_id}",
+            None,
+            NOW,
+        ),
+        *tuple(
+            SourceReport(
+                f"[DOC{index}]",
+                "document_excerpt",
+                "Beyond selected cap",
+                f"document:{UUID(int=index)}#page=1",
+                None,
+                NOW,
+            )
+            for index in range(2, 11)
+        ),
+    )
+    context = _context(evidence=(), reports=reports)
+
+    result = HealthQuestionApplicationService(
+        FakeContextBuilder(context),
+        FakeResponder("Recorded wording [DOC1] [VISIT1]."),
+    ).answer(PROFILE_ID, "What was reported?")
+    rejected = HealthQuestionApplicationService(
+        FakeContextBuilder(context), FakeResponder("Not selected [DOC10].")
+    ).answer(PROFILE_ID, "What was reported?")
+
+    assert f"источник document:{document_id}#page=7" in result.text
+    assert f"источник visit:{visit_id}#note={note_id}" in result.text
+    assert "Beyond selected cap" not in result.text
+    assert rejected.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+
+
 def _context(
     *,
     evidence: tuple[EvidenceItem, ...] | None = None,
     limitations: tuple[ContextLimitation, ...] = (),
     intent: QuestionIntent = QuestionIntent.GENERAL,
+    reports: tuple[SourceReport, ...] = (),
 ) -> HealthQuestionContext:
     return HealthQuestionContext(
         profile_id=PROFILE_ID,
@@ -352,6 +403,7 @@ def _context(
         ),
         source_counts={EvidenceSource.LAB: 1},
         limitations=limitations,
+        reports=reports,
     )
 
 
