@@ -67,7 +67,7 @@ class DatabaseWorkflowAdapter:
             return publication_notice(self._publication.publish(profile_id, fields["code"])) or "Calendar: без изменений."
         with self._sessions() as session:
             notice = _apply(session, profile_id, operation, fields, key)
-        if self._publication is not None and operation in {"visit_question", "visit_answer", "visit_done", "visit_cancel", "visit_move"}:
+        if self._publication is not None and operation in {"visit_question", "visit_answer", "visit_done", "visit_cancel", "visit_move", "visit_prepare"}:
             from health_agent.google_calendar.publication import publication_notice
             try:
                 notice += " " + publication_notice(self._publication.sync_visit(profile_id, fields["code"]))

@@ -116,6 +116,7 @@ def prepare(profile_id: ProfileOption, code: str) -> None:
     with _session() as session:
         output = render_brief(prepare_visit(session, profile_id, code))
     typer.echo(output)
+    _sync_calendar(profile_id, code)
 
 
 @app.command("note")

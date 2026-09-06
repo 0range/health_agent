@@ -27,6 +27,8 @@ from health_agent.panel.service import PanelService, SqlAlchemyProfileRepository
 from health_agent.panel.workflows import DatabaseWorkflowAdapter
 from health_agent.staging import StagingConfigurationError, StagingEnvironment
 from health_agent.telegram.types import MessageContext
+from health_agent.visits import cli as visit_cli
+from health_agent.visits.preparation import GENERAL_QUESTIONS
 from health_agent.visits.repository import VisitRepository
 from health_agent.visits.telegram import DatabaseVisitCommands
 
@@ -275,3 +277,70 @@ def test_staging_isolates_all_settings_paths_and_inline_secrets(monkeypatch):
     )
     with pytest.raises(StagingConfigurationError):
         poisoned.validate()
+
+
+@pytest.mark.parametrize("entrypoint", ["telegram", "panel", "cli"])
+@pytest.mark.parametrize("missing_auth", [False, True])
+def test_preparation_syncs_committed_questions_from_every_entrypoint(
+    clean_database,
+    disposable_postgres,
+    tmp_path,
+    monkeypatch,
+    entrypoint,
+    missing_auth,
+):
+    visit = create_visit(clean_database)
+    service, fake = publication(clean_database, tmp_path)
+    assert service.publish(OWNER, visit.public_code).status == "published"
+    assert len(fake.calls) == 1
+
+    def callback(event):
+        with session_scope(clean_database) as session:
+            notes = VisitRepository(session).notes(OWNER, visit.public_code)
+            assert {note.text for note in notes} == set(GENERAL_QUESTIONS)
+        assert set(event.questions) == set(GENERAL_QUESTIONS)
+        return CalendarResult(
+            "stable",
+            "deferred" if missing_auth else "updated",
+            safe_error="authorization_missing" if missing_auth else None,
+        )
+
+    fake.callback = callback
+    if entrypoint == "telegram":
+        commands = DatabaseVisitCommands(clean_database, service)
+        output = commands.handle(context(), f"/visit_prepare {visit.public_code}")
+        commands.handle(context(2), f"/visit {visit.public_code}")
+    elif entrypoint == "panel":
+        adapter = DatabaseWorkflowAdapter(
+            lambda: session_scope(clean_database), service
+        )
+        output = adapter.action(
+            OWNER,
+            {
+                "operation": "visit_prepare",
+                "action_id": "prepare",
+                "code": visit.public_code,
+            },
+        )
+        adapter.snapshot(OWNER)  # GET's read path must not retry queued publication.
+    else:
+        monkeypatch.setattr(visit_cli, "Settings", lambda: disposable_postgres.settings)
+        monkeypatch.setattr(
+            composition, "build_publication_service", lambda _settings, _engine: service
+        )
+        result = CliRunner().invoke(
+            visit_cli.app, ["prepare", "--profile-id", str(OWNER), visit.public_code]
+        )
+        assert result.exit_code == 0
+        output = result.output
+        shown = CliRunner().invoke(
+            visit_cli.app, ["show", "--profile-id", str(OWNER), visit.public_code]
+        )
+        assert shown.exit_code == 0
+    assert len(fake.calls) == 2
+    with session_scope(clean_database) as session:
+        assert len(VisitRepository(session).notes(OWNER, visit.public_code)) == 5
+    assert service.snapshot(OWNER, visit.public_code).status == (
+        "queued" if missing_auth else "published"
+    )
+    assert ("очереди" if missing_auth else "подтверждены") in output

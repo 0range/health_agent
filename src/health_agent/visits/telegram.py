@@ -66,7 +66,7 @@ class DatabaseVisitCommands:
                 return "Calendar недоступен; локальный визит сохранён. Повторите публикацию."
         response = self._handle_local(context, text)
         if (self._publication is not None and name in {
-            "/visit_question", "/visit_answer", "/visit_move", "/visit_done", "/visit_cancel"
+            "/visit_question", "/visit_answer", "/visit_move", "/visit_done", "/visit_cancel", "/visit_prepare"
         } and response is not None and response not in {
             self.usage_text, self.unavailable_text,
             "Не удалось сохранить или прочитать визит. Попробуйте позже."
