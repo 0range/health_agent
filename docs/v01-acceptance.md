@@ -20,8 +20,9 @@ and Requests calls are forbidden, including attempted calls caught inside a serv
 2. **Health question → attributed answer.** The shared
    `HealthQuestionApplicationService` receives a verified lab and a separately
    labelled excerpt from an imported clinical-report PDF. The fake responder uses
-   those supplied labels; the final answer retains source footers and its explicit
-   non-diagnostic/no-prescribed-interval wording. Unknown labels and uncited output
+   those supplied labels; the service validates them before removing labels and the
+   default source footer from display, while retaining explicit non-diagnostic and
+   no-prescribed-interval wording. Unknown labels and uncited output
    each fail closed. A source-free question never invokes the fake responder and
    never invents a lab. The JSON input keeps `reported_material` distinct from
    verified evidence.

@@ -27,11 +27,12 @@ uv run health-agent question status --profile-id PROFILE_UUID
 not all verified archive rows or the separate snapshot/reports. Thus `lab=0` can
 coexist with dated historical labs available to an answer through the snapshot.
 
-Accepted answers have a deterministic `Источники:` footer for cited material.
-Labels such as `[LAB1]`, `[SLEEP1]`, `[SNAP1]`, `[DOC1]` and `[VISIT1]` refer only
-to the selected observations, snapshot signals or attributed reports. Unknown
-labels and uncited generated answers fail closed. Missing or insufficient evidence
-produces an explicit limitation, not invented measurements. Obvious urgent
+The service validates internal labels such as `[LAB1]`, `[SLEEP1]`, `[SNAP1]`,
+`[DOC1]` and `[VISIT1]` against the selected evidence, then removes them from the
+normal user-facing answer. It does not append a source list by default; the answer
+keeps useful dates and values inline. Unknown labels and uncited generated answers
+fail closed. Missing or insufficient evidence produces a compact meaningful
+limitation, not invented measurements. Obvious urgent
 symptoms receive immediate local emergency guidance before any provider request.
 
 ## Telegram
@@ -54,7 +55,7 @@ storage details.
 
 Prepared question and explicit medical-command replies are temporarily spooled under
 `TELEGRAM_ROOT/prepared-replies` before delivery. Files contain the final reply
-(including its Sources footer or displayed review candidate) and an opaque authentication-scope hash, never a
+(including any displayed review candidate) and an opaque authentication-scope hash, never a
 question, raw retrieval context, credentials, or dialogue history. The directory
 is `0700`, files are regular `0600` files, names hash the bot/update identity,
 and each reply is limited to 128 KiB. Atomic publication preserves the original
@@ -90,8 +91,9 @@ for sleep/recovery and 90 days for explicit weight-change questions, capped at
 10 items per source. Both temporal bounds are inclusive: labs use their collected/issued
 calendar date, while WHOOP uses observation time (body snapshots use sync-as-of
 time). Old and future body records are excluded from this windowed list. The exact
-UTC interval, source cap and time semantics are passed to the model; the footer
-shows cited facts/dates and applicable limitations. Requesting a longer period
+UTC interval, source cap and time semantics are passed to the model. Internal
+citations are validated before removal from normal display; relevant facts, dates
+and compact inference-blocking limitations remain inline. Requesting a longer period
 does not expand these windows. A body snapshot cannot establish weight change.
 Mixed sleep/weight-change questions can answer supported sleep findings while
 retaining that limitation.
