@@ -26,6 +26,7 @@ from health_agent.questions.service import (
     QUESTION_UNAVAILABLE_TEXT,
     HealthQuestionApplicationService,
     QuestionAnswerErrorCode,
+    render_source_footer,
 )
 
 PROFILE_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -375,6 +376,64 @@ def test_report_footer_has_closed_source_identity_and_excludes_beyond_cap() -> N
     assert f"источник visit:{visit_id}#note={note_id}" in result.text
     assert "Beyond selected cap" not in result.text
     assert rejected.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+
+
+def test_mixed_footer_prioritizes_all_five_cited_document_locators() -> None:
+    reports = tuple(_source_report(index) for index in range(1, 6))
+    evidence = tuple(
+        EvidenceItem(
+            f"[WHOOP{index}]",
+            EvidenceSource.WORKOUT,
+            NOW,
+            f"Telemetry {index}",
+            str(index),
+        )
+        for index in range(1, 16)
+    )
+    context = _context(evidence=evidence, reports=reports)
+    cited = {item.citation_label for item in (*reports, *evidence)}
+
+    footer = render_source_footer(context, cited)
+
+    assert all(report.source_reference in footer for report in reports)
+    assert footer.count("document:") == 5
+    assert "Ещё 14 процитированных источников" in footer
+
+
+def test_ten_cited_reports_use_compact_tail_without_duplicate_text() -> None:
+    reports = tuple(_source_report(index) for index in range(1, 11))
+    context = _context(evidence=(), reports=reports)
+    cited = {item.citation_label for item in reports}
+
+    footer = render_source_footer(context, cited)
+
+    assert footer.count("document:") == 10
+    assert footer.count("Clinical text") == 6
+    assert "Clinical text 7" not in footer
+
+
+def test_invalid_report_locator_is_not_rendered() -> None:
+    invalid = SourceReport(
+        "[DOC1]",
+        "document_excerpt",
+        "Invalid locator text",
+        "https://example.invalid/private.pdf",
+        None,
+        NOW,
+    )
+    footer = render_source_footer(_context(evidence=(), reports=(invalid,)), {"[DOC1]"})
+    assert "example.invalid" not in footer
+
+
+def _source_report(index: int) -> SourceReport:
+    return SourceReport(
+        f"[DOC{index}]",
+        "document_excerpt",
+        f"Clinical text {index}",
+        f"document:{UUID(int=index)}#page={index}",
+        None,
+        NOW,
+    )
 
 
 def _context(
