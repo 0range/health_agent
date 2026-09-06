@@ -76,16 +76,21 @@ def _parse_date(raw: str, today: date) -> date | None:
     return value if value <= today else None
 
 
-def _page_evidence(page_number: int, text: str, today: date) -> list[DateEvidence]:
+def _page_evidence(
+    page_number: int, text: str, today: date
+) -> tuple[list[DateEvidence], set[DateRole]]:
     evidence: list[DateEvidence] = []
+    invalid_roles: set[DateRole] = set()
     occupied: set[tuple[DateRole, int, int]] = set()
     for role, pattern in _SAME_LINE.items():
         for match in pattern.finditer(text):
             start, end = match.span("date")
             value = _parse_date(match.group("date"), today)
-            if value is not None:
-                evidence.append(DateEvidence(role, value, page_number, start, end))
-                occupied.add((role, start, end))
+            if value is None:
+                invalid_roles.add(role)
+                continue
+            evidence.append(DateEvidence(role, value, page_number, start, end))
+            occupied.add((role, start, end))
 
     lines = text.splitlines(keepends=True)
     offset = 0
@@ -101,13 +106,14 @@ def _page_evidence(page_number: int, text: str, today: date) -> list[DateEvidenc
                 continue
             value = _parse_date(date_match.group("date"), today)
             if value is None:
+                invalid_roles.add(role)
                 continue
             start = offset + len(raw_line) + date_match.start("date")
             end = offset + len(raw_line) + date_match.end("date")
             if (role, start, end) not in occupied:
                 evidence.append(DateEvidence(role, value, page_number, start, end))
         offset += len(raw_line)
-    return evidence
+    return evidence, invalid_roles
 
 
 def infer_medical_dates(
@@ -115,16 +121,21 @@ def infer_medical_dates(
 ) -> MedicalDates:
     """Infer only explicitly labelled, unambiguous dates from individual pages."""
     cutoff = today or datetime.now(UTC).date()
-    evidence = tuple(
-        item
-        for page_number, text in pages
-        for item in _page_evidence(page_number, str(text), cutoff)
-    )
+    evidence_items: list[DateEvidence] = []
+    invalid_roles: set[DateRole] = set()
+    for page_number, text in pages:
+        page_items, page_invalid_roles = _page_evidence(
+            page_number, str(text), cutoff
+        )
+        evidence_items.extend(page_items)
+        invalid_roles.update(page_invalid_roles)
+    evidence = tuple(evidence_items)
     values = {
         role: {item.value for item in evidence if item.role == role}
         for role in ("collected", "issued")
     }
-    blocked = {role for role, found in values.items() if len(found) > 1}
+    blocked: set[str] = set(invalid_roles)
+    blocked.update(role for role, found in values.items() if len(found) > 1)
     resolved = {
         role: next(iter(found)) if len(found) == 1 and role not in blocked else None
         for role, found in values.items()

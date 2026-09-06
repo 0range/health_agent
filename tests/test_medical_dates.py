@@ -99,6 +99,19 @@ def test_future_duplicate_conflict_chronology_and_page_boundary() -> None:
     assert split.issued_date is None
 
 
+@pytest.mark.parametrize("unsafe", ["29.02.2025", "07.09.2026"])
+def test_invalid_or_future_evidence_blocks_role_with_valid_evidence(
+    unsafe: str,
+) -> None:
+    found = infer_medical_dates(
+        [(1, "Issue date: 02.01.2000"), (2, f"Report date: {unsafe}")],
+        today=date(2026, 9, 6),
+    )
+    assert found.issued_date is None
+    assert found.blocked_roles == frozenset({"issued"})
+    assert [item.value for item in found.evidence] == [date(2000, 1, 2)]
+
+
 def _document(profile_id, suffix: str, *, collected=None, issued=None, error=None):
     return Document(
         id=uuid4(),
@@ -156,6 +169,33 @@ def test_recovery_is_scoped_dry_run_null_only_and_idempotent(session) -> None:
         "changed": 0,
         "blocked": 1,
     }
+
+
+def test_recovery_does_not_write_a_role_with_invalid_evidence(session) -> None:
+    profile_id = uuid4()
+    session.add(Profile(id=profile_id, name="Local"))
+    document = _document(profile_id, "e")
+    session.add(document)
+    session.flush()
+    session.add(
+        DocumentPage(
+            document_id=document.id,
+            page_number=1,
+            extracted_text=(
+                "Collection date: 01.01.2000\n"
+                "Issue date: 02.01.2000\n"
+                "Report date: 29.02.2025"
+            ),
+            extraction_method="text",
+        )
+    )
+    session.flush()
+
+    result = recover_document_dates(session, profile_id=profile_id, apply=True)
+
+    assert result == {"scanned": 1, "eligible": 1, "changed": 1, "blocked": 1}
+    assert document.collected_date == date(2000, 1, 1)
+    assert document.issued_date is None
 
 
 @pytest.mark.parametrize("limit", [0, 501])
