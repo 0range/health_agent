@@ -18,6 +18,10 @@ The user selected Yandex AI Studio on 2026-09-06 after discussing local Ollama a
 
 Synthetic adapter and composition tests prove selection, separate credentials, profile denial before network, bounded stateless requests, structured-output validation, redacted errors and unchanged OpenAI behavior. A separate synthetic live smoke test requires the user's Yandex folder/key and working billing; it does not establish medical answer quality. Production activation requires that smoke test and consent.
 
+## Live-driven correction (2026-09-06)
+
+The user requested comparison of other Yandex models and document OCR. Real synthetic tests found that the Responses path returned wrong lab fields/incomplete outputs with Qwen and GPT-OSS. Qwen's native Chat Completions path with `reasoning_effort='none'`, `temperature=0`, raw source in its own untrusted user message, strict JSON schema and `store=False` passed simple/table/multiline/qualified lab rows; factual QA cited evidence and identified absent sleep data. Chat rejects `safety_identifier` with HTTP400, while the same request without that field succeeds. Therefore Yandex alone moves to Chat Completions; OpenAI remains unchanged. Existing profile consent/isolation, input limits, source validator and cloud budget remain mandatory. No automatic fallback or weaker evidence validation. The public adapter class name may remain for backwards compatibility, with its transport documented accurately.
+
 ## Sources checked 2026-09-06
 
 - Official model URI: https://yandex.cloud/en/blog/digest-april-2026

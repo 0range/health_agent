@@ -48,3 +48,29 @@ def test_yandex_requires_explicit_profile_consent():
 - [ ] **Step 4: Cover authorized calls and failures.** Test exact endpoint/project/headers with a patched SDK constructor, key separation, malformed config rejection, authorized vs second-profile denial, output token bound, store flag, absent reasoning, no tools; valid lab JSON with evidence substring accepted, forged evidence/malformed output/refusal/incomplete rejected; timeout/401/429 safe and no retries; actual model and extraction tag recorded by service/queue; CLI legacy and neutral opt-in. Keep OpenAI test behavior unchanged.
 - [ ] **Step 5: Document short setup and synthetic probe.** `docs/yandex-ai.md` starts with TL;DR and exact env fields. Explain separate folder/service-account API key and billing prerequisites, no tokens in chat/git, no real profile allowlist before consent, health scenarios still blocked until synthetic live test and real data acceptance. Link the official sources from the spec. Include a small synthetic-only Python example using a one-off Settings object with UUID(int=1) allowed and no database, then call lab extractor on invented Glucose text; print only success/count, never provider exception. Do not run it.
 - [ ] **Step 6: Verify and commit.** Focused tests first, then `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`, `git diff --check`. Report inherited warnings separately. Stage only owned files and commit. No production settings, API calls, migrations, token files or broad cleanup.
+
+### Task 2: Native Chat Completions compatibility after real synthetic probes
+
+**Files:** modify only `src/health_agent/ai/yandex.py`, `tests/ai/test_yandex.py`, `docs/yandex-ai.md`; adapt Yandex-specific factory tests if necessary. Existing service/queue/consent interfaces and OpenAI remain unchanged.
+
+**Interfaces and exact wire contract:**
+- Preserve constructor/respond/extract signatures and current Yandex adapter names to avoid caller migration. Internally call `client.chat.completions.create`, never `.responses.create`. Both still check per-profile consent before client construction/network, and reuse existing fixed endpoint/key/folder/client timeout/no-retries/logging headers.
+- Use `model=self.model`, `max_tokens=settings.openai_max_output_tokens`, `reasoning_effort='none'`, `temperature=0`, `store=False`. No `safety_identifier` (observed HTTP400 in live Chat); no `user`, tools, conversation IDs or fallback. Request trace header may remain if supplied. Explicit model changes stay configuration-only, no automatic switching.
+- Labs: system message with existing `_INSTRUCTIONS`, user message with original bounded raw `text` (NOT JSON-encoded page_text). Raw source is an untrusted user message, never appended to system instructions. `response_format={'type':'json_schema','json_schema':{'name':'lab_candidates','strict':True,'schema':_SCHEMA}}`. Use existing `validate_candidates(json.loads(content), text)` unchanged. Do not normalize or repair model source fields/excerpts to force acceptance.
+- Questions: system message with existing `MEDICAL_SAFETY_INSTRUCTIONS`; reuse `build_responder_input(question, context)` and convert content types from `input_text` to Chat `text`, preserving both bounded JSON content blocks and their separation. No copied prompt/input-builder logic.
+- Require exactly one choice, `finish_reason='stop'`, assistant message, nonempty bounded string content, no refusal and no tool/function calls. Maximum accepted content length 80000. Labs map incomplete/length to `cloud_incomplete`, refusal to `cloud_refused`, malformed/tool-call output to `cloud_invalid_output`. Preserve API status safe-code mapping and zero retries; question errors remain safe QuestionResponderError. Untrusted raw response/errors never logged.
+
+- [ ] **Step 1: Update tests red.** Native recording fake exposes `chat.completions.create` only. Assert both outbound contracts above, no Responses calls/unsupported safety identifier, raw unchanged lab source, preserved question JSON block boundaries, profile guards before calls. Existing mocked Responses envelopes must no longer be accepted as successful Chat output.
+- [ ] **Step 2: Implement minimal native Chat adapter path.** A shared local response-content extractor may validate one completed assistant choice for both wrappers; no new providers/framework/settings. Preserve all shared lab validators and OpenAI behavior.
+
+```python
+def test_native_chat_requires_a_single_completed_assistant_choice():
+    # Reuse the test's synthetic settings and recording client.
+    # Parametrize length/refusal/missing-choice/multiple-choice/tool-call envelopes.
+    with pytest.raises(ExtractionError):
+        extractor.extract(UUID(int=1), 'Glucose 5.1 mmol/L 3.9-5.5')
+    assert len(client.chat.completions.calls) == 1
+```
+
+- [ ] **Step 3: Cover accepted and refused envelopes.** Test exact simple/table/multiline/qualified source evidence against existing validator, bad source excerpt remains rejected, malformed JSON, incomplete finish reason, wrong message role, empty/multiple choices, refusal, tool/function calls, oversize/empty/nonstring content, timeout/401/429 and no retry. Both authorized QA and denial remain tested. No blanket skip/removal of relevant old cases.
+- [ ] **Step 4: Verify and commit.** Focused `tests/ai/test_yandex.py`, existing question/OpenAI/lab tests, full synthetic suite once, Ruff/mypy/diffcheck. Update short setup guide: native Chat, Qwen reasoning disabled, unsupported safety identifier omitted, headers/store are requests not retention guarantees. Report earlier synthetic live findings as prototype evidence, not acceptance of untested committed code. Root alone runs final real synthetic probes; no key/production reads/calls by implementer.
