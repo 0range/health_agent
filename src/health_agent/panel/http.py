@@ -526,7 +526,7 @@ h1{{font-size:clamp(2rem,5vw,3.4rem);line-height:1.05;margin:.4rem 0 1rem;letter
 .rollup{{background:#173d2c;color:#fff;border-radius:1.2rem;padding:1.25rem 1.4rem;margin:1.5rem 0}} .rollup strong{{font-size:1.15rem}} .rollup p{{margin:.3rem 0 0;color:#d8e9df}}
 .action{{font-weight:700}} details{{margin-top:1rem}} summary{{cursor:pointer;font-weight:700;min-height:44px;display:flex;align-items:center}} .technical-details{{border-top:1px solid #e1e8e3;padding-top:.25rem;color:#526057;font-size:.88rem;overflow-wrap:anywhere}} .technical-details p{{margin:.45rem 0}}
 .profile-details{{display:inline-block;color:#53665b}} .profile-details summary{{font-size:.9rem}} .destination{{padding:1rem}} .destination a{{display:flex;min-height:44px;align-items:center;font-weight:800}} .destination p{{margin:.35rem 0 0;color:#53665b}}
-.settings{{padding:0 1.15rem;margin-top:2rem}} .settings>summary{{font-size:1.05rem}} form{{border:0;box-shadow:none;padding:0 0 1.25rem}} label,input,textarea,select,button{{display:block;font:inherit}} input,textarea,select{{background:#fbfcfb;border:1px solid #9eada4;border-radius:.55rem;margin:.45rem 0 1rem;padding:.75rem;width:100%;max-width:44rem}} textarea{{min-height:8rem;resize:vertical}} button{{background:#176b45;border:0;border-radius:.55rem;color:#fff;cursor:pointer;font-weight:800;min-height:44px;padding:.65rem 1rem}} .notice{{background:#dcf5e6;border-radius:.7rem;padding:.85rem 1rem}} .notice.error{{background:#ffe1df}} .back{{display:inline-flex;min-height:44px;align-items:center}}
+.settings{{padding:0 1.15rem;margin-top:2rem}} .settings>summary{{font-size:1.05rem}} form{{border:0;box-shadow:none;padding:0 0 1.25rem}} label,input,textarea,select,button{{display:block;font:inherit}} input,textarea,select{{background:#fbfcfb;border:1px solid #9eada4;border-radius:.55rem;margin:.45rem 0 1rem;padding:.75rem;width:100%;max-width:44rem}} textarea{{min-height:8rem;resize:vertical}} button{{background:#176b45;border:0;border-radius:.55rem;color:#fff;cursor:pointer;font-weight:800;min-height:44px;padding:.65rem 1rem}} .notice{{background:#dcf5e6;border-radius:.7rem;padding:.85rem 1rem}} .notice.error{{background:#ffe1df}} .back{{display:inline-flex;min-height:44px;align-items:center}} .medical-section{{margin-top:2rem}} .medical-create,.medical-actions{{padding:0 1.15rem}} .medical-actions form+form{{border-top:1px solid #e1e8e3;padding-top:1rem}} .medical-actions select{{max-width:100%}}
 @media (max-width:560px){{main{{padding:1.35rem .9rem 3rem}} .card-head{{display:block}} .status-pill{{margin-top:.65rem}} .rollup{{border-radius:.9rem}}}}
 </style></head><body><main>{content}</main></body></html>"""
 
@@ -612,6 +612,22 @@ def _workflow_form(
     return f'<form method="post" action="/profiles/{profile_id}/medical"><input type="hidden" name="csrf_token" value="{escape(csrf, quote=True)}"><input type="hidden" name="operation" value="{operation}"><input type="hidden" name="action_id" value="{token_urlsafe(24)}">{controls}<button type="submit">{escape(label)}</button></form>'
 
 
+def _labelled_control(label: str, control_id: str, control: str) -> str:
+    return f'<label for="{control_id}">{escape(label)}</label>{control}'
+
+
+def _calendar_connection_text(value: str) -> str:
+    translations = {
+        "not_configured": "Calendar не настроен.",
+        "oauth_required": "Требуется подключить Calendar.",
+    }
+    for prefix, translation in translations.items():
+        if value.startswith(prefix):
+            suffix = value[len(prefix) :].lstrip(" :—-")
+            return f"{translation} {suffix}".strip()
+    return value
+
+
 def _render_medical(
     profile_id: UUID, snapshot: WorkflowSnapshot, csrf: str, notice: str | None = None
 ) -> str:
@@ -624,7 +640,7 @@ def _render_medical(
                 f"<p>{'Вопрос' if note.kind == 'question' else 'Ответ'}: {escape(note.text)}</p>"
                 for note in note_map.get(visit.public_code, ())
             )
-            + f'<p>Calendar: {escape({"local_only": "только локально", "queued": "в очереди", "published": "подтверждено"}.get(calendar_map.get(visit.public_code, "local_only"), "статус недоступен"))}</p></article>'
+            + f"<p>Calendar: {escape({'local_only': 'только локально', 'queued': 'в очереди', 'published': 'подтверждено'}.get(calendar_map.get(visit.public_code, 'local_only'), 'статус недоступен'))}</p></article>"
             for visit in snapshot.visits
         )
         or '<p class="muted">Визитов пока нет.</p>'
@@ -636,66 +652,133 @@ def _render_medical(
         )
         or '<p class="muted">Активных напоминаний пока нет.</p>'
     )
-    visit_options = "".join(
-        f'<option value="{escape(visit.public_code, quote=True)}">{escape(visit.title)} — {escape(visit.public_code)}</option>'
-        for visit in snapshot.visits
-    )
-    visit_code = (
-        f'<label>Визит</label><select name="code" required>{visit_options}</select>'
-    )
-    reminder_options = "".join(
-        f'<option value="{escape(item.public_code, quote=True)}">{escape(item.title)} — {escape(item.public_code)}</option>'
-        for item in snapshot.reminders
-    )
-    reminder_code = f'<label>Напоминание</label><select name="code" required>{reminder_options}</select>'
-    text = '<label>Текст</label><textarea name="text" required maxlength="10000"></textarea>'
-    forms = "".join(
-        (
-            _workflow_form(
-                profile_id,
-                csrf,
-                "visit_create",
-                '<label>Название визита</label><input name="title" required maxlength="200"><label>Дата и время</label><input name="when" type="datetime-local" required>',
-                "Создать визит",
-            ),
-            _workflow_form(
-                profile_id, csrf, "visit_question", visit_code + text, "Добавить вопрос"
-            ),
-            _workflow_form(
-                profile_id, csrf, "visit_answer", visit_code + text, "Добавить ответ"
-            ),
-            *(
-                _workflow_form(profile_id, csrf, op, visit_code, label)
-                for op, label in (
-                    ("visit_prepare", "Подготовить"),
-                    ("visit_done", "Завершить визит"),
-                    ("visit_cancel", "Отменить визит"),
-                    ("visit_calendar", "Опубликовать в Calendar"),
-                )
-            ),
-            _workflow_form(
-                profile_id,
-                csrf,
-                "visit_move",
-                visit_code + '<label>Новое время</label><input name="when" type="datetime-local" required>',
-                "Перенести визит",
-            ),
-            _workflow_form(
-                profile_id,
-                csrf,
-                "reminder_create",
-                '<label>Название напоминания</label><input name="title" required maxlength="500"><label>Дата и время</label><input name="when" type="datetime-local" required><label>Повтор</label><select name="repeat_unit"><option value="">Не повторять</option><option value="days">Дни</option><option value="months">Месяцы</option></select><label>Интервал</label><input name="repeat_every" type="number" min="1" max="3650">',
-                "Создать напоминание",
-            ),
-            *(
-                _workflow_form(profile_id, csrf, op, reminder_code, label)
-                for op, label in (
-                    ("reminder_confirm", "Подтвердить"),
-                    ("reminder_done", "Выполнено"),
-                    ("reminder_cancel", "Отменить напоминание"),
-                )
-            ),
+
+    def visit_select(operation: str, statuses: set[str]) -> str:
+        options = "".join(
+            f'<option value="{escape(item.public_code, quote=True)}">{escape(item.title)} — {item.starts_at.astimezone(ZoneInfo(item.timezone_name)):%d.%m.%Y %H:%M}</option>'
+            for item in snapshot.visits
+            if item.status in statuses
         )
+        control_id = f"{operation}-code"
+        return _labelled_control(
+            "Визит",
+            control_id,
+            f'<select id="{control_id}" name="code" required>{options}</select>',
+        )
+
+    def reminder_select(operation: str, statuses: set[str]) -> str:
+        options = "".join(
+            f'<option value="{escape(item.public_code, quote=True)}">{escape(item.title)} — {item.due_at.astimezone(ZoneInfo(item.timezone_name)):%d.%m.%Y %H:%M}</option>'
+            for item in snapshot.reminders
+            if item.status.value in statuses
+        )
+        control_id = f"{operation}-code"
+        return _labelled_control(
+            "Напоминание",
+            control_id,
+            f'<select id="{control_id}" name="code" required>{options}</select>',
+        )
+
+    visit_create = _workflow_form(
+        profile_id,
+        csrf,
+        "visit_create",
+        _labelled_control(
+            "Название визита",
+            "visit-create-title",
+            '<input id="visit-create-title" name="title" required maxlength="200">',
+        )
+        + _labelled_control(
+            "Дата и время",
+            "visit-create-when",
+            '<input id="visit-create-when" name="when" type="datetime-local" required>',
+        ),
+        "Создать визит",
+    )
+    reminder_create = _workflow_form(
+        profile_id,
+        csrf,
+        "reminder_create",
+        _labelled_control(
+            "Название напоминания",
+            "reminder-create-title",
+            '<input id="reminder-create-title" name="title" required maxlength="500">',
+        )
+        + _labelled_control(
+            "Дата и время",
+            "reminder-create-when",
+            '<input id="reminder-create-when" name="when" type="datetime-local" required>',
+        )
+        + _labelled_control(
+            "Повтор",
+            "reminder-create-repeat",
+            '<select id="reminder-create-repeat" name="repeat_unit"><option value="">Не повторять</option><option value="days">Дни</option><option value="months">Месяцы</option></select>',
+        )
+        + _labelled_control(
+            "Интервал",
+            "reminder-create-every",
+            '<input id="reminder-create-every" name="repeat_every" type="number" min="1" max="3650">',
+        ),
+        "Создать напоминание",
+    )
+    visit_actions: list[str] = []
+    non_cancelled = {"planned", "completed"}
+    for operation, label, statuses in (
+        ("visit_question", "Добавить вопрос", non_cancelled),
+        ("visit_answer", "Добавить ответ", non_cancelled),
+        ("visit_prepare", "Подготовить", non_cancelled),
+        ("visit_done", "Завершить визит", {"planned"}),
+        ("visit_cancel", "Отменить визит", {"planned"}),
+        ("visit_calendar", "Опубликовать в Calendar", {"planned"}),
+        ("visit_move", "Перенести визит", {"planned"}),
+    ):
+        if not any(item.status in statuses for item in snapshot.visits):
+            continue
+        controls = visit_select(operation, statuses)
+        if operation in {"visit_question", "visit_answer"}:
+            controls += _labelled_control(
+                "Текст",
+                f"{operation}-text",
+                f'<textarea id="{operation}-text" name="text" required maxlength="10000"></textarea>',
+            )
+        elif operation == "visit_move":
+            controls += _labelled_control(
+                "Новое время",
+                "visit-move-when",
+                '<input id="visit-move-when" name="when" type="datetime-local" required>',
+            )
+        visit_actions.append(
+            _workflow_form(profile_id, csrf, operation, controls, label)
+        )
+    reminder_actions = []
+    for operation, label, statuses in (
+        ("reminder_confirm", "Подтвердить", {"pending_confirmation"}),
+        ("reminder_done", "Выполнено", {"scheduled"}),
+        (
+            "reminder_cancel",
+            "Отменить напоминание",
+            {"pending_confirmation", "scheduled"},
+        ),
+    ):
+        if any(item.status.value in statuses for item in snapshot.reminders):
+            reminder_actions.append(
+                _workflow_form(
+                    profile_id,
+                    csrf,
+                    operation,
+                    reminder_select(operation, statuses),
+                    label,
+                )
+            )
+    visit_action_group = (
+        f'<details class="medical-actions"><summary>Действия с визитами</summary>{"".join(visit_actions)}</details>'
+        if visit_actions
+        else ""
+    )
+    reminder_action_group = (
+        f'<details class="medical-actions"><summary>Действия с напоминаниями</summary>{"".join(reminder_actions)}</details>'
+        if reminder_actions
+        else ""
     )
     notice_html = (
         f'<p class="notice">{escape(notice).replace(chr(10), "<br>")}</p>'
@@ -704,7 +787,7 @@ def _render_medical(
     )
     return _page(
         "Визиты и напоминания",
-        f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Все даты вводятся в часовом поясе Europe/Moscow. События сохраняются локально. После явной публикации изменения синхронизируются с Calendar.</p><p>{escape(snapshot.calendar_connection)}</p>{notice_html}<h2>Визиты (до 20)</h2>{visits}<h2>Напоминания (до 20)</h2>{reminders}<h2>Действия</h2>{forms}',
+        f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Время — Москва (Europe/Moscow). События сохраняются локально. После явной публикации изменения синхронизируются с Calendar.</p><p>{escape(_calendar_connection_text(snapshot.calendar_connection))}</p>{notice_html}<section class="medical-section" aria-labelledby="visits-heading"><h2 id="visits-heading">Визиты (до 20)</h2>{visits}<details class="medical-create"><summary>Создать визит</summary>{visit_create}</details>{visit_action_group}</section><section class="medical-section" aria-labelledby="reminders-heading"><h2 id="reminders-heading">Напоминания (до 20)</h2>{reminders}<details class="medical-create"><summary>Создать напоминание</summary>{reminder_create}</details>{reminder_action_group}</section>',
     )
 
 
