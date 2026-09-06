@@ -193,3 +193,37 @@ def test_userinfo_gateway_closes_on_error(tmp_path: Path, monkeypatch):
         service.authorize(profile_id)
     assert gateway.closed
     assert tokens.load_verified(profile_id) is None
+
+
+@pytest.mark.parametrize("request_fails", [False, True])
+def test_cleanup_failure_preserves_userinfo_outcome(
+    tmp_path: Path, monkeypatch, request_fails
+):
+    profile_id = uuid4()
+    service, tokens = oauth(tmp_path, profile_id)
+    monkeypatch.setattr(service, "stage", lambda *_args, **_kwargs: credentials())
+    original_error = CalendarAPIError(403)
+
+    class Identity:
+        close_count = 0
+
+        def userinfo(self, _url):
+            if request_fails:
+                raise original_error
+            return {"sub": "subject", "email": "a@b.test", "email_verified": True}
+
+        def close(self):
+            self.close_count += 1
+            raise OSError("private cleanup detail")
+
+    gateway = Identity()
+    service.gateway_factory = lambda _: gateway
+    if request_fails:
+        with pytest.raises(CalendarAPIError) as caught:
+            service.authorize(profile_id)
+        assert caught.value is original_error
+        assert tokens.load_verified(profile_id) is None
+    else:
+        service.authorize(profile_id)
+        assert tokens.load_verified(profile_id)["account_subject"] == "subject"
+    assert gateway.close_count == 1

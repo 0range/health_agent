@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 import httpx
 from google.oauth2.credentials import Credentials
 
 BASE_URL = "https://www.googleapis.com/calendar/v3"
+
+
+def close_gateway_safely(gateway: object) -> None:
+    """Attempt cleanup without replacing an established result or request error."""
+    # Cleanup is best-effort. Never expose transport details or misreport a
+    # confirmed write as failed because releasing its connection failed.
+    with suppress(Exception):
+        close = getattr(gateway, "close", None)
+        if close is not None:
+            close()
 
 
 class _BorrowedTransport(httpx.BaseTransport):

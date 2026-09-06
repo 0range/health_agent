@@ -249,3 +249,70 @@ def test_missing_marker_and_all_day_event_fail_closed(tmp_path: Path):
         ).sync(item)
         assert result.status == "deferred" and gateway.patch_count == 0
         assert gateway.close_count == 1
+
+
+@pytest.mark.parametrize(
+    "mutation", ["title_and_all_day", "start_and_bad_end", "bad_zone"]
+)
+def test_changed_fields_do_not_bypass_remote_time_validation(tmp_path: Path, mutation):
+    item = event()
+    profiles, tokens = configured(tmp_path, item.profile_id)
+    gateway = FakeGateway()
+    remote = {**_body(item), "etag": '"1"'}
+    if mutation == "title_and_all_day":
+        remote["summary"] = "Changed title"
+        remote["start"] = {"date": "2026-09-08"}
+    elif mutation == "start_and_bad_end":
+        remote["start"]["dateTime"] = "2026-09-08T06:00:00Z"
+        remote["end"]["dateTime"] = "malformed"
+    else:
+        remote["summary"] = "Changed title"
+        remote["end"]["timeZone"] = "Not/AZone"
+    gateway.events[remote["id"]] = remote
+    result = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway).sync(
+        item
+    )
+    assert result.safe_error == "calendar_configuration_invalid"
+    assert gateway.patch_count == 0
+    assert gateway.close_count == 1
+
+
+def test_valid_timezone_change_reconciles_once(tmp_path: Path):
+    item = event()
+    profiles, tokens = configured(tmp_path, item.profile_id)
+    gateway = FakeGateway()
+    service = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway)
+    assert service.sync(item).status == "created"
+    changed = event(item.profile_id, item.visit_id, timezone_name="Europe/Paris")
+    assert service.sync(changed).status == "updated"
+    assert gateway.patch_count == 1
+    stored = gateway.events[event_id(item.profile_id, item.visit_id)]
+    assert stored["start"]["timeZone"] == "Europe/Paris"
+    assert stored["end"]["timeZone"] == "Europe/Paris"
+    assert service.sync(changed).status == "unchanged"
+    assert gateway.patch_count == 1
+
+
+@pytest.mark.parametrize("request_fails", [False, True])
+def test_cleanup_failure_preserves_sync_outcome(tmp_path: Path, request_fails):
+    item = event()
+    profiles, tokens = configured(tmp_path, item.profile_id)
+
+    class BrokenClose(FakeGateway):
+        def get(self, calendar_id, eid):
+            if request_fails:
+                raise CalendarAPIError(403)
+            return super().get(calendar_id, eid)
+
+        def close(self):
+            self.close_count += 1
+            raise OSError("private cleanup detail")
+
+    gateway = BrokenClose()
+    result = CalendarService(profiles, tokens, FakeOAuth(), lambda _: gateway).sync(
+        item
+    )
+    assert result.status == ("deferred" if request_fails else "created")
+    assert result.safe_error == ("permission_denied" if request_fails else None)
+    assert gateway.close_count == 1
+    assert gateway.insert_count == (0 if request_fails else 1)

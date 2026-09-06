@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
 
 from health_agent.automation.storage import reject_symlink_components
+from health_agent.google_calendar.api import close_gateway_safely
 
 SCOPES = frozenset(
     {
@@ -117,9 +118,7 @@ class CalendarOAuth:
                 "https://openidconnect.googleapis.com/v1/userinfo"
             )
         finally:
-            close = getattr(gateway, "close", None)
-            if close is not None:
-                close()
+            close_gateway_safely(gateway)
         subject, email = identity.get("sub"), identity.get("email")
         if (
             not isinstance(subject, str)

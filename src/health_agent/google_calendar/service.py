@@ -7,8 +7,9 @@ import html
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from health_agent.google_calendar.api import CalendarAPIError
+from health_agent.google_calendar.api import CalendarAPIError, close_gateway_safely
 from health_agent.google_calendar.models import CalendarEvent, CalendarResult
 from health_agent.google_calendar.oauth import CalendarOAuthError
 
@@ -40,9 +41,13 @@ def _body(event: CalendarEvent) -> dict[str, Any]:
     }
 
 
-def _remote_instant(value: object, timezone_name: str) -> datetime:
-    if not isinstance(value, dict) or value.get("timeZone") != timezone_name:
-        raise ValueError("invalid_remote_calendar_time")
+def _remote_instant(value: object) -> datetime:
+    if not isinstance(value, dict) or not isinstance(value.get("timeZone"), str):
+        raise TypeError("invalid_remote_calendar_time")
+    try:
+        ZoneInfo(value["timeZone"])
+    except (ValueError, ZoneInfoNotFoundError) as error:
+        raise ValueError("invalid_remote_calendar_time") from error
     raw = value.get("dateTime")
     if not isinstance(raw, str) or "date" in value:
         raise ValueError("invalid_remote_calendar_time")
@@ -58,15 +63,20 @@ def _remote_instant(value: object, timezone_name: str) -> datetime:
 def _managed_equal(
     remote: dict[str, Any], desired: dict[str, Any], timezone_name: str
 ) -> bool:
-    if any(
-        remote.get(key) != desired[key]
+    # Validate both ends before comparing anything: a changed title/start must
+    # never short-circuit validation and turn an all-day/malformed event into a write.
+    remote_start = _remote_instant(remote.get("start"))
+    remote_end = _remote_instant(remote.get("end"))
+    desired_start = _remote_instant(desired["start"])
+    desired_end = _remote_instant(desired["end"])
+    return all(
+        remote.get(key) == desired[key]
         for key in ("summary", "description", "visibility")
-    ):
-        return False
-    return _remote_instant(remote.get("start"), timezone_name) == _remote_instant(
-        desired["start"], timezone_name
-    ) and _remote_instant(remote.get("end"), timezone_name) == _remote_instant(
-        desired["end"], timezone_name
+    ) and (
+        remote_start == desired_start
+        and remote_end == desired_end
+        and remote["start"]["timeZone"] == timezone_name
+        and remote["end"]["timeZone"] == timezone_name
     )
 
 
@@ -164,6 +174,4 @@ class CalendarService:
             )
         finally:
             if gateway is not None:
-                close = getattr(gateway, "close", None)
-                if close is not None:
-                    close()
+                close_gateway_safely(gateway)
