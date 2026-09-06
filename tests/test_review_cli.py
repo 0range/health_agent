@@ -64,6 +64,69 @@ def test_review_commands_are_registered() -> None:
     assert "list" in result.stdout
     assert "approve" in result.stdout
     assert "reject" in result.stdout
+    assert "recover-dates" in result.stdout
+
+
+def test_recover_dates_requires_profile_id() -> None:
+    result = CliRunner().invoke(cli.app, ["review", "recover-dates"])
+    assert result.exit_code == 2
+    assert "--profile-id" in result.output
+
+
+def test_recover_dates_prints_safe_aggregates(monkeypatch) -> None:
+    @contextmanager
+    def fake_session_scope(_engine: object):
+        yield object()
+
+    profile_id = UUID("00000000-0000-0000-0000-000000000099")
+    monkeypatch.setattr(cli, "Settings", lambda: object())
+    monkeypatch.setattr(cli, "build_engine", lambda _settings: object())
+    monkeypatch.setattr(cli, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        cli,
+        "recover_document_dates",
+        lambda _session, **_kwargs: {
+            "scanned": 4,
+            "eligible": 2,
+            "changed": 0,
+            "blocked": 1,
+        },
+    )
+    result = CliRunner().invoke(
+        cli.app, ["review", "recover-dates", "--profile-id", str(profile_id)]
+    )
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "status=complete mode=dry_run scanned=4 eligible=2 changed=0 blocked=1 "
+        "safe_error_code=\n"
+    )
+
+
+def test_recover_dates_hides_raw_failure(monkeypatch) -> None:
+    @contextmanager
+    def fake_session_scope(_engine: object):
+        yield object()
+
+    monkeypatch.setattr(cli, "Settings", lambda: object())
+    monkeypatch.setattr(cli, "build_engine", lambda _settings: object())
+    monkeypatch.setattr(cli, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        cli,
+        "recover_document_dates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("private patient filename")
+        ),
+    )
+    result = CliRunner().invoke(
+        cli.app,
+        ["review", "recover-dates", "--profile-id", str(DEFAULT_PROFILE_ID), "--apply"],
+    )
+    assert result.exit_code == 1
+    assert result.stdout == (
+        "status=failed mode=apply scanned=0 eligible=0 changed=0 blocked=0 "
+        "safe_error_code=medical_date_recovery_failed\n"
+    )
+    assert "private" not in result.stdout
 
 
 def test_review_list_survives_real_session_commit_and_close(

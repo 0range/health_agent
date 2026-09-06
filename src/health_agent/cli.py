@@ -67,6 +67,7 @@ from health_agent.importer import (
     set_document_medical_dates,
 )
 from health_agent.lab_extraction.cli import app as lab_extraction_app
+from health_agent.medical_dates import recover_document_dates
 from health_agent.metabase import bootstrap_metabase
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
@@ -462,6 +463,33 @@ def set_review_document_date(
         f"status=date_set document_id={saved_id} "
         f"collected_date={saved_collected_date or ''} "
         f"issued_date={saved_issued_date or ''}"
+    )
+
+
+@review_app.command("recover-dates")
+def recover_review_document_dates(
+    profile_id: Annotated[UUID, typer.Option("--profile-id")],
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 200,
+    apply: Annotated[bool, typer.Option("--apply")] = False,
+) -> None:
+    """Preview or apply conservative labelled-date recovery."""
+    mode = "apply" if apply else "dry_run"
+    try:
+        settings = Settings()
+        with session_scope(build_engine(settings)) as session:
+            counts = recover_document_dates(
+                session, profile_id=profile_id, limit=limit, apply=apply
+            )
+    except Exception:  # noqa: BLE001 -- DB and extracted-text diagnostics are private
+        typer.echo(
+            f"status=failed mode={mode} scanned=0 eligible=0 changed=0 blocked=0 "
+            "safe_error_code=medical_date_recovery_failed"
+        )
+        raise typer.Exit(1) from None
+    typer.echo(
+        f"status=complete mode={mode} scanned={counts['scanned']} "
+        f"eligible={counts['eligible']} changed={counts['changed']} "
+        f"blocked={counts['blocked']} safe_error_code="
     )
 
 

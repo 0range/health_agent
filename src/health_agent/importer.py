@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -21,6 +20,7 @@ from health_agent.labs import (
     parse_decimal_token,
     parse_lab_candidates,
 )
+from health_agent.medical_dates import infer_medical_dates
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
     Document,
@@ -95,19 +95,6 @@ _CANONICAL_NAMES = {
     "пролактин": "prolactin",
     "prolactin": "prolactin",
 }
-
-_DATE_TOKEN = r"(\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4})"
-_COLLECTION_DATE = re.compile(
-    rf"(?:collection|collected|specimen)\s+date\s*[:\-]?\s*{_DATE_TOKEN}|"
-    rf"дата\s+(?:забора|взятия)\s*[:\-]?\s*{_DATE_TOKEN}",
-    re.IGNORECASE,
-)
-_ISSUE_DATE = re.compile(
-    rf"(?:issue|issued|report)\s+date\s*[:\-]?\s*{_DATE_TOKEN}|"
-    rf"дата\s+(?:выдачи|заключения)\s*[:\-]?\s*{_DATE_TOKEN}",
-    re.IGNORECASE,
-)
-
 
 def import_document(
     session: Session,
@@ -267,25 +254,8 @@ def import_document(
 
 
 def _infer_medical_dates(texts: Iterable[str]) -> tuple[date | None, date | None]:
-    text = "\n".join(str(value) for value in texts)
-    return _unique_labeled_date(_COLLECTION_DATE, text), _unique_labeled_date(
-        _ISSUE_DATE, text
-    )
-
-
-def _unique_labeled_date(pattern: re.Pattern[str], text: str) -> date | None:
-    values: set[date] = set()
-    for match in pattern.finditer(text):
-        raw = next(value for value in match.groups() if value is not None)
-        try:
-            if "-" in raw:
-                values.add(date.fromisoformat(raw))
-            else:
-                day, month, year = (int(value) for value in re.split(r"[./]", raw))
-                values.add(date(year, month, day))
-        except ValueError:
-            continue
-    return next(iter(values)) if len(values) == 1 else None
+    found = infer_medical_dates(enumerate((str(value) for value in texts), start=1))
+    return found.collected_date, found.issued_date
 
 
 def approve_observation(
