@@ -84,12 +84,13 @@ def _decision_hash(
 
 def _is_refreshable_stale_date_row(
     raw_immutable: tuple[SheetValue, ...],
-    expected_immutable: tuple[str, ...],
+    canonical_expected: tuple[SheetValue, ...],
     editable: tuple[str, ...],
     profile_id: UUID,
 ) -> bool:
     """Accept only an untouched row made stale by medical-date recovery."""
     immutable = tuple(_text(value) for value in raw_immutable)
+    expected_immutable = tuple(_text(value) for value in canonical_expected)
     if any(editable) or immutable[2] != str(profile_id):
         return False
     if any(
@@ -103,12 +104,15 @@ def _is_refreshable_stale_date_row(
     medical_date = immutable[8]
     if medical_date != "missing":
         try:
-            date.fromisoformat(medical_date)
+            parsed_date = date.fromisoformat(medical_date)
         except ValueError:
             return False
+        if parsed_date.isoformat() != medical_date:
+            return False
+    canonical_old = canonical_expected[:8] + (medical_date,) + canonical_expected[9:]
     actual_version = _row_version(
-        raw_immutable[:3]
-        + raw_immutable[4:]
+        canonical_old[:3]
+        + canonical_old[4:]
         + (ReviewStatus.NEEDS_REVIEW.value,)
     )
     return immutable[3] == actual_version
@@ -151,7 +155,7 @@ def parse_decisions(
         )
         editable = tuple(_text(value) for value in padded[12:16])
         if immutable != expected_immutable and _is_refreshable_stale_date_row(
-            padded[:12], expected_immutable, editable, profile_id
+            padded[:12], expected_row.immutable_values, editable, profile_id
         ):
             continue
         if immutable != expected_immutable or immutable[2] != str(profile_id):

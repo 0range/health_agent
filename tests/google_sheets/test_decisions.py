@@ -160,7 +160,13 @@ def test_parser_rejects_decision_on_stale_medical_date_row(session: Session) -> 
 
 @pytest.mark.parametrize(
     ("column", "value"),
-    ((4, "tampered-analyte"), (3, "not-the-original-version"), (8, "09/06/2026")),
+    (
+        (4, "tampered-analyte"),
+        (3, "not-the-original-version"),
+        (8, "09/06/2026"),
+        (8, "20260906"),
+        (8, "2026-W36-7"),
+    ),
 )
 def test_parser_rejects_tampered_blank_stale_date_row(
     session: Session, column: int, value: str

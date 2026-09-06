@@ -340,6 +340,11 @@ def test_blank_stale_medical_date_row_is_refreshed(
     service.sync(DEFAULT_PROFILE_ID)
     stale_version = gateway.review_rows[1][3]
     assert gateway.review_rows[1][8] == "missing"
+    assert any(value is None for value in gateway.review_rows[1][:12])
+    google_native_row = tuple(
+        "" if value is None else value for value in gateway.review_rows[1]
+    )
+    gateway.review_rows = (gateway.review_rows[0], google_native_row)
 
     with session_scope(clean_database) as session:
         observation = session.get_one(LabObservation, observation_id)
