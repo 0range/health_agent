@@ -172,6 +172,41 @@ def test_model_output_with_missing_or_forged_citations_fails_closed() -> None:
         assert len(responder.calls) == 1
 
 
+def test_yandex_style_separate_citations_are_accepted_with_sources() -> None:
+    context = _context(
+        evidence=(
+            EvidenceItem("[LAB1]", EvidenceSource.LAB, NOW, "Metric 1", "1", "u"),
+            EvidenceItem("[LAB2]", EvidenceSource.LAB, NOW, "Metric 2", "2", "u"),
+        )
+    )
+
+    result = HealthQuestionApplicationService(
+        FakeContextBuilder(context), FakeResponder("Recorded fact. [LAB1] [LAB2]")
+    ).answer(PROFILE_ID, "What is recorded?")
+
+    assert not result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+    assert "Источники:\n- [LAB1]" in result.text
+    assert "\n- [LAB2]" in result.text
+
+
+@pytest.mark.parametrize(
+    "citations", ["[LAB1–LAB2]", "[LAB1, LAB2]", "[LAB1] [missing_keys]"]
+)
+def test_yandex_style_invalid_citation_formats_fail_closed(citations: str) -> None:
+    context = _context(
+        evidence=(
+            EvidenceItem("[LAB1]", EvidenceSource.LAB, NOW, "Metric 1", "1", "u"),
+            EvidenceItem("[LAB2]", EvidenceSource.LAB, NOW, "Metric 2", "2", "u"),
+        )
+    )
+
+    result = HealthQuestionApplicationService(
+        FakeContextBuilder(context), FakeResponder("Recorded fact. " + citations)
+    ).answer(PROFILE_ID, "What is recorded?")
+
+    assert result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+
+
 def test_unselected_snapshot_citation_fails_closed_and_provenance_stays_internal() -> (
     None
 ):
