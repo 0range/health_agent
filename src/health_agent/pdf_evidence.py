@@ -79,6 +79,7 @@ def persist_pdf_evidence(
     locked = session.scalar(
         select(Document)
         .where(Document.id == document_id, Document.profile_id == profile_id)
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if locked is None or locked.sha256 != digest:
@@ -243,30 +244,58 @@ def _read_vault_pdf(vault: FileVault, document: Document) -> bytes:
         or any(character not in "0123456789abcdef" for character in document.sha256)
     ):
         raise ValueError("invalid_pdf_evidence")
-    if not path.is_relative_to(root):
-        raise ValueError("invalid_pdf_evidence")
-    for candidate in (path, *path.parents):
-        if candidate.is_symlink():
-            raise ValueError("invalid_pdf_evidence")
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
-    )
+    root_descriptor = _open_directory_without_symlinks(root)
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_PDF_BYTES:
-            raise ValueError("invalid_pdf_evidence")
-        chunks: list[bytes] = []
-        remaining = MAX_PDF_BYTES + 1
-        while remaining and (chunk := os.read(descriptor, min(1024 * 1024, remaining))):
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        data = b"".join(chunks)
+        prefix_descriptor = os.open(
+            document.sha256[:2],
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_descriptor,
+        )
+        try:
+            descriptor = os.open(
+                document.sha256,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=prefix_descriptor,
+            )
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_PDF_BYTES:
+                    raise ValueError("invalid_pdf_evidence")
+                chunks: list[bytes] = []
+                remaining = MAX_PDF_BYTES + 1
+                while remaining and (
+                    chunk := os.read(descriptor, min(1024 * 1024, remaining))
+                ):
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(prefix_descriptor)
     finally:
-        os.close(descriptor)
+        os.close(root_descriptor)
     if len(data) > MAX_PDF_BYTES or hashlib.sha256(data).hexdigest() != document.sha256:
         raise ValueError("invalid_pdf_evidence")
     return data
+
+
+def _open_directory_without_symlinks(path: Path) -> int:
+    if not path.is_absolute():
+        raise ValueError("invalid_pdf_evidence")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path.anchor, flags)
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _page_json(page: GeometryPage) -> dict[str, object]:

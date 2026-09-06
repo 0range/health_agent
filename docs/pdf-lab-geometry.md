@@ -36,3 +36,7 @@ The bounded repair API reads only regular, non-symlinked content-addressed PDFs
 inside the selected vault, verifies their SHA-256, and scans at most 150 documents,
 100 pages per document, 25 MiB per PDF, and 40 observations per page. Dry runs use
 rollback-only savepoints and leave no evidence or observation rows behind.
+Vault reads walk from the filesystem root through directory descriptors using
+`O_DIRECTORY` and `O_NOFOLLOW`, then open the digest-named file relative to the
+verified prefix descriptor. This prevents an ancestor-symlink swap between a path
+check and the final open.
