@@ -1,5 +1,8 @@
 # Yandex live probes — synthetic data only
 
+Later checkpoint: owner consent, production activation and real QA checks are recorded
+in [Yandex activation](2026-09-06-yandex-activation.md). The no-sharing statements below describe these earlier synthetic probes.
+
 TL;DR: key ready; merged Qwen Chat adapters passed live synthetic extraction and QA. Combined suite: **1003 passed**. OCR prototype: English 16/16 exact cells; Russian 15/16 (Latin B → Cyrillic В in B12, numeric fields unchanged). Neither real medical sharing nor production Yandex activation has occurred.
 
 ## Provisioned

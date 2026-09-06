@@ -8,6 +8,8 @@
 
 **Tech Stack:** Existing Python adapters and pytest; no dependency changes.
 
+**Status:** Complete, independently reviewed and merged in a93e6e4; 1007 tests passed and two actual application questions passed non-fallback citation checks. [Activation report](../reports/2026-09-06-yandex-activation.md).
+
 ## Global Constraints
 
 - No evidence normalization, citation repair, relaxed validators, automatic retries or extra model calls.
@@ -27,9 +29,9 @@ Citation output syntax is strict: copy each supplied bracketed citation label ve
 """
 ```
 
-- [ ] **Step 1: Add failing outbound-contract test.** Existing authorized QA fake must assert `messages[0]['content'] == MEDICAL_SAFETY_INSTRUCTIONS + _YANDEX_CITATION_INSTRUCTIONS` and that the two original JSON blocks are unchanged. Assert the required positive/negative syntax examples exist in the constant, so a vacuous constant fails. Initial missing import/expectation must fail before implementation; record RED.
-- [ ] **Step 2: Implement the static suffix only.** Keep all request parameters, lab system text, model choice, client creation and runtime validation unchanged. No dynamically inserted personal data in the suffix.
-- [ ] **Step 3: Add application regressions.** Synthetic context with allowed labels `[LAB1]` and `[LAB2]`: a fake completed answer using `[LAB1] [LAB2]` is accepted with source footer; `[LAB1–LAB2]`, `[LAB1, LAB2]`, and `[LAB1] [missing_keys]` are each rejected by the existing service. Use actual shared application service and existing synthetic fixture constructors; do not alter its validator. Keep existing tests.
+- [x] **Step 1: Add failing outbound-contract test.** Existing authorized QA fake must assert `messages[0]['content'] == MEDICAL_SAFETY_INSTRUCTIONS + _YANDEX_CITATION_INSTRUCTIONS` and that the two original JSON blocks are unchanged. Assert the required positive/negative syntax examples exist in the constant, so a vacuous constant fails. Initial missing import/expectation must fail before implementation; record RED.
+- [x] **Step 2: Implement the static suffix only.** Keep all request parameters, lab system text, model choice, client creation and runtime validation unchanged. No dynamically inserted personal data in the suffix.
+- [x] **Step 3: Add application regressions.** Synthetic context with allowed labels `[LAB1]` and `[LAB2]`: a fake completed answer using `[LAB1] [LAB2]` is accepted with source footer; `[LAB1–LAB2]`, `[LAB1, LAB2]`, and `[LAB1] [missing_keys]` are each rejected by the existing service. Use actual shared application service and existing synthetic fixture constructors; do not alter its validator. Keep existing tests.
 
 ```python
 @pytest.mark.parametrize('citations', ['[LAB1–LAB2]', '[LAB1, LAB2]', '[LAB1] [missing_keys]'])
@@ -41,7 +43,7 @@ def test_yandex_style_invalid_citation_formats_fail_closed(citations):
     assert result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
 ```
 
-- [ ] **Step 4: Verify and commit.** Run focused adapter/service tests, Ruff on changed files, `mypy src`, `git diff --check`. Root runs combined full suite and real acceptance after merge. Record command outputs in the task report; commit only owned files.
+- [x] **Step 4: Verify and commit.** Run focused adapter/service tests, Ruff on changed files, `mypy src`, `git diff --check`. Root runs combined full suite and real acceptance after merge. Record command outputs in the task report; commit only owned files.
 
 ## Root acceptance
 
