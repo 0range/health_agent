@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal
 from urllib.parse import urlencode
@@ -15,7 +16,7 @@ from health_agent.models import (
 )
 from health_agent.panel.http import PanelApplication
 from health_agent.panel.service import PanelService, SqlAlchemyProfileRepository
-from health_agent.panel.workflows import DatabaseWorkflowAdapter
+from health_agent.panel.workflows import DatabaseWorkflowAdapter, WorkflowSnapshot
 
 PROFILE = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -84,6 +85,111 @@ def test_medical_panel_is_secure_escaped_and_replay_safe(clean_database):
         ).status
         == 400
     )
+
+
+def test_empty_medical_panel_has_only_creation_forms(clean_database):
+    app = PanelApplication(_service(clean_database), csrf_token="csrf")
+
+    response = app.handle(
+        "GET",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766"},
+        b"",
+    )
+    html = response.body.decode()
+
+    assert response.status == 200
+    assert html.count("<form ") == 2
+    assert 'name="code"' not in html
+    assert "Время — Москва" in html
+    assert "Действия с визитами" not in html
+    assert "Действия с напоминаниями" not in html
+
+
+def test_medical_actions_are_collapsed_filtered_and_accessibly_labelled(
+    clean_database,
+):
+    service = _service(clean_database)
+    app = PanelApplication(service, csrf_token="csrf")
+    for action_id, title in (("keep", "Будущий приём"), ("cancel", "Отменённый")):
+        assert (
+            _post(
+                app,
+                PROFILE,
+                {
+                    "operation": "visit_create",
+                    "action_id": action_id,
+                    "title": title,
+                    "when": "2026-10-01T10:00",
+                },
+            ).status
+            == 200
+        )
+    visits = service.workflow_snapshot(PROFILE).visits
+    cancelled = next(item for item in visits if item.title == "Отменённый")
+    assert (
+        _post(
+            app,
+            PROFILE,
+            {
+                "operation": "visit_cancel",
+                "action_id": "cancel-visit",
+                "code": cancelled.public_code,
+            },
+        ).status
+        == 200
+    )
+    assert (
+        _post(
+            app,
+            PROFILE,
+            {
+                "operation": "reminder_create",
+                "action_id": "reminder",
+                "title": "Проверить назначение",
+                "when": "2026-10-02T11:00",
+                "repeat_unit": "",
+                "repeat_every": "",
+            },
+        ).status
+        == 200
+    )
+
+    html = app.handle(
+        "GET",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766"},
+        b"",
+    ).body.decode()
+
+    assert '<details class="medical-actions">' in html
+    assert "Действия с визитами" in html
+    assert "Действия с напоминаниями" in html
+    assert "Будущий приём — 01.10.2026 10:00" in html
+    assert f'value="{cancelled.public_code}"' not in html
+    assert 'value="reminder_done"' not in html
+    assert 'value="reminder_confirm"' in html
+    ids = re.findall(r'\sid="([^"]+)"', html)
+    label_targets = re.findall(r'<label for="([^"]+)">', html)
+    assert len(ids) == len(set(ids))
+    assert set(label_targets).issubset(ids)
+
+
+def test_calendar_connection_translates_only_known_machine_prefix(clean_database):
+    class Stub:
+        def workflow_snapshot(self, _profile):
+            return WorkflowSnapshot((), (), (), calendar_connection="oauth_required")
+
+    app = PanelApplication(Stub(), csrf_token="csrf")  # type: ignore[arg-type]
+    html = app.handle(
+        "GET",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766"},
+        b"",
+    ).body.decode()
+
+    assert "Требуется подключить Calendar." in html
+    assert "oauth_required" not in html
 
 
 def test_unknown_and_foreign_profile_cannot_mutate(clean_database):
