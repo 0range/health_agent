@@ -96,11 +96,33 @@ def yandex_model_uri(settings: Settings) -> str:
     return f"gpt://{folder}/{model}"
 
 
+def yandex_question_model_uri(settings: Settings) -> str:
+    """Resolve the optional question model without changing extraction."""
+    folder = _component(settings.yandex_folder_id, "folder ID")
+    model = _component(
+        (
+            settings.yandex_question_model
+            if settings.yandex_question_model is not None
+            else settings.yandex_model
+        ),
+        "question model",
+    )
+    return f"gpt://{folder}/{model}"
+
+
 class _YandexAdapter:
-    def __init__(self, settings: Settings, *, client: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: Any = None,
+        model: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> None:
         self.settings = settings
         self._client = client
-        self.model = yandex_model_uri(settings)
+        self.model = model or yandex_model_uri(settings)
+        self.timeout_seconds = timeout_seconds
 
     def _require_consent(self, profile_id: UUID) -> None:
         if profile_id not in self.settings.yandex_allowed_profile_ids:
@@ -114,7 +136,7 @@ class _YandexAdapter:
                     api_key=key,
                     base_url=YANDEX_BASE_URL,
                     project=self.settings.yandex_folder_id.strip(),
-                    timeout=30.0,
+                    timeout=float(self.timeout_seconds),
                     max_retries=0,
                     default_headers={"x-data-logging-enabled": "false"},
                 )
@@ -125,6 +147,14 @@ class _YandexAdapter:
 
 class YandexResponsesResponder(_YandexAdapter):
     """Historical name for the native Yandex Chat Completions responder."""
+
+    def __init__(self, settings: Settings, *, client: Any = None) -> None:
+        super().__init__(
+            settings,
+            client=client,
+            model=yandex_question_model_uri(settings),
+            timeout_seconds=settings.yandex_question_timeout_seconds,
+        )
 
     def respond(
         self,

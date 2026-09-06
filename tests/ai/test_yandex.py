@@ -96,6 +96,8 @@ def test_yandex_settings_are_separate_and_deny_every_profile_by_default():
     assert configured.yandex_api_key_file.as_posix() == ".tokens/yandex-api-key"
     assert configured.yandex_folder_id == ""
     assert configured.yandex_model == "qwen3.6-35b-a3b"
+    assert configured.yandex_question_model is None
+    assert configured.yandex_question_timeout_seconds == 30
     assert configured.yandex_allowed_profile_ids == ()
 
 
@@ -206,6 +208,43 @@ def test_authorized_question_preserves_bounded_json_blocks_for_native_chat():
     assert "[SLEEP1] [SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
     assert "[SLEEP1, SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
     assert "[SLEEP1–SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
+
+
+def test_question_model_override_is_independent_from_lab_model():
+    profile_id = UUID(int=1)
+    configured = settings(
+        yandex_model="lab-model",
+        yandex_question_model="question-model",
+        yandex_allowed_profile_ids=(profile_id,),
+    )
+    lab_calls = RecordingCompletions(chat_response())
+    question_calls = RecordingCompletions(chat_response("Answer. [LAB1]"))
+
+    assert (
+        YandexLabExtractor(configured, client=client_for(lab_calls)).extract(
+            profile_id, "Unknown marker"
+        )
+        == ()
+    )
+    YandexResponsesResponder(
+        configured, client=client_for(question_calls)
+    ).respond(
+        profile_id=profile_id,
+        question="Synthetic?",
+        context=_question_context(profile_id),
+    )
+
+    assert lab_calls.calls[0]["model"] == "gpt://synthetic-folder/lab-model"
+    assert (
+        question_calls.calls[0]["model"]
+        == "gpt://synthetic-folder/question-model"
+    )
+
+
+def test_question_model_falls_back_to_lab_model():
+    responder = YandexResponsesResponder(settings(yandex_model="shared-model"))
+
+    assert responder.model == "gpt://synthetic-folder/shared-model"
 
 
 @pytest.mark.parametrize(
@@ -372,17 +411,63 @@ def test_yandex_builds_exact_sdk_client_without_reading_openai_key(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("field", ["yandex_folder_id", "yandex_model"])
+def test_yandex_question_client_uses_its_own_bounded_timeout(monkeypatch):
+    profile_id, built = UUID(int=1), []
+    completions = RecordingCompletions(chat_response("Answer. [LAB1]"))
+
+    def fake_openai(**kwargs):
+        built.append(kwargs)
+        return client_for(completions)
+
+    monkeypatch.setattr("health_agent.ai.yandex.OpenAI", fake_openai)
+    configured = settings(
+        yandex_api_key="yandex-secret",
+        yandex_question_timeout_seconds=12,
+        yandex_allowed_profile_ids=(profile_id,),
+    )
+
+    YandexResponsesResponder(configured).respond(
+        profile_id=profile_id,
+        question="Synthetic?",
+        context=_question_context(profile_id),
+    )
+
+    assert built[0]["timeout"] == 12.0
+    assert built[0]["max_retries"] == 0
+
+
+@pytest.mark.parametrize(
+    "field", ["yandex_folder_id", "yandex_model", "yandex_question_model"]
+)
 @pytest.mark.parametrize("value", ["", "bad/path", "bad?query", "bad\nvalue"])
 def test_yandex_rejects_invalid_resource_components(field, value):
     options = {"yandex_folder_id": "folder", "yandex_model": "model", field: value}
+    adapter = (
+        YandexResponsesResponder
+        if field == "yandex_question_model"
+        else YandexLabExtractor
+    )
     with pytest.raises(ValueError):
-        YandexLabExtractor(
+        adapter(
             Settings(
                 _env_file=None, yandex_allowed_profile_ids=(UUID(int=1),), **options
             ),
             client=client_for(RecordingCompletions()),
         )
+
+
+def test_yandex_question_model_uri_validates_folder_component():
+    with pytest.raises(ValueError):
+        YandexResponsesResponder(
+            Settings(_env_file=None, yandex_folder_id="bad/folder"),
+            client=client_for(RecordingCompletions()),
+        )
+
+
+@pytest.mark.parametrize("timeout", [0, 61])
+def test_yandex_question_timeout_is_bounded(timeout):
+    with pytest.raises(ValueError):
+        settings(yandex_question_timeout_seconds=timeout)
 
 
 def _authorized_extractor(completions):

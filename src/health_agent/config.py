@@ -157,6 +157,15 @@ class Settings(BaseSettings):
     yandex_model: str = Field(
         default="qwen3.6-35b-a3b", validation_alias="YANDEX_MODEL"
     )
+    yandex_question_model: str | None = Field(
+        default=None, validation_alias="YANDEX_QUESTION_MODEL"
+    )
+    yandex_question_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=60,
+        validation_alias="YANDEX_QUESTION_TIMEOUT_SECONDS",
+    )
     yandex_allowed_profile_ids: tuple[UUID, ...] = Field(
         default=(), validation_alias="YANDEX_ALLOWED_PROFILE_IDS"
     )

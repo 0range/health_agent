@@ -13,6 +13,9 @@ YANDEX_API_KEY=service-account-api-key
 YANDEX_API_KEY_FILE=.tokens/yandex-api-key
 YANDEX_FOLDER_ID=your-folder-id
 YANDEX_MODEL=qwen3.6-35b-a3b
+# Optional QA-only override; omit to reuse YANDEX_MODEL.
+# YANDEX_QUESTION_MODEL=question-model-id
+YANDEX_QUESTION_TIMEOUT_SECONDS=30
 YANDEX_ALLOWED_PROFILE_IDS=[]
 ```
 
@@ -25,6 +28,13 @@ has changed. Never put a token in chat or git. If using `YANDEX_API_KEY_FILE`, m
 regular file with mode `0600`. Keep the profile allowlist empty until informed consent
 is recorded; cloud lab processing also requires the provider-neutral `--cloud` opt-in
 and retains its daily budget.
+
+`YANDEX_QUESTION_MODEL` changes only health-question answers; laboratory
+extraction continues to use `YANDEX_MODEL`. The QA-only timeout defaults to 30
+seconds and accepts 1–60 seconds. Both clients keep automatic retries disabled.
+Use an alternative question model only after synthetic and owner-approved
+acceptance testing; the example does not activate or recommend a production
+model by itself.
 
 The adapter uses Yandex's native Chat Completions compatibility surface. Earlier
 synthetic prototype probes showed that Qwen works with `reasoning_effort=none` and that
