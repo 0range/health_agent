@@ -103,6 +103,25 @@ def test_import_accepts_registry_cbc_but_not_numeric_narrative(
     assert narrative_report.candidate_count == 0
 
 
+def test_import_preserves_colon_layout_and_printed_flag(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "flag-layout.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text(
+            (72, 72), "Ferritin : 42 ng/mL 30-400\nALT | 53 | U/L | 0-41 H"
+        )
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:flag-layout")
+    rows = session.query(LabObservation).filter_by(document_id=report.document_id).all()
+
+    assert report.candidate_count == 2
+    assert [row.source_name for row in rows] == ["Ferritin", "ALT"]
+    assert rows[1].source_flag == "H"
+    assert rows[1].reference_text == "0-41"
+
+
 def test_image_import_preserves_original_and_cross_source_dedupe(
     session: Session, vault: FileVault, tmp_path: Path, monkeypatch
 ) -> None:

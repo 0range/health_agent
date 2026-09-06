@@ -89,9 +89,10 @@ _UNIT_NORMALIZATIONS: dict[tuple[str, str], UnitNormalization] = {
 def parse_lab_candidates(
     pages: tuple[ExtractedPage, ...],
 ) -> tuple[LabCandidate, ...]:
-    """Return known, complete same-line results as candidates for human review.
+    """Return strict shared-layout candidates for human review.
 
-    The parser does not infer values from neighbouring lines or partial ranges.
+    Accepted layouts preserve complete one-line, explicit pipe/tab, or labelled
+    evidence and never infer values from unlabelled neighbouring lines.
     """
     candidates: list[LabCandidate] = []
     for page in pages:

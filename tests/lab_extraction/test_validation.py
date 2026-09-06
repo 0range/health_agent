@@ -250,6 +250,112 @@ def test_cloud_validation_rejects_multirow_and_malformed_explicit_excerpts():
             )
 
 
+@pytest.mark.parametrize(
+    ("page", "excerpt", "reference"),
+    [
+        (
+            "NotGlucose | mmol/L | 5.1",
+            "Glucose | mmol/L | 5.1",
+            None,
+        ),
+        (
+            "Glucose | mmol/L | 5.10",
+            "Glucose | mmol/L | 5.1",
+            None,
+        ),
+        (
+            "Glucose | mmol/L | 5.1 | 3.9-5.5",
+            "Glucose | mmol/L | 5.1",
+            None,
+        ),
+        (
+            "Test: NotGlucose\nResult: 5.1\nUnits: mmol/L",
+            "Test: Glucose\nResult: 5.1\nUnits: mmol/L",
+            None,
+        ),
+        (
+            "Test: Glucose\nResult: 5.10\nUnits: mmol/L",
+            "Test: Glucose\nResult: 5.1\nUnits: mmol/L",
+            None,
+        ),
+        (
+            "Test: Glucose\nResult: 5.1\nUnits: mmol/L\nReference: 3.9-5.5",
+            "Test: Glucose\nResult: 5.1\nUnits: mmol/L",
+            None,
+        ),
+    ],
+)
+def test_explicit_layout_requires_complete_page_record_boundaries(
+    page, excerpt, reference
+):
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                reference_text=reference,
+                evidence_excerpt=excerpt,
+            ),
+            page,
+        )
+
+
+def test_pipe_layout_rejects_second_row_absorbed_into_reference():
+    text = "Glucose | mmol/L | 5.1 | 3.9-5.5\nALT 20 U/L"
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                reference_text="3.9-5.5\nALT 20 U/L",
+                evidence_excerpt=text,
+            ),
+            text,
+        )
+
+
+def test_explicit_records_preserve_trailing_flags_and_labelled_optional_crop():
+    for text in (
+        "Glucose | mmol/L | 5.1 | 3.9-5.5 H",
+        "ALT | 53 | U/L | 0-41 H",
+    ):
+        row = parse_local(text).candidates[0]
+        assert row.source_flag == "H"
+        assert row.reference_text in {"3.9-5.5", "0-41"}
+        cloud = validate_candidates(
+            {
+                "candidates": [
+                    {
+                        "source_name": row.source_name,
+                        "source_value": row.source_value,
+                        "source_unit": row.source_unit,
+                        "reference_text": row.reference_text,
+                        "source_flag": row.source_flag,
+                        "evidence_excerpt": text,
+                    }
+                ]
+            },
+            text,
+        )[0]
+        assert cloud.source_flag == "H"
+
+    page = "Patient: Synthetic\nTest: Glucose\nResult: 5.1\nUnits: mmol/L\nComment: Synthetic"
+    excerpt = "Test: Glucose\nResult: 5.1\nUnits: mmol/L"
+    accepted = validate_candidates(
+        payload(
+            source_name="Glucose",
+            source_value="5.1",
+            source_unit="mmol/L",
+            reference_text=None,
+            evidence_excerpt=excerpt,
+        ),
+        page,
+    )[0]
+    assert accepted.reference_text is None
+
+
 def test_flag_from_unrelated_later_row_is_rejected():
     text = "ALT 53 U/L 0-41\nOther marker H"
     with pytest.raises(ValueError, match="candidate_evidence_mismatch"):

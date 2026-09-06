@@ -26,7 +26,7 @@ _FIELDS = {
     "evidence_excerpt",
 }
 _ROW = re.compile(
-    r"^\s*(?P<source_name>.+?)\s+(?P<source_value>[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?)\s+"
+    r"^\s*(?P<source_name>.+?)(?:\s*[:=]\s*|\s+)(?P<source_value>[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?)\s+"
     r"(?:(?P<source_flag>[HL↑↓*])\s+)?(?P<source_unit>\S+)(?:\s+(?P<reference_text>.*))?\s*$"
 )
 _METADATA = re.compile(
@@ -115,6 +115,8 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
             raise ValueError("candidate_evidence_mismatch")
         explicit = _explicit_layout_fields(excerpt)
         if explicit is not None:
+            if not _complete_explicit_excerpt(excerpt, text):
+                raise ValueError("candidate_evidence_mismatch")
             expected = {
                 "name": name,
                 "value": value,
@@ -301,6 +303,8 @@ def _require_registered(candidate: Candidate) -> None:
 
 
 def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
+    if "\n" in excerpt or "\r" in excerpt:
+        return None
     delimiter = "|" if "|" in excerpt else "\t"
     if delimiter == "|" and "\t" in excerpt:
         return None
@@ -315,15 +319,34 @@ def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
     else:
         return None
     reference = fields[3] if len(fields) == 4 else None
+    reference, flag = _reference_and_flag(reference)
     result: dict[str, str | None] = {
         "source_name": name,
         "source_value": value,
         "source_unit": unit,
         "reference_text": reference,
-        "source_flag": None,
+        "source_flag": flag,
         "evidence_excerpt": excerpt,
     }
     return result
+
+
+def _reference_and_flag(reference: str | None) -> tuple[str | None, str | None]:
+    if reference is None:
+        return None, None
+    fields = reference.split()
+    flags = [token for token in fields if token in {"H", "L", "↑", "↓", "*"}]
+    if not flags:
+        return reference, None
+    if len(flags) != 1 or (fields[0] != flags[0] and fields[-1] != flags[0]):
+        return reference, None
+    flag = flags[0]
+    remaining = (
+        reference[len(flag) :].strip()
+        if fields[0] == flag
+        else reference[: -len(flag)].strip()
+    )
+    return remaining or None, flag
 
 
 def _parse_labelled(text: str) -> dict[str, str | None] | None:
@@ -384,3 +407,28 @@ def _explicit_layout_fields(excerpt: str) -> dict[str, str | None] | None:
         "reference": row["reference_text"],
         "flag": row["source_flag"],
     }
+
+
+def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
+    """Prove that an explicit excerpt covers complete physical source records."""
+
+    start = text.find(excerpt)
+    while start >= 0:
+        end = start + len(excerpt)
+        line_start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        if line_end < 0:
+            line_end = len(text)
+        whole_lines = not text[line_start:start].strip() and not text[end:line_end].strip()
+        if whole_lines:
+            if "|" in excerpt or "\t" in excerpt:
+                return "\n" not in excerpt and "\r" not in excerpt
+            previous = text[:line_start].rstrip("\r\n").rsplit("\n", 1)[-1].strip()
+            following = text[line_end + 1 :].split("\n", 1)[0].strip()
+            if not (
+                (previous and _LABEL.match(previous))
+                or (following and _LABEL.match(following))
+            ):
+                return True
+        start = text.find(excerpt, start + 1)
+    return False

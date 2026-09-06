@@ -104,6 +104,21 @@ def test_import_parser_accepts_registry_cbc_and_rejects_numeric_narrative():
     assert [candidate.source_name for candidate in candidates] == ["Hemoglobin"]
 
 
+def test_import_parser_preserves_separated_colon_and_pipe_flag():
+    pages = (
+        ExtractedPage(
+            1,
+            "Ferritin : 42 ng/mL 30-400\nALT | 53 | U/L | 0-41 H",
+        ),
+    )
+
+    candidates = parse_lab_candidates(pages)
+
+    assert [candidate.source_name for candidate in candidates] == ["Ferritin", "ALT"]
+    assert candidates[1].source_flag == "H"
+    assert candidates[1].reference_text == "0-41"
+
+
 @pytest.mark.parametrize(
     "value",
     [
