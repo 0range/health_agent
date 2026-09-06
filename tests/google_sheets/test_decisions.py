@@ -109,6 +109,86 @@ def test_parser_accepts_trusted_literal_equals_in_immutable_unit(
     )
 
 
+@pytest.mark.parametrize(
+    ("old_date", "old_rendered"),
+    ((None, "missing"), (date(2026, 8, 20), "2026-08-20")),
+)
+def test_parser_skips_blank_stale_row_after_medical_date_recovery(
+    session: Session, old_date: date | None, old_rendered: str
+) -> None:
+    observation, _review = add_observation(
+        session, DEFAULT_PROFILE_ID, date_value=old_date
+    )
+    before = _bundle(session)
+    stale_row = before.pending_reviews[0].values()
+    assert stale_row[8] == old_rendered
+
+    observation.document.collected_date = date(2026, 9, 6)
+    session.flush()
+    after = _bundle(session)
+    assert after.pending_reviews[0].values()[8] == "2026-09-06"
+    assert after.pending_reviews[0].row_version != before.pending_reviews[0].row_version
+
+    assert (
+        parse_decisions(
+            (REVIEW_HEADERS, stale_row),
+            after.known_reviews,
+            DEFAULT_PROFILE_ID,
+        )
+        == ()
+    )
+
+
+def test_parser_rejects_decision_on_stale_medical_date_row(session: Session) -> None:
+    observation, _review = add_observation(
+        session, DEFAULT_PROFILE_ID, date_value=None
+    )
+    before = _bundle(session)
+    stale_row = list(before.pending_reviews[0].values())
+    stale_row[12] = "approve"
+
+    observation.document.collected_date = date(2026, 9, 6)
+    session.flush()
+
+    with pytest.raises(ReviewGridError, match="ownership or version"):
+        parse_decisions(
+            (REVIEW_HEADERS, tuple(stale_row)),
+            _bundle(session).known_reviews,
+            DEFAULT_PROFILE_ID,
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (
+        (4, "tampered-analyte"),
+        (3, "not-the-original-version"),
+        (8, "09/06/2026"),
+        (8, "20260906"),
+        (8, "2026-W36-7"),
+    ),
+)
+def test_parser_rejects_tampered_blank_stale_date_row(
+    session: Session, column: int, value: str
+) -> None:
+    observation, _review = add_observation(
+        session, DEFAULT_PROFILE_ID, date_value=None
+    )
+    before = _bundle(session)
+    stale_row = list(before.pending_reviews[0].values())
+    stale_row[column] = value
+
+    observation.document.collected_date = date(2026, 9, 6)
+    session.flush()
+
+    with pytest.raises(ReviewGridError, match="ownership or version"):
+        parse_decisions(
+            (REVIEW_HEADERS, tuple(stale_row)),
+            _bundle(session).known_reviews,
+            DEFAULT_PROFILE_ID,
+        )
+
+
 def test_parser_rejects_changed_literal_equals_in_immutable_unit(
     session: Session,
 ) -> None:

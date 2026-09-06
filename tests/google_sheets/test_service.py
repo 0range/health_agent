@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -319,6 +320,41 @@ def test_changed_literal_equals_unit_aborts_before_projection_write(
     with pytest.raises(SheetsSyncFailure, match="review_grid_invalid"):
         service.sync(DEFAULT_PROFILE_ID)
     assert gateway.writes == writes
+
+
+def test_blank_stale_medical_date_row_is_refreshed(
+    tmp_path: Path, clean_database
+) -> None:
+    with session_scope(clean_database) as session:
+        observation, _review = add_observation(
+            session, DEFAULT_PROFILE_ID, date_value=None
+        )
+        observation_id = observation.id
+    gateway = FakeGateway()
+    service = _service(tmp_path, clean_database, gateway)
+    service.configure(
+        DEFAULT_PROFILE_ID,
+        expected_permission_id="permission-1",
+        expected_email="me@example.com",
+    )
+    service.sync(DEFAULT_PROFILE_ID)
+    stale_version = gateway.review_rows[1][3]
+    assert gateway.review_rows[1][8] == "missing"
+    assert any(value is None for value in gateway.review_rows[1][:12])
+    google_native_row = tuple(
+        "" if value is None else value for value in gateway.review_rows[1]
+    )
+    gateway.review_rows = (gateway.review_rows[0], google_native_row)
+
+    with session_scope(clean_database) as session:
+        observation = session.get_one(LabObservation, observation_id)
+        observation.document.collected_date = date(2026, 9, 6)
+
+    report = service.sync(DEFAULT_PROFILE_ID)
+
+    assert report.decisions_applied == 0
+    assert gateway.review_rows[1][8] == "2026-09-06"
+    assert gateway.review_rows[1][3] != stale_version
 
 
 def test_remote_write_failure_keeps_decision_and_next_run_converges(
