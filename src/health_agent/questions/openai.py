@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -14,7 +15,11 @@ from health_agent.insights.catalog import (
     GENERIC_EXPLANATION_RU,
     explain,
 )
-from health_agent.questions.models import EvidenceItem, HealthQuestionContext
+from health_agent.questions.models import (
+    EvidenceItem,
+    HealthQuestionContext,
+    SourceReport,
+)
 from health_agent.questions.presentation import select_presentation
 from health_agent.questions.service import QuestionResponderError
 
@@ -106,6 +111,19 @@ its own [DOC] or [VISIT] source label. Never borrow a date or metadata from anot
 When a report's `medical_date` is null, treat the report's medical date as unknown. Dates
 inside that report's excerpt may describe a prior study or comparison and do not establish
 the current report's date unless the application supplies that report's `medical_date`."""
+
+_UNTRUSTED_REPORT_DATE = re.compile(
+    r"(?<!\d)(?:\d{2}[.-]\d{2}[.-]\d{4}|\d{4}-\d{2}-\d{2})(?!\d)"
+)
+_UNKNOWN_REPORT_DATE_NOTICE = "(дата исследования не установлена)"
+_MASKED_REPORT_DATE = "(дата в тексте скрыта: дата исследования не установлена)"
+
+
+def _report_prompt_text(item: SourceReport) -> str:
+    text = _bounded(item.text, 1_400)
+    if item.kind != "document_excerpt" or item.medical_date is not None:
+        return text
+    return f"{_UNKNOWN_REPORT_DATE_NOTICE}\n{_UNTRUSTED_REPORT_DATE.sub(_MASKED_REPORT_DATE, text)}"
 
 MEDICAL_SAFETY_INSTRUCTIONS += """
 Final presentation check for an ordinary mobile-chat answer:
@@ -224,7 +242,7 @@ def build_responder_input(
             {
                 "citation_label": item.citation_label,
                 "kind": item.kind,
-                "text": _bounded(item.text, 1_400),
+                "text": _report_prompt_text(item),
                 "source_reference": item.source_reference,
                 "medical_date": item.medical_date.isoformat()
                 if item.medical_date is not None
