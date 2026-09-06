@@ -11,6 +11,7 @@ from health_agent.db import session_scope
 from health_agent.lab_extraction.models import LabExtractionJob
 from health_agent.lab_extraction.service import LabExtractionService
 from health_agent.lab_extraction.types import ExtractionError
+from health_agent.lab_extraction.validation import validate_candidates
 from health_agent.models import DEFAULT_PROFILE_ID, LabObservation, ReviewStatus
 from lab_extraction.test_service import Cloud, add_page, service
 
@@ -122,9 +123,29 @@ def test_cli_unknown_retry_requires_explicit_ack(clean_database, tmp_path, monke
 def test_unmapped_candidate_can_be_explicitly_mapped_through_cli(
     clean_database, tmp_path, monkeypatch
 ):
-    add_page(clean_database, "Unknown assay 5.1 mmol/L")
-    worker = service(clean_database, tmp_path)
-    worker.configure(DEFAULT_PROFILE_ID)
+    text = "Unknown assay 5.1 mmol/L"
+    add_page(clean_database, text)
+
+    class UnmappedCloud:
+        def extract(self, profile_id, source_text):
+            return validate_candidates(
+                {
+                    "candidates": [
+                        {
+                            "source_name": "Unknown assay",
+                            "source_value": "5.1",
+                            "source_unit": "mmol/L",
+                            "reference_text": None,
+                            "source_flag": None,
+                            "evidence_excerpt": text,
+                        }
+                    ]
+                },
+                source_text,
+            )
+
+    worker = service(clean_database, tmp_path, cloud=UnmappedCloud())
+    worker.configure(DEFAULT_PROFILE_ID, openai=True)
     worker.run(DEFAULT_PROFILE_ID)
     with session_scope(clean_database) as session:
         original_id = session.scalars(select(LabObservation.id)).one()

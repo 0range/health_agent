@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 
-from health_agent.lab_extraction.registry import normalize_registered
+from health_agent.lab_extraction.registry import (
+    canonical_name,
+    known_unit,
+    normalize_registered,
+)
+from health_agent.lab_extraction.validation import parse_page_candidates
 from health_agent.pdf import ExtractedPage
 
 MAX_LAB_TOKEN_CHARACTERS = 64
@@ -26,96 +31,20 @@ class LabCandidate:
 
     source_name: str
     raw_source_value: str
-    parsed_value: Decimal
+    parsed_value: Decimal | None
     unit: str
     reference_text: str | None
     evidence_excerpt: str
     page_number: int
     status: CandidateStatus = CandidateStatus.NEEDS_REVIEW
+    source_flag: str | None = None
 
-
-_ALIASES = frozenset(
-    {
-        "ферритин",
-        "ferritin",
-        "b12",
-        "витамин b12",
-        "vitamin b12",
-        "кобаламин",
-        "фолат",
-        "фолиевая кислота",
-        "витамин b9",
-        "folate",
-        "folic acid",
-        "vitamin b9",
-        "b9",
-        "холестерин общий",
-        "общий холестерин",
-        "total cholesterol",
-        "cholesterol",
-        "холестерин лпнп",
-        "лпнп",
-        "ldl cholesterol",
-        "ldl",
-        "холестерин лпвп",
-        "лпвп",
-        "hdl cholesterol",
-        "hdl",
-        "триглицериды",
-        "triglycerides",
-        "железо",
-        "iron",
-        "витамин d",
-        "vitamin d",
-        "пролактин",
-        "prolactin",
-    }
-)
 
 _ROW_PATTERN = re.compile(
     r"^\s*(?P<name>.+?)\s*[:=]?\s+"
     r"(?P<value>[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+))\s+"
     r"(?P<unit>\S+)"
     r"(?:\s+(?P<reference>.*?))?\s*$"
-)
-_REFERENCE_PATTERN = re.compile(
-    r"^\s*[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*[-–—]\s*"
-    r"[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*$"
-)
-_LAB_UNITS = frozenset(
-    {
-        "%",
-        "ng/ml",
-        "ng/l",
-        "нг/мл",
-        "нг/л",
-        "pg/ml",
-        "пг/мл",
-        "pmol/l",
-        "пмоль/л",
-        "nmol/l",
-        "нмоль/л",
-        "mmol/l",
-        "ммоль/л",
-        "umol/l",
-        "µmol/l",
-        "мкмоль/л",
-        "ug/l",
-        "µg/l",
-        "мкг/л",
-        "ug/dl",
-        "µg/dl",
-        "мкг/дл",
-        "mg/dl",
-        "мг/дл",
-        "miu/l",
-        "мме/л",
-        "iu/l",
-        "ме/л",
-        "uiu/ml",
-        "µiu/ml",
-        "мкме/мл",
-    }
 )
 
 
@@ -160,78 +89,43 @@ _UNIT_NORMALIZATIONS: dict[tuple[str, str], UnitNormalization] = {
 def parse_lab_candidates(
     pages: tuple[ExtractedPage, ...],
 ) -> tuple[LabCandidate, ...]:
-    """Return known, complete same-line results as candidates for human review.
+    """Return strict shared-layout candidates for human review.
 
-    The parser does not infer values from neighbouring lines or partial ranges.
+    Accepted layouts preserve complete one-line, explicit pipe/tab, or labelled
+    evidence and never infer values from unlabelled neighbouring lines.
     """
     candidates: list[LabCandidate] = []
     for page in pages:
-        for source_line in page.text.splitlines():
-            candidate = _parse_line(page.page_number, source_line)
-            if candidate is not None:
-                candidates.append(candidate)
+        for candidate in parse_page_candidates(page.text).candidates:
+            candidates.append(
+                LabCandidate(
+                    source_name=candidate.source_name,
+                    raw_source_value=candidate.source_value,
+                    parsed_value=candidate.parsed_value,
+                    unit=candidate.source_unit,
+                    reference_text=candidate.reference_text,
+                    evidence_excerpt=candidate.evidence_excerpt,
+                    page_number=page.page_number,
+                    source_flag=candidate.source_flag,
+                )
+            )
     return tuple(candidates)
 
 
 def looks_like_lab_document(pages: tuple[ExtractedPage, ...]) -> bool:
     """Recognize numeric lab-like rows without treating ordinary prose as a lab."""
     for page in pages:
+        if parse_page_candidates(page.text).candidates:
+            return True
         for source_line in page.text.splitlines():
             match = _ROW_PATTERN.match(source_line)
-            if match is not None and _is_unit(match["unit"]):
-                return True
-            normalized_line = _normalise_name(source_line)
-            if any(alias in normalized_line for alias in _ALIASES) and any(
-                character.isdigit() for character in source_line
+            if (
+                match is not None
+                and not canonical_name(match["name"].strip()).startswith("unmapped_")
+                and known_unit(match["unit"])
             ):
                 return True
     return False
-
-
-def _parse_line(page_number: int, source_line: str) -> LabCandidate | None:
-    match = _ROW_PATTERN.match(source_line)
-    if match is None:
-        return None
-
-    source_name = match["name"].strip()
-    if _normalise_name(source_name) not in _ALIASES:
-        return None
-
-    unit = match["unit"]
-    if not _is_unit(unit):
-        return None
-
-    try:
-        raw_source_value = match["value"]
-        parsed_value = parse_decimal_token(raw_source_value)
-    except ValueError:
-        return None
-
-    raw_reference = match["reference"]
-    reference_text = (
-        raw_reference.strip()
-        if raw_reference is not None and _REFERENCE_PATTERN.fullmatch(raw_reference)
-        else None
-    )
-    return LabCandidate(
-        source_name=source_name,
-        raw_source_value=raw_source_value,
-        parsed_value=parsed_value,
-        unit=unit,
-        reference_text=reference_text,
-        evidence_excerpt=source_line,
-        page_number=page_number,
-    )
-
-
-def _normalise_name(source_name: str) -> str:
-    return " ".join(source_name.casefold().split())
-
-
-def _is_unit(value: str) -> bool:
-    """Accept only established units for the Slice 1 laboratory aliases."""
-    normalised = value.casefold().replace("μ", "µ")
-    return normalised in _LAB_UNITS
 
 
 def parse_decimal_token(raw_value: str) -> Decimal:

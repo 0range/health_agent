@@ -8,6 +8,7 @@ from typing import Any
 from health_agent.lab_extraction.registry import (
     bounded_decimal,
     canonical_name,
+    normalize_registered,
 )
 from health_agent.lab_extraction.types import (
     MAX_CANDIDATES,
@@ -25,11 +26,34 @@ _FIELDS = {
     "evidence_excerpt",
 }
 _ROW = re.compile(
-    r"^\s*(?P<source_name>.+?)\s+(?P<source_value>[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?)\s+"
+    r"^\s*(?P<source_name>.+?)(?:\s*[:=]\s*|\s+)(?P<source_value>[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?)\s+"
     r"(?:(?P<source_flag>[HL↑↓*])\s+)?(?P<source_unit>\S+)(?:\s+(?P<reference_text>.*))?\s*$"
 )
 _METADATA = re.compile(
     r"^(?:patient|пациент|date|дата|collection|issued|birth|пол|sex|age|возраст|reference|референс)",
+    re.IGNORECASE,
+)
+_VALUE = re.compile(
+    r"[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?"
+)
+_LABEL_NAMES = {
+    "test": "name",
+    "analyte": "name",
+    "показатель": "name",
+    "result": "value",
+    "результат": "value",
+    "unit": "unit",
+    "units": "unit",
+    "единица": "unit",
+    "единицы": "unit",
+    "reference": "reference",
+    "reference range": "reference",
+    "референс": "reference",
+    "референсный интервал": "reference",
+}
+_LABEL = re.compile(
+    r"(?P<label>reference\s+range|референсный\s+интервал|test|analyte|"
+    r"показатель|result|результат|units?|единиц(?:а|ы)|reference|референс)\s*:\s*",
     re.IGNORECASE,
 )
 
@@ -75,7 +99,7 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
         name = _source_string(row["source_name"], 120)
         value = _source_string(row["source_value"], 64)
         unit = _source_string(row["source_unit"], 32)
-        excerpt = _source_string(row["evidence_excerpt"], 500)
+        excerpt = _source_string(row["evidence_excerpt"], 1000)
         reference = row["reference_text"]
         flag = row["source_flag"]
         if flag is not None and flag not in ("H", "L", "↑", "↓", "*"):
@@ -89,6 +113,41 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
             or (flag is not None and flag not in excerpt)
         ):
             raise ValueError("candidate_evidence_mismatch")
+        explicit = _explicit_layout_fields(excerpt)
+        if explicit is not None:
+            if not _complete_explicit_excerpt(excerpt, text):
+                raise ValueError("candidate_evidence_mismatch")
+            expected = {
+                "name": name,
+                "value": value,
+                "unit": unit,
+                "reference": reference,
+                "flag": flag,
+            }
+            if explicit != expected:
+                raise ValueError("candidate_evidence_mismatch")
+            qualified = value.startswith(("<", ">", "≤", "≥"))
+            parsed = bounded_decimal(value[1:] if qualified else value)
+            low, high = _reference_range(reference)
+            result.append(
+                Candidate(
+                    name,
+                    value,
+                    unit,
+                    reference,
+                    excerpt,
+                    canonical_name(name),
+                    None if qualified else parsed,
+                    flag,
+                    low,
+                    high,
+                )
+            )
+            continue
+        if "|" in excerpt or "\t" in excerpt:
+            raise ValueError("candidate_evidence_mismatch")
+        if _LABEL.search(excerpt) is not None:
+            raise ValueError("candidate_evidence_mismatch")
         name_span = _field_span(name, excerpt, text)
         value_span = _field_span(value, excerpt, text, name_span[1])
         unit_span = _field_span(unit, excerpt, text, value_span[1])
@@ -101,8 +160,10 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
         flag_between = flag is not None and gap == flag
         if gap and gap != flag:
             raise ValueError("candidate_evidence_mismatch")
+        tail_end = unit_span[1]
         if reference is not None:
             reference_span = _field_span(reference, excerpt, text, unit_span[1])
+            tail_end = reference_span[1]
             gap = excerpt[unit_span[1] : reference_span[0]].strip(" \t\r\n|:=")
             flag_between = flag_between or (flag is not None and gap == flag)
             if gap and gap != flag:
@@ -115,6 +176,10 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
                 or re.fullmatch(r"[\s|:=]*", excerpt[tail_start : flag_span[0]]) is None
             ):
                 raise ValueError("candidate_evidence_mismatch")
+            if flag_span[0] >= tail_start:
+                tail_end = flag_span[1]
+        if re.fullmatch(r"[\s|:=]*", excerpt[tail_end:]) is None:
+            raise ValueError("candidate_evidence_mismatch")
         qualified = value.startswith(("<", ">", "≤", "≥"))
         parsed = bounded_decimal(value[1:] if qualified else value)
         low, high = _reference_range(reference)
@@ -156,11 +221,26 @@ def parse_local(text: str) -> LocalResult:
         raise ValueError("page_text_limit")
     rows: list[Candidate] = []
     unresolved = not bool(text.strip())
+    labelled = _parse_labelled(text)
+    if labelled is not None:
+        try:
+            candidates = validate_candidates({"candidates": [labelled]}, text)
+        except ValueError:
+            return LocalResult((), True)
+        return LocalResult(candidates, False)
     for source_line in text.splitlines():
         line = source_line.strip()
         if not line or _METADATA.match(line):
             continue
-        match = _ROW.fullmatch(re.sub(r"\s*\|\s*", " ", line))
+        explicit = _parse_pipe(line) if "|" in line or "\t" in line else None
+        if "|" in line or "\t" in line:
+            if explicit is None:
+                unresolved = True
+                continue
+            row = explicit
+            match = None
+        else:
+            match = _ROW.fullmatch(line)
         if match is not None:
             row = match.groupdict()
             # Cleaning table separators never fabricates evidence: exact original
@@ -186,12 +266,15 @@ def parse_local(text: str) -> LocalResult:
                         if fields[0] == flags[0]
                         else reference[: -len(flags[0])].strip()
                     ) or None
+        if match is not None or explicit is not None:
             try:
                 candidates = validate_candidates({"candidates": [row]}, text)
+                candidate = candidates[0]
+                _require_registered(candidate)
             except ValueError:
                 unresolved = True
             else:
-                rows.extend(candidates)
+                rows.append(candidate)
             continue
         if any(char.isdigit() for char in line) and any(
             char.isalpha() for char in line
@@ -200,3 +283,190 @@ def parse_local(text: str) -> LocalResult:
     if len(rows) > MAX_CANDIDATES:
         raise ValueError("page_candidate_limit")
     return LocalResult(tuple(rows), unresolved)
+
+
+def parse_page_candidates(text: str) -> LocalResult:
+    """Shared strict page parser used by initial import and queued extraction."""
+
+    return parse_local(text)
+
+
+def _require_registered(candidate: Candidate) -> None:
+    if candidate.canonical_name.startswith("unmapped_"):
+        raise ValueError("unsupported_lab_name")
+    raw = (
+        candidate.source_value[1:]
+        if candidate.source_value.startswith(("<", ">", "≤", "≥"))
+        else candidate.source_value
+    )
+    normalize_registered(candidate.canonical_name, raw, candidate.source_unit)
+
+
+def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
+    if len(excerpt.splitlines()) != 1:
+        return None
+    delimiter = "|" if "|" in excerpt else "\t"
+    if delimiter == "|" and "\t" in excerpt:
+        return None
+    fields = [field.strip() for field in excerpt.split(delimiter)]
+    if len(fields) not in {3, 4} or any(not field for field in fields):
+        return None
+    name = fields[0]
+    if _VALUE.fullmatch(fields[1]):
+        value, unit = fields[1], fields[2]
+    elif _VALUE.fullmatch(fields[2]):
+        unit, value = fields[1], fields[2]
+    else:
+        return None
+    reference = fields[3] if len(fields) == 4 else None
+    reference, flag = _reference_and_flag(reference)
+    result: dict[str, str | None] = {
+        "source_name": name,
+        "source_value": value,
+        "source_unit": unit,
+        "reference_text": reference,
+        "source_flag": flag,
+        "evidence_excerpt": excerpt,
+    }
+    return result
+
+
+def _reference_and_flag(reference: str | None) -> tuple[str | None, str | None]:
+    if reference is None:
+        return None, None
+    fields = reference.split()
+    flags = [token for token in fields if token in {"H", "L", "↑", "↓", "*"}]
+    if not flags:
+        return reference, None
+    if len(flags) != 1 or (fields[0] != flags[0] and fields[-1] != flags[0]):
+        return reference, None
+    flag = flags[0]
+    remaining = (
+        reference[len(flag) :].strip()
+        if fields[0] == flag
+        else reference[: -len(flag)].strip()
+    )
+    return remaining or None, flag
+
+
+def _parse_labelled(text: str) -> dict[str, str | None] | None:
+    excerpt = text.strip()
+    if not excerpt or len(excerpt) > 1000 or len(excerpt.splitlines()) > 8:
+        return None
+    found: dict[str, str] = {}
+    for line in excerpt.splitlines():
+        position = 0
+        while position < len(line):
+            match = _LABEL.match(line, position)
+            if match is None:
+                return None
+            next_match = _LABEL.search(line, match.end())
+            end = len(line) if next_match is None else next_match.start()
+            value = line[match.end() : end].strip()
+            key = _LABEL_NAMES[" ".join(match.group("label").casefold().split())]
+            if not value or key in found:
+                return None
+            found[key] = value
+            position = end
+    if set(found) not in ({"name", "value", "unit"}, {"name", "value", "unit", "reference"}):
+        return None
+    if _VALUE.fullmatch(found["value"]) is None:
+        return None
+    return {
+        "source_name": found["name"],
+        "source_value": found["value"],
+        "source_unit": found["unit"],
+        "reference_text": found.get("reference"),
+        "source_flag": None,
+        "evidence_excerpt": excerpt,
+    }
+
+
+def _explicit_layout_fields(excerpt: str) -> dict[str, str | None] | None:
+    row = _parse_pipe(excerpt) if "|" in excerpt or "\t" in excerpt else _parse_labelled(excerpt)
+    if row is None:
+        return None
+    candidate = Candidate(
+        str(row["source_name"]),
+        str(row["source_value"]),
+        str(row["source_unit"]),
+        row["reference_text"],
+        excerpt,
+        canonical_name(str(row["source_name"])),
+        None,
+        row["source_flag"],
+    )
+    try:
+        _require_registered(candidate)
+    except ValueError:
+        return None
+    return {
+        "name": row["source_name"],
+        "value": row["source_value"],
+        "unit": row["source_unit"],
+        "reference": row["reference_text"],
+        "flag": row["source_flag"],
+    }
+
+
+def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
+    """Prove that an explicit excerpt covers complete physical source records."""
+
+    lines = _source_lines(text)
+    start = text.find(excerpt)
+    while start >= 0:
+        end = start + len(excerpt)
+        first = next(
+            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= start <= line_end),
+            None,
+        )
+        last_position = max(start, end - 1)
+        last = next(
+            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= last_position < line_end or (line_start == line_end == last_position)),
+            None,
+        )
+        if first is None or last is None:
+            start = text.find(excerpt, start + 1)
+            continue
+        first_start, _, _ = lines[first]
+        _, last_end, _ = lines[last]
+        whole_lines = not text[first_start:start].strip() and not text[end:last_end].strip()
+        if whole_lines:
+            if "|" in excerpt or "\t" in excerpt:
+                return first == last and len(excerpt.splitlines()) == 1
+            previous = _nearest_nonempty(lines, first, -1)
+            following = _nearest_nonempty(lines, last, 1)
+            if not (
+                (previous and _LABEL.match(previous))
+                or (following and _LABEL.match(following))
+            ):
+                return True
+        start = text.find(excerpt, start + 1)
+    return False
+
+
+def _source_lines(text: str) -> list[tuple[int, int, str]]:
+    pieces = text.splitlines(keepends=True)
+    if not pieces:
+        return [(0, 0, "")]
+    rows: list[tuple[int, int, str]] = []
+    offset = 0
+    for piece in pieces:
+        content = piece.splitlines()[0] if piece.splitlines() else ""
+        rows.append((offset, offset + len(content), content))
+        offset += len(piece)
+    if offset < len(text):
+        rows.append((offset, len(text), text[offset:]))
+    return rows
+
+
+def _nearest_nonempty(
+    lines: list[tuple[int, int, str]], index: int, direction: int
+) -> str:
+    current = index + direction
+    while 0 <= current < len(lines):
+        value = lines[current][2].strip()
+        if value:
+            return value
+        current += direction
+    return ""

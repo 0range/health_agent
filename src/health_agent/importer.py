@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from health_agent.images import extract_image, validate_image
+from health_agent.lab_extraction.registry import canonical_name
 from health_agent.labs import (
     LabCandidate,
     looks_like_lab_document,
@@ -59,42 +60,6 @@ class InvalidReviewTransition(ValueError):
         super().__init__(f"Cannot review an observation with status {status.value!r}")
         self.status = status
 
-
-_CANONICAL_NAMES = {
-    "ferritin": "ferritin",
-    "ферритин": "ferritin",
-    "b12": "vitamin_b12",
-    "витамин b12": "vitamin_b12",
-    "vitamin b12": "vitamin_b12",
-    "кобаламин": "vitamin_b12",
-    "фолат": "folate",
-    "фолиевая кислота": "folate",
-    "витамин b9": "folate",
-    "folate": "folate",
-    "folic acid": "folate",
-    "vitamin b9": "folate",
-    "b9": "folate",
-    "холестерин общий": "total_cholesterol",
-    "общий холестерин": "total_cholesterol",
-    "total cholesterol": "total_cholesterol",
-    "cholesterol": "total_cholesterol",
-    "холестерин лпнп": "ldl_cholesterol",
-    "лпнп": "ldl_cholesterol",
-    "ldl cholesterol": "ldl_cholesterol",
-    "ldl": "ldl_cholesterol",
-    "холестерин лпвп": "hdl_cholesterol",
-    "лпвп": "hdl_cholesterol",
-    "hdl cholesterol": "hdl_cholesterol",
-    "hdl": "hdl_cholesterol",
-    "триглицериды": "triglycerides",
-    "triglycerides": "triglycerides",
-    "железо": "iron",
-    "iron": "iron",
-    "витамин d": "vitamin_d",
-    "vitamin d": "vitamin_d",
-    "пролактин": "prolactin",
-    "prolactin": "prolactin",
-}
 
 def import_document(
     session: Session,
@@ -405,6 +370,7 @@ def _observation_from_candidate(
         reference_low=None,
         reference_high=None,
         reference_text=candidate.reference_text,
+        source_flag=candidate.source_flag,
         evidence_excerpt=candidate.evidence_excerpt,
         confidence=0.5,
         status=ReviewStatus.NEEDS_REVIEW,
@@ -412,8 +378,10 @@ def _observation_from_candidate(
 
 
 def _canonical_name(source_name: str) -> str:
-    normalised = " ".join(source_name.casefold().split())
-    return _CANONICAL_NAMES[normalised]
+    result = canonical_name(source_name)
+    if result.startswith("unmapped_"):
+        raise ValueError("unsupported laboratory analyte")
+    return result
 
 
 def _require_pending(observation: LabObservation) -> None:

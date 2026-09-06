@@ -59,6 +59,69 @@ def test_reimport_is_duplicate(
     assert first.review_count == 1
 
 
+def test_import_uses_shared_registry_and_preserves_qualified_source(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "shared-layout.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text(
+            (72, 72),
+            "Test: Glucose\nResult: <5.1\nUnits: mmol/L\nReference range: 3.9-5.5",
+        )
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:shared-layout")
+    observation = session.query(LabObservation).filter_by(
+        document_id=report.document_id
+    ).one()
+
+    assert report.candidate_count == 1
+    assert observation.canonical_name == "glucose"
+    assert observation.source_value == "<5.1"
+    assert observation.parsed_value is None
+    assert observation.reference_text == "3.9-5.5"
+    assert observation.status is ReviewStatus.NEEDS_REVIEW
+
+
+def test_import_accepts_registry_cbc_but_not_numeric_narrative(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    lab = tmp_path / "cbc.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((72, 72), "Hemoglobin 145 g/L 130-170")
+        pdf.save(lab)
+    narrative = tmp_path / "narrative.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((72, 72), "Order code 12345 status-text")
+        pdf.save(narrative)
+
+    lab_report = import_document(session, vault, lab, "local:cbc")
+    narrative_report = import_document(session, vault, narrative, "local:narrative")
+
+    assert lab_report.candidate_count == 1
+    assert narrative_report.candidate_count == 0
+
+
+def test_import_preserves_colon_layout_and_printed_flag(
+    session: Session, vault: FileVault, tmp_path: Path
+) -> None:
+    path = tmp_path / "flag-layout.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text(
+            (72, 72), "Ferritin : 42 ng/mL 30-400\nALT | 53 | U/L | 0-41 H"
+        )
+        pdf.save(path)
+
+    report = import_document(session, vault, path, "local:flag-layout")
+    rows = session.query(LabObservation).filter_by(document_id=report.document_id).all()
+
+    assert report.candidate_count == 2
+    assert [row.source_name for row in rows] == ["Ferritin", "ALT"]
+    assert rows[1].source_flag == "H"
+    assert rows[1].reference_text == "0-41"
+
+
 def test_image_import_preserves_original_and_cross_source_dedupe(
     session: Session, vault: FileVault, tmp_path: Path, monkeypatch
 ) -> None:
@@ -203,7 +266,7 @@ def test_approval_preserves_decimal_comma_and_normalizes_separately(
     )
 
 
-def test_unsupported_pair_cannot_be_approved(
+def test_unsupported_pair_is_not_published_for_approval(
     session: Session, vault: FileVault, tmp_path: Path
 ) -> None:
     path = tmp_path / "unsupported-pair.pdf"
@@ -216,15 +279,9 @@ def test_unsupported_pair_cannot_be_approved(
         text("SELECT id FROM lab_observations WHERE document_id = :document_id"),
         {"document_id": report.document_id},
     )
-    assert observation_id is not None
-
-    with pytest.raises(ValueError, match="Unsupported normalization"):
-        approve_observation(session, observation_id)
-
-    observation = session.get_one(LabObservation, observation_id)
-    assert observation.status is ReviewStatus.NEEDS_REVIEW
-    assert observation.normalized_value is None
-    assert observation.normalized_unit is None
+    assert observation_id is None
+    assert report.candidate_count == 0
+    assert report.processing_status == "needs_attention"
 
 
 def test_review_transitions_are_one_way(
@@ -449,7 +506,7 @@ def test_conflicting_medical_date_immediately_hides_verified_chart_row(
     assert session.execute(text(LAB_HISTORY_QUERY)).all() == []
 
 
-def test_lab_like_text_without_candidates_needs_attention(
+def test_registry_lab_previously_missing_from_importer_needs_review(
     session: Session, vault: FileVault, tmp_path: Path
 ) -> None:
     path = tmp_path / "unsupported-lab.pdf"
@@ -461,10 +518,11 @@ def test_lab_like_text_without_candidates_needs_attention(
     report = import_document(session, vault, path, "local:unsupported-lab")
     document = session.get_one(Document, report.document_id)
 
-    assert report.status == "needs_attention"
-    assert report.processing_status == "needs_attention"
+    assert report.status == "imported"
+    assert report.processing_status == "needs_review"
     assert document.document_type == "laboratory_report"
-    assert document.safe_error_code == "no_lab_candidates"
+    assert document.safe_error_code is None
+    assert report.candidate_count == 1
 
 
 def test_clear_non_lab_prose_is_not_flagged_as_a_failed_lab_parse(

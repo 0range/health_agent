@@ -45,7 +45,7 @@ def test_parser_accepts_known_aliases_and_decimal_commas() -> None:
     ]
 
 
-def test_parser_rejects_unknown_names_and_does_not_guess_incomplete_ranges() -> None:
+def test_parser_rejects_shifted_unit_and_preserves_printed_reference_text() -> None:
     pages = (
         ExtractedPage(
             1,
@@ -61,8 +61,9 @@ def test_parser_rejects_unknown_names_and_does_not_guess_incomplete_ranges() -> 
     assert [
         (candidate.source_name, candidate.reference_text) for candidate in candidates
     ] == [
-        ("Ферритин", None),
-        ("Ферритин", None),
+        ("Глюкоза", "3.9-5.5"),
+        ("Ферритин", "<400"),
+        ("Ферритин", "30-400 / 20-300"),
     ]
 
 
@@ -70,6 +71,52 @@ def test_parser_rejects_ordinary_prose_as_a_unit() -> None:
     pages = (ExtractedPage(1, "Ferritin 42 words from a note"),)
 
     assert parse_lab_candidates(pages) == ()
+
+
+def test_import_parser_delegates_to_shared_layouts_and_preserves_qualified_value():
+    pages = (
+        ExtractedPage(
+            3,
+            "Test: Glucose\nResult: <5.1\nUnits: mmol/L\nReference range: 3.9-5.5",
+        ),
+    )
+
+    candidate = parse_lab_candidates(pages)[0]
+
+    assert candidate.source_name == "Glucose"
+    assert candidate.raw_source_value == "<5.1"
+    assert candidate.parsed_value is None
+    assert candidate.unit == "mmol/L"
+    assert candidate.reference_text == "3.9-5.5"
+    assert candidate.page_number == 3
+
+
+def test_import_parser_accepts_registry_cbc_and_rejects_numeric_narrative():
+    pages = (
+        ExtractedPage(
+            1,
+            "Hemoglobin 145 g/L 130-170\nOrder code 12345 status-text",
+        ),
+    )
+
+    candidates = parse_lab_candidates(pages)
+
+    assert [candidate.source_name for candidate in candidates] == ["Hemoglobin"]
+
+
+def test_import_parser_preserves_separated_colon_and_pipe_flag():
+    pages = (
+        ExtractedPage(
+            1,
+            "Ferritin : 42 ng/mL 30-400\nALT | 53 | U/L | 0-41 H",
+        ),
+    )
+
+    candidates = parse_lab_candidates(pages)
+
+    assert [candidate.source_name for candidate in candidates] == ["Ferritin", "ALT"]
+    assert candidates[1].source_flag == "H"
+    assert candidates[1].reference_text == "0-41"
 
 
 @pytest.mark.parametrize(
