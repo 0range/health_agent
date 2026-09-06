@@ -7,7 +7,11 @@ import httpx
 import openai
 import pytest
 
-from health_agent.ai.yandex import YandexLabExtractor, YandexResponsesResponder
+from health_agent.ai.yandex import (
+    _YANDEX_CITATION_INSTRUCTIONS,
+    YandexLabExtractor,
+    YandexResponsesResponder,
+)
 from health_agent.config import Settings
 from health_agent.lab_extraction.openai import _INSTRUCTIONS, _SCHEMA
 from health_agent.lab_extraction.types import ExtractionError
@@ -179,7 +183,12 @@ def test_authorized_question_preserves_bounded_json_blocks_for_native_chat():
         {
             "model": "gpt://synthetic-folder/qwen3.6-35b-a3b",
             "messages": [
-                {"role": "system", "content": MEDICAL_SAFETY_INSTRUCTIONS},
+                {
+                    "role": "system",
+                    "content": (
+                        MEDICAL_SAFETY_INSTRUCTIONS + _YANDEX_CITATION_INSTRUCTIONS
+                    ),
+                },
                 {"role": "user", "content": expected_content},
             ],
             "max_tokens": 2_000,
@@ -194,6 +203,9 @@ def test_authorized_question_preserves_bounded_json_blocks_for_native_chat():
         block["type"] == "text" and json.loads(block["text"])
         for block in expected_content
     )
+    assert "[SLEEP1] [SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
+    assert "[SLEEP1, SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
+    assert "[SLEEP1–SLEEP2]" in _YANDEX_CITATION_INSTRUCTIONS
 
 
 @pytest.mark.parametrize(

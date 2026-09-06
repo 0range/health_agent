@@ -29,6 +29,9 @@ from health_agent.questions.service import QuestionResponderError
 
 YANDEX_BASE_URL = "https://ai.api.cloud.yandex.net/v1"
 MAX_CHAT_CONTENT_CHARACTERS = 80_000
+_YANDEX_CITATION_INSTRUCTIONS = """
+Citation output syntax is strict: copy each supplied bracketed citation label verbatim as a separate token. Never combine IDs inside brackets or abbreviate them into ranges. For multiple sources write [SLEEP1] [SLEEP2], only if both labels were supplied; never [SLEEP1, SLEEP2] or [SLEEP1–SLEEP2]. Square brackets are reserved exclusively for these exact evidence labels. Never put JSON field names, missing-data keys, placeholders, or explanatory text in square brackets. Explain missing data in ordinary Russian prose. Before finalizing, ensure every bracketed token occurs verbatim among the supplied citation labels. Do not invent evidence to satisfy the format.
+"""
 
 
 def _chat_content(response: Any) -> str:
@@ -66,7 +69,10 @@ def _chat_question_messages(
     if not isinstance(blocks, list):  # pragma: no cover - builder contract guard
         raise TypeError("question content must be a list")
     return [
-        {"role": "system", "content": MEDICAL_SAFETY_INSTRUCTIONS},
+        {
+            "role": "system",
+            "content": MEDICAL_SAFETY_INSTRUCTIONS + _YANDEX_CITATION_INSTRUCTIONS,
+        },
         {
             "role": "user",
             "content": [
