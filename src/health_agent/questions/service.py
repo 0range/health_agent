@@ -167,10 +167,16 @@ class HealthQuestionApplicationService:
                 evidence=context.evidence,
                 limitations=context.limitations,
             )
+        displayed = _without_citation_labels(generated)
+        if not displayed or _contains_internal_source_reference(generated, context):
+            return QuestionAnswerResult(
+                text=_with_footer(INSUFFICIENT_EVIDENCE_TEXT, context, set()),
+                safe_error_code=None,
+                evidence=context.evidence,
+                limitations=context.limitations,
+            )
         return QuestionAnswerResult(
-            text=_with_footer(
-                generated.strip(), context, set(_BRACKETED_TOKEN.findall(generated))
-            ),
+            text=_with_meaningful_limitations(displayed, context),
             safe_error_code=None,
             evidence=context.evidence,
             limitations=context.limitations,
@@ -327,6 +333,48 @@ def _with_footer(
 ) -> str:
     footer = render_source_footer(context, cited_labels)
     return f"{answer}\n\n{footer}" if footer else answer
+
+
+def _without_citation_labels(answer: str) -> str:
+    """Hide already-validated internal labels from the normal user response."""
+
+    lines = []
+    for line in _BRACKETED_TOKEN.sub("", answer).splitlines():
+        compact = re.sub(r"[ \t]+", " ", line).strip()
+        compact = re.sub(r"\s+([,.;:!?])", r"\1", compact)
+        lines.append(compact)
+    return "\n".join(lines).strip()
+
+
+def _with_meaningful_limitations(answer: str, context: HealthQuestionContext) -> str:
+    limitations = [
+        limitation
+        for limitation in context.limitations
+        if limitation.prevents_requested_inference
+    ][:2]
+    if not limitations:
+        return answer
+    detail = " ".join(
+        _display_bound(item.message, MAX_RENDERED_REFERENCE_CHARACTERS)
+        for item in limitations
+    )
+    return f"{answer}\n\nВажно: {detail}"
+
+
+def _contains_internal_source_reference(
+    answer: str, context: HealthQuestionContext
+) -> bool:
+    presentation = select_presentation(context)
+    references = {
+        item.source_reference
+        for item in presentation.evidence
+        if item.source_reference and item.source_reference != "unknown"
+    } | {
+        item.source_reference
+        for item in presentation.reports
+        if item.source_reference and item.source_reference != "unknown"
+    }
+    return any(reference in answer for reference in references)
 
 
 def _has_only_valid_citations(answer: str, context: HealthQuestionContext) -> bool:

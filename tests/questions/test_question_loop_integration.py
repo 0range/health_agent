@@ -137,9 +137,13 @@ def test_deferred_question_reuses_exact_prepared_reply_across_restart_and_parts(
 
         def create(self, **kwargs):
             self.calls.append(kwargs)
-            return SimpleNamespace(status="completed", output_text=(
-                f"Attempt {len(self.calls)}: recorded ferritin [LAB1]. " + "Detail. " * 900
-            ))
+            return SimpleNamespace(
+                status="completed",
+                output_text=(
+                    f"Attempt {len(self.calls)}: recorded ferritin [LAB1]. "
+                    + "Detail. " * 900
+                ),
+            )
 
     responses = ChangingResponses()
 
@@ -166,19 +170,26 @@ def test_deferred_question_reuses_exact_prepared_reply_across_restart_and_parts(
     def service(state):
         application = HealthQuestionApplicationService(
             DatabaseHealthContextBuilder(clean_database),
-            OpenAIResponsesResponder("fake-key", client=SimpleNamespace(responses=responses)),
+            OpenAIResponsesResponder(
+                "fake-key", client=SimpleNamespace(responses=responses)
+            ),
         )
         return TelegramUpdateService(
-            BOT_ID, gateway, state, TelegramMessenger(BOT_ID, gateway, state),
+            BOT_ID,
+            gateway,
+            state,
+            TelegramMessenger(BOT_ID, gateway, state),
             TelegramHealthQuestionService(application, PrivateReplyStore(spool_root)),
-            ReadOnlyQuestionCommands(lambda _: QuestionStatus(True, {})), _NoAttachments(),
-            staging_root=tmp_path / "staging", clock=lambda: now,
+            ReadOnlyQuestionCommands(lambda _: QuestionStatus(True, {})),
+            _NoAttachments(),
+            staging_root=tmp_path / "staging",
+            clock=lambda: now,
         )
 
     updates = service(state)
     first = updates.process_update(_free_form_update())
     assert not first.terminal and first.status == "retryable_error"
-    path, = spool_root.iterdir()
+    (path,) = spool_root.iterdir()
     prepared = path.read_bytes().partition(b"\n")[2].decode("utf-8")
     original_parts = split_message(prepared)
     assert len(original_parts) >= 2
@@ -230,8 +241,11 @@ def test_pdf_deferred_reply_replays_identical_duplicate_receipt(
         yield object()
 
     inbox = TelegramMedicalInbox(
-        object(), FileVault(tmp_path / "vault"), tmp_path / "temporary",  # type: ignore[arg-type]
-        importer=importer, session_scope_factory=sessions,
+        object(),
+        FileVault(tmp_path / "vault"),
+        tmp_path / "temporary",  # type: ignore[arg-type]
+        importer=importer,
+        session_scope_factory=sessions,
     )
 
     class PdfGateway(FakeTelegramGateway):
@@ -260,17 +274,25 @@ def test_pdf_deferred_reply_replays_identical_duplicate_receipt(
     assert isinstance(message, dict)
     del message["text"]
     message["document"] = {
-        "file_id": "pdf", "file_unique_id": "unique-pdf", "file_name": "test.pdf",
-        "mime_type": "application/pdf", "file_size": len(payload),
+        "file_id": "pdf",
+        "file_unique_id": "unique-pdf",
+        "file_name": "test.pdf",
+        "mime_type": "application/pdf",
+        "file_size": len(payload),
     }
     application = SimpleNamespace(answer=lambda *_args, **_kwargs: None)
 
     def service():
         return TelegramUpdateService(
-            BOT_ID, gateway, state, TelegramMessenger(BOT_ID, gateway, state),
+            BOT_ID,
+            gateway,
+            state,
+            TelegramMessenger(BOT_ID, gateway, state),
             TelegramHealthQuestionService(application),
-            ReadOnlyQuestionCommands(lambda _: QuestionStatus(True, {})), inbox,
-            staging_root=tmp_path / "staging", clock=lambda: now,
+            ReadOnlyQuestionCommands(lambda _: QuestionStatus(True, {})),
+            inbox,
+            staging_root=tmp_path / "staging",
+            clock=lambda: now,
         )
 
     assert service().process_update(update).status == "retryable_error"
@@ -356,7 +378,9 @@ def test_bound_telegram_question_uses_only_profile_scoped_cited_evidence(
             observed_at,
         )
         _add_whoop_sleep(session, PROFILE_ID, "primary-sleep", observed_at)
-        _add_whoop_sleep(session, other_profile_id, "other-profile-secret-marker", observed_at)
+        _add_whoop_sleep(
+            session, other_profile_id, "other-profile-secret-marker", observed_at
+        )
 
     responses = FakeResponses()
     responder = OpenAIResponsesResponder(
@@ -399,8 +423,8 @@ def test_bound_telegram_question_uses_only_profile_scoped_cited_evidence(
     assert len(gateway.sent) == 1
     chat_id, reply = gateway.sent[0]
     assert chat_id == 1001
-    assert "[LAB1]" in reply and "[SLEEP1]" in reply
-    assert "Источники:" in reply
+    assert "[LAB1]" not in reply and "[SLEEP1]" not in reply
+    assert "Источники:" not in reply
     assert "Other-profile-secret-marker" not in reply
     assert "999" not in reply
     assert state.audit_rows("updates")[0]["status"] == "replied"
@@ -473,7 +497,11 @@ def _add_whoop_sleep(
     session: Session, profile_id: UUID, external_id: str, observed_at: datetime
 ) -> None:
     connection = register_authorized_connection(
-        session, profile_id, "test", 1 if profile_id == PROFILE_ID else 2, ("read:sleep",)
+        session,
+        profile_id,
+        "test",
+        1 if profile_id == PROFILE_ID else 2,
+        ("read:sleep",),
     )
     payload: dict[str, object] = {
         "id": external_id,

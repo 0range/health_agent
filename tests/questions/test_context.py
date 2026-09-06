@@ -198,9 +198,9 @@ def test_old_snapshot_lab_flows_prompt_validator_and_footer(session: Session) ->
         builder, SimpleNamespace(respond=lambda **_: "Выдуманный результат [SNAP999].")
     ).answer(DEFAULT_PROFILE_ID, "Что было в старых анализах?")
 
-    assert "Есть старый результат [SNAP1]." in accepted.text
-    assert "Источники:" in accepted.text
-    assert "[SNAP1]" in accepted.text
+    assert accepted.text == "Есть старый результат."
+    assert "Источники:" not in accepted.text
+    assert "[SNAP1]" not in accepted.text
     assert rejected.text.startswith("В выбранном периоде недостаточно")
 
 
