@@ -175,10 +175,19 @@ def test_medical_actions_are_collapsed_filtered_and_accessibly_labelled(
     assert set(label_targets).issubset(ids)
 
 
-def test_calendar_connection_translates_only_known_machine_prefix(clean_database):
+def test_calendar_connection_translates_actual_snapshot_format_and_keeps_counts(
+    clean_database,
+):
     class Stub:
         def workflow_snapshot(self, _profile):
-            return WorkflowSnapshot((), (), (), calendar_connection="oauth_required")
+            return WorkflowSnapshot(
+                (),
+                (),
+                (),
+                calendar_connection=(
+                    "Calendar: not_configured. Публикаций в очереди: 0. Ошибок: 0."
+                ),
+            )
 
     app = PanelApplication(Stub(), csrf_token="csrf")  # type: ignore[arg-type]
     html = app.handle(
@@ -188,8 +197,40 @@ def test_calendar_connection_translates_only_known_machine_prefix(clean_database
         b"",
     ).body.decode()
 
-    assert "Требуется подключить Calendar." in html
-    assert "oauth_required" not in html
+    assert "Calendar не настроен. Публикаций в очереди: 0. Ошибок: 0." in html
+    assert "not_configured" not in html
+
+
+def test_calendar_connection_translates_oauth_but_does_not_mask_unknown(clean_database):
+    class Stub:
+        def __init__(self, value):
+            self.value = value
+
+        def workflow_snapshot(self, _profile):
+            return WorkflowSnapshot((), (), (), calendar_connection=self.value)
+
+    known = PanelApplication(
+        Stub("Calendar: oauth_required. Ошибка: synthetic-safe-code"),  # type: ignore[arg-type]
+        csrf_token="csrf",
+    ).handle(
+        "GET",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766"},
+        b"",
+    ).body.decode()
+    unknown = PanelApplication(
+        Stub("Calendar: unknown_state. Ошибка: synthetic-safe-code"),  # type: ignore[arg-type]
+        csrf_token="csrf",
+    ).handle(
+        "GET",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766"},
+        b"",
+    ).body.decode()
+
+    assert "Требуется подключить Calendar. Ошибка: synthetic-safe-code" in known
+    assert "oauth_required" not in known
+    assert "Calendar: unknown_state. Ошибка: synthetic-safe-code" in unknown
 
 
 def test_unknown_and_foreign_profile_cannot_mutate(clean_database):

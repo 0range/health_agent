@@ -621,9 +621,12 @@ def _calendar_connection_text(value: str) -> str:
         "not_configured": "Calendar не настроен.",
         "oauth_required": "Требуется подключить Calendar.",
     }
-    for prefix, translation in translations.items():
-        if value.startswith(prefix):
-            suffix = value[len(prefix) :].lstrip(" :—-")
+    candidate = value.removeprefix("Calendar: ")
+    for token, translation in translations.items():
+        if candidate == token:
+            return translation
+        if candidate.startswith(token) and candidate[len(token)] in " .:—-\n":
+            suffix = candidate[len(token) :].lstrip(" .:—-")
             return f"{translation} {suffix}".strip()
     return value
 
