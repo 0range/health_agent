@@ -48,7 +48,7 @@ def downgrade():
     pass
 ```
 
-Update only schema-head assertions from0008 to0011, preserving their downgrade targets and data-loss checks.
+Update schema-head assertions from0008 to0011, preserving their downgrade targets and data-loss checks. Narrow additional owned integration fix: `tests/visits/test_schema.py` upgrades from0008 to0011 (not only isolated0010) before asserting full integrated Base metadata; preserve its downgrade target and populated-state refusal tests.
 
 - [ ] Step 4: Add `/profiles/{uuid}/medical` GET and POST using existing panel security shell and link it from profile overview. Render upcoming/recent visits(max20), active reminders(max20), readable empty states, and forms: create visit(title,time), add question/answer(select visit code,text), prepare/done/cancel visit; create reminder(title,time,optional days/months count), confirm/done/cancel reminder. Moscow timezone is stated visibly. Each form includes existing CSRF token and a fresh random action identity; persist/reuse that identity in the relevant repository action key so browser retry cannot duplicate an action. Do not repurpose global bot IDs or use timestamps as unique IDs. Bounded forms ≤16KiB, note≤10000 chars; reject repeated form keys and unknown operations. GET may read notes but must not auto-add preparation questions. On successful POST render a safe result and refreshed state; no raw external URLs or vault paths. Keep Calendar status honest: saved locally, Calendar not automatically published. Use existing visual style, large labelled controls, no JSON editor.
 
