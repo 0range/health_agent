@@ -172,6 +172,25 @@ def test_safety_instructions_request_russian_unless_user_clearly_asks_otherwise(
     )
 
 
+def test_safety_instructions_do_not_turn_missing_data_into_clinical_orders() -> None:
+    instructions = MEDICAL_SAFETY_INSTRUCTIONS.lower()
+
+    assert "absence or age of imported data is not a medical indication" in instructions
+    assert "does not mean the person has not had" in instructions
+    assert "optional discussion with a qualified clinician" in instructions
+    assert "do not prescribe automatic tests, panels, treatments, or intervals" in instructions
+
+
+def test_safety_instructions_keep_dates_and_claims_bound_to_each_source() -> None:
+    instructions = MEDICAL_SAFETY_INSTRUCTIONS.lower()
+
+    assert "each clinical claim, date, and recommendation" in instructions
+    assert "its own [doc] or [visit] source" in instructions
+    assert "never borrow a date or metadata from another label" in instructions
+    assert "medical_date` is null, treat the report's medical date as unknown" in instructions
+    assert "prior study or comparison" in instructions
+
+
 @pytest.mark.parametrize(
     "response",
     (
