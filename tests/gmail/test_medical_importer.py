@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
+import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,43 @@ def make_pdf(path: Path, text: str) -> PreparedAttachment:
     document = pymupdf.open()
     page = document.new_page()
     page.insert_text((72, 72), text)
+    document.save(path)
+    document.close()
+    content = path.read_bytes()
+    return PreparedAttachment(
+        path, hashlib.sha256(content).hexdigest(), len(content), "application/pdf"
+    )
+
+
+def make_gridded_pdf(path: Path, *, laboratory: bool) -> PreparedAttachment:
+    document = pymupdf.open()
+    page = document.new_page(width=600, height=220)
+    xs = [30, 190, 280, 390, 480, 570]
+    ys = [30, 62, 94]
+    for x in xs:
+        page.draw_line((x, ys[0]), (x, ys[-1]))
+    for y in ys:
+        page.draw_line((xs[0], y), (xs[-1], y))
+    headers = (
+        ["Test", "Result", "Reference range", "Unit", "Comment"]
+        if laboratory
+        else ["Item", "Quantity", "Target", "Measure", "Comment"]
+    )
+    row = (
+        ["Glucose", "5.10", "3.9-5.5", "mmol/L", ""]
+        if laboratory
+        else ["Widgets", "5", "3-8", "boxes", ""]
+    )
+    # Column-major insertion reproduces the flat-text ordering that motivated
+    # geometry classification without relying on clinical source material.
+    values = [headers, row]
+    for column in range(5):
+        for row_index in range(2):
+            value = values[row_index][column]
+            if value:
+                page.insert_text(
+                    (xs[column] + 3, ys[row_index] + 19), value, fontsize=7
+                )
     document.save(path)
     document.close()
     content = path.read_bytes()
@@ -71,6 +110,99 @@ def test_generic_nonmedical_pdf_is_classified_without_database_side_effect(
     clean_database: Engine, session: Session, tmp_path: Path
 ) -> None:
     prepared = make_pdf(tmp_path / "notes.pdf", "Quarterly planning notes")
+    importer = MedicalAttachmentImporter(
+        str(DEFAULT_PROFILE_ID),
+        "personal",
+        clean_database,
+        FileVault(tmp_path / "vault"),
+    )
+
+    receipt = importer.import_attachment(provenance(), prepared)
+
+    assert receipt.outcome == "non_medical"
+    assert session.scalars(select(Document)).all() == []
+
+
+def test_ambiguous_exact_geometry_lab_enters_pending_review(
+    clean_database: Engine, session: Session, tmp_path: Path
+) -> None:
+    prepared = make_gridded_pdf(tmp_path / "geometry.pdf", laboratory=True)
+    importer = MedicalAttachmentImporter(
+        str(DEFAULT_PROFILE_ID),
+        "personal",
+        clean_database,
+        FileVault(tmp_path / "vault"),
+    )
+
+    receipt = importer.import_attachment(provenance(), prepared)
+
+    assert receipt.outcome == "medically_imported"
+    item = session.scalars(select(ReviewItem)).one()
+    assert item.decision is None
+
+
+def test_ambiguous_ordinary_grid_is_not_classified_as_medical(
+    clean_database: Engine, session: Session, tmp_path: Path
+) -> None:
+    prepared = make_gridded_pdf(tmp_path / "ordinary.pdf", laboratory=False)
+    importer = MedicalAttachmentImporter(
+        str(DEFAULT_PROFILE_ID),
+        "personal",
+        clean_database,
+        FileVault(tmp_path / "vault"),
+    )
+
+    receipt = importer.import_attachment(provenance(), prepared)
+
+    assert receipt.outcome == "non_medical"
+    assert session.scalars(select(Document)).all() == []
+
+
+def test_geometry_classification_requires_prepared_hash_and_bounded_bytes(
+    clean_database: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = make_gridded_pdf(tmp_path / "geometry.pdf", laboratory=True)
+    importer = MedicalAttachmentImporter(
+        str(DEFAULT_PROFILE_ID),
+        "personal",
+        clean_database,
+        FileVault(tmp_path / "vault"),
+    )
+
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        importer.import_attachment(provenance(), replace(prepared, sha256="0" * 64))
+
+    monkeypatch.setattr(
+        "health_agent.gmail.medical_importer._MAX_GEOMETRY_PDF_BYTES",
+        prepared.size_bytes - 1,
+    )
+    with pytest.raises(ValueError, match="integrity mismatch"):
+        importer.import_attachment(provenance(), prepared)
+
+
+def test_geometry_classification_observes_page_cap(
+    clean_database: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "many-pages.pdf"
+    document = pymupdf.open()
+    for _ in range(101):
+        document.new_page().insert_text((72, 72), "Quarterly planning notes")
+    document.save(path)
+    document.close()
+    content = path.read_bytes()
+    prepared = PreparedAttachment(
+        path,
+        hashlib.sha256(content).hexdigest(),
+        len(content),
+        "application/pdf",
+    )
+    monkeypatch.setattr(
+        "health_agent.gmail.medical_importer.extract_lab_geometry",
+        lambda *_args: pytest.fail("geometry detector exceeded its page cap"),
+    )
     importer = MedicalAttachmentImporter(
         str(DEFAULT_PROFILE_ID),
         "personal",
