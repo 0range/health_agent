@@ -1,5 +1,9 @@
 # Local import date audit — 2026-09-06
 
+## Correction after label-level review
+
+The earlier aggregate “17 issue/result candidates” was too broad: it comprises **16 study-performed dates and 1 result-ready date**, not explicit report-issue dates. The probe found **15 collection candidates and zero explicit issued/released candidates**. The union of 32 documents remains correct, but only the 15 collection candidates can be considered for `collected_date` under the current two-role model, still subject to field/layout verification. Study, readiness, registration and receipt dates must not be silently stored in `issued_date` or `collected_date`. No dates have been persisted by either audit. The original aggregate below is retained as the historical probe record, with this correction taking precedence.
+
 ## Outcome
 
 The unknown dates are caused by a narrow deterministic grammar, not by missing local text and not by the paused cloud path. All 121 imported documents have both `collected_date` and `issued_date` unset. Every one has stored extracted text and at least one date-shaped token, but none matches the importer's exact label-plus-date expressions. The newer lab-extraction backfill deliberately extracts laboratory rows only; it ignores date metadata and has no path that updates document dates.
