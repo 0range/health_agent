@@ -582,6 +582,11 @@ class PanelService:
 def build_panel_service(settings: Settings) -> PanelService:
     """Build production adapters without invoking OAuth, sync, or remote APIs."""
     engine = build_engine(settings)
+    from health_agent.google_calendar.composition import (
+        CalendarStatusReader,
+        build_publication_service,
+    )
+    publication = build_publication_service(settings, engine)
     sessions = lambda: session_scope(engine)
     gmail_profiles = LocalGmailProfileStore(settings.gmail_root)
     gmail_tokens = LocalGmailTokenStore(settings.gmail_root)
@@ -663,12 +668,13 @@ def build_panel_service(settings: Settings) -> PanelService:
             TelegramStatusReader(telegram_status),
             ReminderStatusReader(sessions),
             DatabaseStatusReader(sessions),
+            CalendarStatusReader(publication),
         ),
         drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
         destinations=(PanelDestination("metabase", "Дашборды", settings.metabase_url),),
         destination_factory=sheets_destination,
         healthcheck_reader=HealthcheckReader(sessions),
-        workflows=DatabaseWorkflowAdapter(sessions),
+        workflows=DatabaseWorkflowAdapter(sessions, publication),
     )
 
 

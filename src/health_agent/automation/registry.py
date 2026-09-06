@@ -211,8 +211,35 @@ class LabExtractionJobAdapter:
             engine.dispose()
 
 
+@dataclass(frozen=True, slots=True)
+class CalendarJobAdapter:
+    source: AutomationSource = "calendar"
+
+    def discover(self, settings: Settings) -> Iterable[AutomationJob]:
+        from health_agent.google_calendar.composition import build_calendar_service
+        from health_agent.google_calendar.publication import VisitCalendarPublication
+        engine = build_engine(settings)
+        try:
+            with session_scope(engine) as session:
+                profile_ids = session.scalars(select(VisitCalendarPublication.profile_id).distinct().order_by(VisitCalendarPublication.profile_id).limit(1000)).all()
+        finally:
+            engine.dispose()
+        calendar = build_calendar_service(settings)
+        jobs = []
+        for profile_id in profile_ids:
+            try:
+                profile = calendar.profiles.load(profile_id)
+                ready = profile.enabled and calendar.oauth.local_status(profile_id) == "ready"
+            except (FileNotFoundError, ValueError, TypeError, RuntimeError, OSError):
+                ready = False
+            jobs.append(AutomationJob("calendar", str(profile_id), "main", False,
+                ("calendar", "sync", "--profile-id", str(profile_id), "--limit", "100"),
+                None if ready else "oauth_not_ready"))
+        return tuple(jobs)
+
+
 def configured_job_adapters(
     settings: Settings, executable: Path
 ) -> tuple[JobAdapter, ...]:
     del settings, executable
-    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), LabExtractionJobAdapter(), SheetsJobAdapter())
+    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), LabExtractionJobAdapter(), SheetsJobAdapter(), CalendarJobAdapter())

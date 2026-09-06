@@ -27,6 +27,29 @@ app = typer.Typer(
 ProfileOption = Annotated[UUID, typer.Option("--profile-id", help="ID вашего профиля")]
 
 
+@app.command("calendar")
+def calendar(profile_id: ProfileOption, code: str) -> None:
+    from health_agent.google_calendar.composition import publish_cli
+    publish_cli(profile_id, code)
+
+
+def _sync_calendar(profile_id: UUID, code: str) -> None:
+    from health_agent.google_calendar.composition import build_publication_service
+    from health_agent.google_calendar.publication import publication_notice
+    engine = None
+    try:
+        settings = Settings()
+        engine = build_engine(settings)
+        notice = publication_notice(build_publication_service(settings, engine).sync_visit(profile_id, code))
+    except Exception:  # noqa: BLE001 - local edit already committed.
+        notice = "Calendar: синхронизация отложена; локальные изменения сохранены."
+    finally:
+        if engine is not None:
+            engine.dispose()
+    if notice:
+        typer.echo(notice)
+
+
 @contextmanager
 def _session() -> Iterator[Session]:
     engine = None
@@ -93,6 +116,7 @@ def prepare(profile_id: ProfileOption, code: str) -> None:
     with _session() as session:
         output = render_brief(prepare_visit(session, profile_id, code))
     typer.echo(output)
+    _sync_calendar(profile_id, code)
 
 
 @app.command("note")
@@ -112,6 +136,7 @@ def note(
             action_key=action_key or f"cli:{uuid4()}",
         )
     typer.echo("notes_added_or_replayed=1")
+    _sync_calendar(profile_id, code)
 
 
 @app.command("complete")
@@ -119,6 +144,7 @@ def complete(profile_id: ProfileOption, code: str) -> None:
     with _session() as session:
         visit = VisitRepository(session).complete(profile_id, code)
     typer.echo(f"code={visit.public_code} status={visit.status}")
+    _sync_calendar(profile_id, code)
 
 
 @app.command("cancel")
@@ -126,3 +152,4 @@ def cancel(profile_id: ProfileOption, code: str) -> None:
     with _session() as session:
         visit = VisitRepository(session).cancel(profile_id, code)
     typer.echo(f"code={visit.public_code} status={visit.status}")
+    _sync_calendar(profile_id, code)

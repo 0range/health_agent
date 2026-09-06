@@ -53,6 +53,8 @@ class Settings(BaseSettings):
         le=300,
         validation_alias="GOOGLE_DRIVE_HTTP_TIMEOUT_SECONDS",
     )
+    google_calendar_root: Path = Field(default=Path("data/google-calendar"), validation_alias="GOOGLE_CALENDAR_ROOT")
+    google_calendar_client_secrets: Path = Field(default=Path("data/secrets/google-oauth-client.json"), validation_alias="GOOGLE_CALENDAR_CLIENT_SECRETS")
     google_sheets_root: Path = Field(
         default=Path("data/google-sheets"), validation_alias="GOOGLE_SHEETS_ROOT"
     )

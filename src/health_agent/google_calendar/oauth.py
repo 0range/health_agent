@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from uuid import UUID
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
@@ -143,7 +144,8 @@ class CalendarOAuth:
         )
 
     def local_status(self, profile_id):
-        path = self.tokens.path_for(profile_id)
+        path = self.tokens.root / str(UUID(str(profile_id))) / "token.json"
+        reject_symlink_components(path)
         if not path.exists() and not path.is_symlink():
             return "missing"
         try:
