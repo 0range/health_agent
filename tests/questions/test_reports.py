@@ -155,8 +155,8 @@ def test_report_only_context_is_separate_json_and_citation_validated(
     bad = HealthQuestionApplicationService(
         builder, _Responder("Выдумано [DOC99].")
     ).answer(DEFAULT_PROFILE_ID, "Что обсудить?")
-    assert "В документе сказано [DOC1]." in good.text
-    assert "фрагмент документа" in good.text
+    assert good.text == "В документе сказано."
+    assert "фрагмент документа" not in good.text
     assert bad.text.startswith("В выбранном периоде недостаточно")
 
 

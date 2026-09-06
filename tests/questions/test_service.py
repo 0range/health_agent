@@ -87,7 +87,7 @@ def test_urgent_guard_precedes_context_retrieval_and_remote_responder(
     assert responder.calls == []
 
 
-def test_answer_appends_deterministic_sources_and_structured_limitations() -> None:
+def test_answer_validates_then_hides_citations_without_default_footer() -> None:
     limitation = ContextLimitation(
         ContextLimitationCode.WEIGHT_TREND_INSUFFICIENT_HISTORY,
         "Нельзя определить динамику по датам.",
@@ -103,12 +103,9 @@ def test_answer_appends_deterministic_sources_and_structured_limitations() -> No
     assert result.safe_error_code is None
     assert result.evidence == context.evidence
     assert result.limitations == (limitation,)
-    assert result.text == (
-        "Это наблюдение, а не диагноз. [LAB1]\n\n"
-        "Источники:\n- [LAB1] 2026-09-03T09:00:00+00:00: Ferritin — 42 ug/L; "
-        "референс источника: unknown\n\n"
-        "Ограничения:\n- Нельзя определить динамику по датам."
-    )
+    assert result.text == "Это наблюдение, а не диагноз."
+    assert "Источники:" not in result.text
+    assert "Ограничения:" not in result.text
     assert responder.calls == [(PROFILE_ID, "What does my ferritin show?", context)]
 
 
@@ -174,7 +171,7 @@ def test_model_output_with_missing_or_forged_citations_fails_closed() -> None:
         assert len(responder.calls) == 1
 
 
-def test_yandex_style_separate_citations_are_accepted_with_sources() -> None:
+def test_yandex_style_separate_citations_are_validated_then_hidden() -> None:
     context = _context(
         evidence=(
             EvidenceItem("[LAB1]", EvidenceSource.LAB, NOW, "Metric 1", "1", "u"),
@@ -187,8 +184,29 @@ def test_yandex_style_separate_citations_are_accepted_with_sources() -> None:
     ).answer(PROFILE_ID, "What is recorded?")
 
     assert not result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
-    assert "Источники:\n- [LAB1]" in result.text
-    assert "\n- [LAB2]" in result.text
+    assert result.text == "Recorded fact."
+    assert "Источники:" not in result.text
+
+
+def test_empty_after_citation_hiding_or_raw_source_reference_fails_closed() -> None:
+    source_reference = "document:10000000-0000-4000-8000-000000000001#page=1"
+    report = SourceReport(
+        "[DOC1]",
+        "document_excerpt",
+        "Synthetic summary",
+        source_reference,
+        None,
+        NOW,
+    )
+    context = _context(evidence=(), reports=(report,))
+
+    for response in ("[DOC1]", f"Summary {source_reference} [DOC1]"):
+        result = HealthQuestionApplicationService(
+            FakeContextBuilder(context), FakeResponder(response)
+        ).answer(PROFILE_ID, "What was reported?")
+
+        assert result.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
+        assert "10000000-0000" not in result.text
 
 
 @pytest.mark.parametrize(
@@ -246,13 +264,11 @@ def test_footer_renders_one_cited_label_per_aggregate_and_no_unrelated_values() 
         snapshot=HealthSnapshot(PROFILE_ID, NOW, (), (), (), (cited, unrelated)),
     )
 
-    result = HealthQuestionApplicationService(
-        FakeContextBuilder(context), FakeResponder("Краткий ответ [S0-A].")
-    ).answer(PROFILE_ID, "overview")
+    result = render_source_footer(context, {"[S0-A]"})
 
-    assert result.text.count("- [S0-A]") == 1
-    assert "[S0-B]" not in result.text
-    assert "Metric 1" not in result.text
+    assert result.count("- [S0-A]") == 1
+    assert "[S0-B]" not in result
+    assert "Metric 1" not in result
 
 
 def test_pathological_citation_set_uses_explicit_overflow_summary() -> None:
@@ -267,13 +283,12 @@ def test_pathological_citation_set_uses_explicit_overflow_summary() -> None:
         )
         for index in range(10)
     )
-    answer = "Кратко. " + " ".join(item.citation_label for item in evidence)
-    result = HealthQuestionApplicationService(
-        FakeContextBuilder(_context(evidence=evidence)), FakeResponder(answer)
-    ).answer(PROFILE_ID, "overview")
+    result = render_source_footer(
+        _context(evidence=evidence), {item.citation_label for item in evidence}
+    )
 
-    assert result.text.count("\n- [LAB") == 6
-    assert "Ещё 4 процитированных источников указаны в ответе." in result.text
+    assert result.count("\n- [LAB") == 6
+    assert "Ещё 4 процитированных источников указаны в ответе." in result
 
 
 def test_context_and_responder_failures_are_stable_and_do_not_disclose_sensitive_data() -> (
@@ -368,13 +383,15 @@ def test_report_footer_has_closed_source_identity_and_excludes_beyond_cap() -> N
         FakeContextBuilder(context),
         FakeResponder("Recorded wording [DOC1] [VISIT1]."),
     ).answer(PROFILE_ID, "What was reported?")
+    footer = render_source_footer(context, {"[DOC1]", "[VISIT1]"})
     rejected = HealthQuestionApplicationService(
         FakeContextBuilder(context), FakeResponder("Not selected [DOC10].")
     ).answer(PROFILE_ID, "What was reported?")
 
-    assert f"источник document:{document_id}#page=7" in result.text
-    assert f"источник visit:{visit_id}#note={note_id}" in result.text
-    assert "Beyond selected cap" not in result.text
+    assert result.text == "Recorded wording."
+    assert f"источник document:{document_id}#page=7" in footer
+    assert f"источник visit:{visit_id}#note={note_id}" in footer
+    assert "Beyond selected cap" not in footer
     assert rejected.text.startswith(INSUFFICIENT_EVIDENCE_TEXT)
 
 
