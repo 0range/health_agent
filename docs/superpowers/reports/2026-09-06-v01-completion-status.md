@@ -5,9 +5,9 @@ TL;DR: autonomous development in progress; user acceptance deferred until the en
 ## Current work
 
 1. Recurring reminders — reviewed and merged (`9eac0c7`); production migration 0009 applied after private pg_dump backup. Combined suite: 1026 passed, three stale schema-head assertions need integration update (not a green full suite yet).
-2. Local doctor visits/questions/answers — implemented `ec7954c`, independent review in progress.
-3. Medical extraction — local audit found all 584 inherited pending rows unmapped, 571 with unsupported units; no mechanically safe bulk approval subset. Investigating initial importer and PDF geometry before changing evidence validation.
-4. Calendar adapter — implementing. Strict shared parser `4fd4fe6` — independent review in progress. Shared UI/Telegram integration, lab history/Sheets/dashboard, five-scenario automated acceptance — remaining; no new owner interaction until needed for an actual access decision.
+2. Local doctor visits/questions/answers — reviewed and merged `ec7954c` via6c8fb6b. UI/Telegram integration353adcc fixes passed291focusedtests and root final review; merged and production schema0011 applied. Telegram reinstalled to load handlers. Panel process still needs restart. Combined1092passed/1failed: existing exact five-field lab row with standaloneflag needs narrow compatibility restoration, not altered fixture expectation.
+3. Medical extraction — strict shared parser throughc2d3e96 reviewed/merged after two authenticity-fix rounds (173focusedtests). Read-only archive dryrun289pages gives0strictflatrows because PDF extraction is column-major. Pure source-proven PDF geometry adapter implementing; root must add immutable alternate evidence persistence/importer/archive repair. All584oldpending remain untouched, no bulkapproval. Extraction worker still temporarily disabled.
+4. Calendar adapter1aefe95 review found broken concrete transport/OAuth and missing failure tests; fix round1 running. Separate lab history dashboard implementing. Five-scenario automated acceptance, source-linked document/visit answers in QA, Calendar composition, final deployment and user acceptance remain. No new owner interaction until actual access decision.
 
 ## Deployment checkpoint before this run
 
