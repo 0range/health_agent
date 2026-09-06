@@ -303,7 +303,7 @@ def _require_registered(candidate: Candidate) -> None:
 
 
 def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
-    if "\n" in excerpt or "\r" in excerpt:
+    if len(excerpt.splitlines()) != 1:
         return None
     delimiter = "|" if "|" in excerpt else "\t"
     if delimiter == "|" and "\t" in excerpt:
@@ -412,19 +412,30 @@ def _explicit_layout_fields(excerpt: str) -> dict[str, str | None] | None:
 def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
     """Prove that an explicit excerpt covers complete physical source records."""
 
+    lines = _source_lines(text)
     start = text.find(excerpt)
     while start >= 0:
         end = start + len(excerpt)
-        line_start = text.rfind("\n", 0, start) + 1
-        line_end = text.find("\n", end)
-        if line_end < 0:
-            line_end = len(text)
-        whole_lines = not text[line_start:start].strip() and not text[end:line_end].strip()
+        first = next(
+            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= start <= line_end),
+            None,
+        )
+        last_position = max(start, end - 1)
+        last = next(
+            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= last_position < line_end or (line_start == line_end == last_position)),
+            None,
+        )
+        if first is None or last is None:
+            start = text.find(excerpt, start + 1)
+            continue
+        first_start, _, _ = lines[first]
+        _, last_end, _ = lines[last]
+        whole_lines = not text[first_start:start].strip() and not text[end:last_end].strip()
         if whole_lines:
             if "|" in excerpt or "\t" in excerpt:
-                return "\n" not in excerpt and "\r" not in excerpt
-            previous = text[:line_start].rstrip("\r\n").rsplit("\n", 1)[-1].strip()
-            following = text[line_end + 1 :].split("\n", 1)[0].strip()
+                return first == last and len(excerpt.splitlines()) == 1
+            previous = _nearest_nonempty(lines, first, -1)
+            following = _nearest_nonempty(lines, last, 1)
             if not (
                 (previous and _LABEL.match(previous))
                 or (following and _LABEL.match(following))
@@ -432,3 +443,30 @@ def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
                 return True
         start = text.find(excerpt, start + 1)
     return False
+
+
+def _source_lines(text: str) -> list[tuple[int, int, str]]:
+    pieces = text.splitlines(keepends=True)
+    if not pieces:
+        return [(0, 0, "")]
+    rows: list[tuple[int, int, str]] = []
+    offset = 0
+    for piece in pieces:
+        content = piece.splitlines()[0] if piece.splitlines() else ""
+        rows.append((offset, offset + len(content), content))
+        offset += len(piece)
+    if offset < len(text):
+        rows.append((offset, len(text), text[offset:]))
+    return rows
+
+
+def _nearest_nonempty(
+    lines: list[tuple[int, int, str]], index: int, direction: int
+) -> str:
+    current = index + direction
+    while 0 <= current < len(lines):
+        value = lines[current][2].strip()
+        if value:
+            return value
+        current += direction
+    return ""

@@ -356,6 +356,43 @@ def test_explicit_records_preserve_trailing_flags_and_labelled_optional_crop():
     assert accepted.reference_text is None
 
 
+def test_labelled_crop_cannot_skip_reference_after_blank_line():
+    page = (
+        "Test: Glucose\nResult: 5.1\nUnits: mmol/L\n\n"
+        "Reference: 3.9-5.5"
+    )
+    complete = parse_local(page).candidates[0]
+    assert complete.reference_text == "3.9-5.5"
+
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                reference_text=None,
+                evidence_excerpt="Test: Glucose\nResult: 5.1\nUnits: mmol/L",
+            ),
+            page,
+        )
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_pipe_record_rejects_every_python_line_separator(separator):
+    text = f"Glucose | mmol/L | 5.1 | 3.9-5.5{separator}ALT 20 U/L"
+    with pytest.raises(ValueError):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                reference_text=f"3.9-5.5{separator}ALT 20 U/L",
+                evidence_excerpt=text,
+            ),
+            text,
+        )
+
+
 def test_flag_from_unrelated_later_row_is_rejected():
     text = "ALT 53 U/L 0-41\nOther marker H"
     with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
