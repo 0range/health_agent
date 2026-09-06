@@ -106,7 +106,7 @@ _ANALYTES = (
         "nmol/L|ng/mL|ng/dL",
     ),
     ("estradiol", "Estradiol|Эстрадиол", "pmol/L|pg/mL"),
-    ("prolactin", "Prolactin|Пролактин", "ng/mL|mIU/L"),
+    ("prolactin", "Prolactin|Пролактин", "ng/mL|mIU/L|uIU/mL"),
     ("progesterone", "Progesterone|Прогестерон", "nmol/L|ng/mL"),
     ("cortisol", "Cortisol|Кортизол", "nmol/L|ug/dL"),
     ("insulin", "Insulin|Инсулин", "uIU/mL|pmol/L"),

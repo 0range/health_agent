@@ -210,3 +210,16 @@ def test_normalization_rejects_similar_but_unsupported_bootstrap_units(
 ) -> None:
     with pytest.raises(UnsupportedNormalization, match="Unsupported normalization"):
         normalize_lab_result(canonical_name, "12,5", source_unit)
+
+
+def test_prolactin_micro_international_units_remain_distinct_from_mass_units() -> None:
+    source_value = "762.00"
+
+    assert normalize_lab_result("prolactin", source_value, "мкМЕ/мл") == (
+        Decimal("762.00"),
+        "uIU/mL",
+    )
+    assert normalize_lab_result("prolactin", source_value, "нг/мл") == (
+        Decimal("762.00"),
+        "ng/mL",
+    )
