@@ -888,7 +888,7 @@ def _safe_destination_url(destination: PanelDestination) -> str | None:
         return None
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return None
-    if destination.key == "metabase":
+    if destination.key in {"metabase", "metabase_labs", "metabase_whoop"}:
         if parsed.scheme not in {"http", "https"}:
             return None
         try:

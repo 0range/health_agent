@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from health_agent.config import Settings
+from health_agent.dashboard_destinations import DashboardDestinationStore
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.config import GmailProfile
 from health_agent.gmail.oauth import GmailOAuth
@@ -612,10 +613,25 @@ def build_panel_service(settings: Settings) -> PanelService:
         timeout_seconds=settings.google_sheets_http_timeout_seconds,
     )
 
+    dashboard_destinations = DashboardDestinationStore(
+        settings.connector_state_root, settings.metabase_url
+    )
+
     def sheets_destination(profile_id: UUID) -> tuple[PanelDestination, ...]:
+        saved = dashboard_destinations.load(profile_id)
+        direct = tuple(
+            PanelDestination(
+                f"metabase_{kind}",
+                "Анализы" if kind == "labs" else "WHOOP",
+                f"{settings.metabase_url.rstrip('/')}/dashboard/{saved[kind]}",
+            )
+            for kind in ("labs", "whoop")
+            if kind in saved
+        )
         profile_key = str(profile_id)
         if not sheets_profiles.exists(profile_key):
             return (
+                *direct,
                 PanelDestination(
                     "google_sheets",
                     "Google Таблица",
@@ -624,7 +640,7 @@ def build_panel_service(settings: Settings) -> PanelService:
                 ),
             )
         profile = sheets_profiles.load(profile_key)
-        return (
+        sheets = (
             PanelDestination(
                 "google_sheets",
                 "Google Таблица",
@@ -632,6 +648,7 @@ def build_panel_service(settings: Settings) -> PanelService:
                 "Таблица создастся при первой синхронизации",
             ),
         )
+        return (*direct, *sheets)
 
     from health_agent.panel.healthcheck import HealthcheckReader
 

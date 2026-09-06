@@ -84,12 +84,16 @@ def _profile(profile_id: UUID) -> str:
     return str(profile_id)
 
 
-def _history_cte(profile_id: UUID, series: LabSeries | None = None) -> str:
+def _history_cte(
+    profile_id: UUID, series: LabSeries | None = None, *, legacy: bool = False
+) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
     entries = []
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
+            if legacy and raw_unit == "пг/кл":
+                continue
             if unit not in units.split("|"):
                 continue
             if series is not None and (name, unit) != (
@@ -137,7 +141,7 @@ source_rows AS (
 
 
 def lab_card_specs(
-    profile_id: UUID, series: tuple[LabSeries, ...]
+    profile_id: UUID, series: tuple[LabSeries, ...], *, _legacy: bool = False
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     if len(series) > _MAX_SERIES or len(
@@ -149,7 +153,7 @@ def lab_card_specs(
             raise ValueError("Lab series requires a canonical registry unit")
     detail = LabCardSpec(
         f"Анализы — исходные данные [{profile}]",
-        _history_cte(profile_id)
+        _history_cte(profile_id, legacy=_legacy)
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
   CASE WHEN NOT compatible_range THEN 'unknown'
@@ -161,6 +165,7 @@ LIMIT 1000""",
         (),
         "table",
         "Последние 1000 подтверждённых датированных значений этого профиля. "
+        "Пустая таблица означает: подтверждённых датированных результатов пока нет. "
         "Точный результат, единица, референс и флаг из источника; документ и страница. "
         "below/within/above — только числовое сравнение с напечатанным двухсторонним "
         "референсом в той же единице; иначе unknown. Это не диагноз.",
@@ -168,13 +173,26 @@ LIMIT 1000""",
     charts = tuple(
         LabCardSpec(
             f"{item.label} — {item.unit} [{profile}]",
-            _history_cte(profile_id, item)
-            + """SELECT result_date AS date,
+            _history_cte(profile_id, item, legacy=_legacy)
+            + (
+                """SELECT result_date AS date,
   parsed_value AS result,
   CASE WHEN compatible_range THEN reference_low END AS reference_low,
   CASE WHEN compatible_range THEN reference_high END AS reference_high,
   id AS observation_id, document_id, page_number
-FROM valid_rows ORDER BY result_date, document_id, page_number, id""",
+FROM valid_rows ORDER BY result_date, document_id, page_number, id"""
+                if _legacy
+                else """SELECT result_date AS date,
+  CASE WHEN count(*) OVER (PARTITION BY result_date) > 1
+    THEN to_char(result_date, 'YYYY-MM-DD') || ' · ' ||
+      row_number() OVER (PARTITION BY result_date ORDER BY document_id, page_number, id)::text
+    ELSE to_char(result_date, 'YYYY-MM-DD') END AS date_label,
+  parsed_value AS result,
+  CASE WHEN compatible_range THEN reference_low END AS reference_low,
+  CASE WHEN compatible_range THEN reference_high END AS reference_high,
+  id AS observation_id, document_id, page_number
+FROM valid_rows ORDER BY result_date, document_id, page_number, id"""
+            ),
             ("result", "reference_low", "reference_high"),
             "line",
             f"{item.label}, {item.unit}: вся история без усреднения за день. "
@@ -197,24 +215,51 @@ FROM valid_rows ORDER BY canonical_name, chart_unit LIMIT 80"""
     )
     with engine.connect() as connection:
         rows = connection.execute(text(query)).all()
-    defaults = {(s.canonical_name, s.unit) for s in DEFAULT_SERIES}
-    additional = tuple(
-        LabSeries(*row) for row in rows if (row[0], row[2]) not in defaults
-    )
-    return (*DEFAULT_SERIES, *additional)[:_MAX_SERIES]
+    available = {(row[0], row[2]): LabSeries(*row) for row in rows}
+    ordered = [
+        available.pop((item.canonical_name, item.unit))
+        for item in DEFAULT_SERIES
+        if (item.canonical_name, item.unit) in available
+    ]
+    ordered.extend(available[key] for key in sorted(available))
+    return tuple(ordered[:_MAX_SERIES])
 
 
 def _visualization(spec: LabCardSpec) -> dict[str, Any]:
     if spec.display == "table":
-        return {}
+        return {
+            "column_settings": {
+                '["name","date"]': {"column_title": "Дата"},
+                '["name","analyte"]': {"column_title": "Исследование"},
+                '["name","source_value"]': {"column_title": "Результат"},
+                '["name","source_unit"]': {"column_title": "Единица"},
+                '["name","reference_text"]': {"column_title": "Референс"},
+                '["name","source_flag"]': {"column_title": "Флаг источника"},
+                '["name","comparison"]': {
+                    "column_title": "Сравнение",
+                    "value_remappings": [
+                        {"value": "below", "new_value": "Ниже референса"},
+                        {"value": "within", "new_value": "В референсе"},
+                        {"value": "above", "new_value": "Выше референса"},
+                        {"value": "unknown", "new_value": "Не определено"},
+                    ],
+                },
+            }
+        }
     return {
-        "graph.dimensions": ["date"],
+        "graph.dimensions": ["date_label"],
         "graph.metrics": list(spec.metrics),
-        "graph.x_axis.title_text": "Дата",
+        "graph.x_axis.title_text": "Дата · отдельные измерения",
+        "graph.x_axis.scale": "ordinal",
         "graph.y_axis.title_text": spec.unit,
         "graph.show_dots": True,
         "graph.show_values": False,
         "graph.missing": "none",
+        "series_settings": {
+            "result": {"title": "Результат"},
+            "reference_low": {"title": "Нижняя граница референса"},
+            "reference_high": {"title": "Верхняя граница референса"},
+        },
     }
 
 
@@ -229,9 +274,8 @@ def bootstrap_lab_dashboard(
     profile = _profile(profile_id)
     database_engine = engine if engine is not None else build_engine(settings)
     try:
-        specs = lab_card_specs(
-            profile_id, discover_lab_series(database_engine, profile_id)
-        )
+        series = discover_lab_series(database_engine, profile_id)
+        specs = lab_card_specs(profile_id, series)
         ensure_dashboard_reader(settings, engine=database_engine)
     finally:
         if engine is None:
@@ -259,7 +303,8 @@ def bootstrap_lab_dashboard(
         # Preflight every matching card before changing any cards or dashboard.
         cards = _rows(client, "/api/card")
         owned: list[dict[str, Any] | None] = []
-        for spec in specs:
+        legacy_specs = lab_card_specs(profile_id, series, _legacy=True)
+        for spec, legacy_spec in zip(specs, legacy_specs, strict=True):
             candidates = [c for c in cards if c.get("name") == spec.name]
             if len(candidates) > 1:
                 raise ValueError("Lab card ownership collision")
@@ -272,7 +317,10 @@ def bootstrap_lab_dashboard(
                     current.get("name") != spec.name
                     or current.get("collection_id") != collection["id"]
                     or _native_query(current.get("dataset_query"))
-                    != (database["id"], spec.query)
+                    not in {
+                        (database["id"], spec.query),
+                        (database["id"], legacy_spec.query),
+                    }
                 ):
                     raise ValueError("Lab card ownership collision")
             owned.append(current)
@@ -402,11 +450,15 @@ def _detach_unselected_owned_cards(
             client.request("GET", f"/api/card/{card['id']}"), "card"
         )
         expected = lab_card_specs(profile_id, (possible[name],))[1]
+        legacy_expected = lab_card_specs(profile_id, (possible[name],), _legacy=True)[1]
         if (
             current.get("name") == name
             and current.get("collection_id") == collection_id
             and _native_query(current.get("dataset_query"))
-            == (database_id, expected.query)
+            in {
+                (database_id, expected.query),
+                (database_id, legacy_expected.query),
+            }
         ):
             retired.add(card["id"])
     if retired:
