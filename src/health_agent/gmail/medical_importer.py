@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from uuid import UUID
@@ -19,7 +20,11 @@ from health_agent.gmail.types import (
 from health_agent.importer import import_document
 from health_agent.labs import looks_like_lab_document
 from health_agent.pdf import extract_pdf
+from health_agent.pdf_lab_geometry import extract_lab_geometry
 from health_agent.vault import FileVault
+
+_MAX_GEOMETRY_PDF_BYTES = 25 * 1024 * 1024
+_MAX_GEOMETRY_PAGES = 100
 
 _MEDICAL_CONTENT = re.compile(
     r"\b(?:appointment|doctor|physician|clinic|hospital|laboratory|blood|"
@@ -63,7 +68,9 @@ class MedicalAttachmentImporter:
 
         try:
             if provenance.classification == "ambiguous" and not _pdf_is_medical(
-                prepared.path
+                prepared.path,
+                expected_sha256=prepared.sha256,
+                expected_size=prepared.size_bytes,
             ):
                 return ImportReceipt(
                     prepared.sha256,
@@ -116,12 +123,31 @@ class MedicalAttachmentImporter:
             raise ValueError("refusing Gmail attachment for another Gmail account")
 
 
-def _pdf_is_medical(path: Path) -> bool:
+def _pdf_is_medical(path: Path, *, expected_sha256: str, expected_size: int) -> bool:
+    with path.open("rb") as stream:
+        pdf_bytes = stream.read(_MAX_GEOMETRY_PDF_BYTES + 1)
+    if (
+        len(pdf_bytes) != expected_size
+        or len(pdf_bytes) > _MAX_GEOMETRY_PDF_BYTES
+        or hashlib.sha256(pdf_bytes).hexdigest() != expected_sha256
+    ):
+        raise ValueError("prepared attachment integrity mismatch")
     extracted = extract_pdf(path)
     if any(page.extraction_method == "ocr_required" for page in extracted.pages):
         # Keep scanned candidates visible to the shared OCR/attention path.
         return True
     if looks_like_lab_document(extracted.pages):
         return True
+    if len(extracted.pages) <= _MAX_GEOMETRY_PAGES:
+        try:
+            if any(
+                extract_lab_geometry(pdf_bytes, page.page_number).rows
+                for page in extracted.pages
+            ):
+                return True
+        except ValueError:
+            # Unsupported geometry is not evidence of medical content; preserve
+            # the existing conservative keyword fallback.
+            pass
     text = "\n".join(page.text for page in extracted.pages)
     return bool(_MEDICAL_CONTENT.search(text))
