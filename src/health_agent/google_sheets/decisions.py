@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from health_agent.google_sheets.models import SheetsReviewDecisionAudit
 from health_agent.google_sheets.projection import (
     REVIEW_HEADERS,
     ExpectedReviewRow,
+    _row_version,
     locked_expected_review,
 )
 from health_agent.google_sheets.types import SheetValue
@@ -23,7 +25,7 @@ from health_agent.importer import (
     correct_observation,
     reject_observation,
 )
-from health_agent.models import Document, LabObservation
+from health_agent.models import Document, LabObservation, ReviewStatus
 
 DecisionAction = Literal["approve", "correct", "reject"]
 
@@ -80,6 +82,38 @@ def _decision_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _is_refreshable_stale_date_row(
+    raw_immutable: tuple[SheetValue, ...],
+    expected_immutable: tuple[str, ...],
+    editable: tuple[str, ...],
+    profile_id: UUID,
+) -> bool:
+    """Accept only an untouched row made stale by medical-date recovery."""
+    immutable = tuple(_text(value) for value in raw_immutable)
+    if any(editable) or immutable[2] != str(profile_id):
+        return False
+    if any(
+        actual != expected
+        for index, (actual, expected) in enumerate(
+            zip(immutable, expected_immutable, strict=True)
+        )
+        if index not in {3, 8}
+    ):
+        return False
+    medical_date = immutable[8]
+    if medical_date != "missing":
+        try:
+            date.fromisoformat(medical_date)
+        except ValueError:
+            return False
+    actual_version = _row_version(
+        raw_immutable[:3]
+        + raw_immutable[4:]
+        + (ReviewStatus.NEEDS_REVIEW.value,)
+    )
+    return immutable[3] == actual_version
+
+
 def parse_decisions(
     rows: tuple[tuple[SheetValue, ...], ...],
     expected_rows: tuple[ExpectedReviewRow, ...],
@@ -115,10 +149,15 @@ def parse_decisions(
         expected_immutable = tuple(
             _text(value) for value in expected_row.immutable_values
         )
-        if immutable != expected_immutable or _text(padded[2]) != str(profile_id):
+        editable = tuple(_text(value) for value in padded[12:16])
+        if immutable != expected_immutable and _is_refreshable_stale_date_row(
+            padded[:12], expected_immutable, editable, profile_id
+        ):
+            continue
+        if immutable != expected_immutable or immutable[2] != str(profile_id):
             raise ReviewGridError("review row ownership or version mismatch")
-        action = _text(padded[12]).casefold()
-        correction = tuple(_text(value) or None for value in padded[13:16])
+        action = editable[0].casefold()
+        correction = tuple(value or None for value in editable[1:])
         if not action:
             if any(correction):
                 raise ReviewGridError("correction requires a decision")
