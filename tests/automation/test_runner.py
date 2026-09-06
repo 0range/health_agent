@@ -232,6 +232,34 @@ def test_subprocess_executor_accepts_dashboard_ready_status(
     )
 
 
+def test_non_dashboard_ready_status_fails_without_full_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    job = _job("whoop", "profile-1", "main")
+
+    def fake_run(arguments, **kwargs):
+        del kwargs
+        return subprocess.CompletedProcess(arguments, 0, "status=ready\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    state_path = tmp_path / "state.json"
+    runner = AutomationRunner(
+        Settings(),
+        [FakeAdapter("whoop", (job,))],
+        SubprocessJobExecutor(Path("/bin/tool"), tmp_path / ".env", tmp_path),
+        AutomationState(state_path),
+        FakeLock(),
+        clock=lambda: NOW,
+    )
+
+    assert runner.run() == (
+        AutomationResult(
+            "whoop", "profile-1", "main", "full", "failed", "unknown_status"
+        ),
+    )
+    assert not state_path.exists()
+
+
 def test_corrupt_or_symlinked_checkpoint_fails_without_running_job(tmp_path: Path) -> None:
     job = _job("whoop", "profile-1", "main")
     target = tmp_path / "target.json"

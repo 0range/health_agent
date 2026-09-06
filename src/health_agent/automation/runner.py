@@ -60,7 +60,10 @@ class SubprocessJobExecutor:
             for field in line.split()
             if field.startswith("status=") and "=" in field
         }
-        if statuses and statuses <= {"succeeded", "synced", "ready"}:
+        if statuses and (
+            statuses <= {"succeeded", "synced"}
+            or (job.source == "dashboard" and statuses == {"ready"})
+        ):
             return AutomationResult(*job.key, mode, "succeeded")
         if statuses == {"deferred"}:
             return AutomationResult(*job.key, mode, "deferred", "connector_deferred")
