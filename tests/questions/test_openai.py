@@ -239,6 +239,7 @@ def test_input_is_bounded_content_separated_json_data() -> None:
                 "unit": "ug/L",
             }
         ],
+        "reported_material": [],
         "known_limitations": [],
     }
     assert "do not diagnose" in MEDICAL_SAFETY_INSTRUCTIONS.lower()

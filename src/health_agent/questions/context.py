@@ -22,6 +22,7 @@ from health_agent.questions.models import (
     HealthQuestionContext,
     QuestionIntent,
 )
+from health_agent.questions.reports import read_reports
 from health_agent.whoop.models import (
     WhoopBodyCurrent,
     WhoopCycle,
@@ -125,6 +126,7 @@ class HealthContextBuilder:
             limitations=_limitations_for(question, intent),
             max_items_per_source=self._max_items_per_source,
             snapshot=snapshot,
+            reports=read_reports(self._session, profile_id, as_of=window_end),
         )
 
     def _labs(

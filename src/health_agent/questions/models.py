@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -84,6 +84,18 @@ class EvidenceItem:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceReport:
+    """Bounded reported material, never promoted to a verified observation."""
+
+    citation_label: str
+    kind: str
+    text: str
+    source_reference: str
+    medical_date: date | None
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class HealthQuestionContext:
     """Bounded evidence selected for exactly one health profile."""
 
@@ -96,6 +108,7 @@ class HealthQuestionContext:
     limitations: tuple[ContextLimitation, ...] = ()
     max_items_per_source: int = 10
     snapshot: HealthSnapshot | None = None
+    reports: tuple[SourceReport, ...] = ()
 
     @property
     def citations(self) -> tuple[EvidenceItem, ...]:

@@ -14,6 +14,7 @@ from health_agent.questions.models import (
     EvidenceSource,
     EvidenceTimeSemantics,
     HealthQuestionContext,
+    SourceReport,
 )
 from health_agent.questions.presentation import PresentedSignal, select_presentation
 from health_agent.questions.safety import guard_urgent_question
@@ -114,7 +115,9 @@ class HealthQuestionApplicationService:
             context.snapshot
             and any(signal.value is not None for signal in context.snapshot.signals)
         )
-        if (not context.evidence and not snapshot_has_evidence) or any(
+        if (
+            not context.evidence and not snapshot_has_evidence and not context.reports
+        ) or any(
             limitation.prevents_entire_answer for limitation in context.limitations
         ):
             return QuestionAnswerResult(
@@ -182,6 +185,11 @@ def render_source_footer(
     references.extend(
         _render_snapshot_signal(item)
         for item in presentation.signals
+        if item.citation_label in cited_labels
+    )
+    references.extend(
+        _render_report(item)
+        for item in presentation.reports
         if item.citation_label in cited_labels
     )
     lines: list[str] = []
@@ -254,6 +262,20 @@ def _render_snapshot_signal(item: PresentedSignal) -> str:
         f"- {item.citation_label} {signal.observed_at.isoformat()}: {title} — "
         f"{summary}{value}{reference}"
     )
+
+
+def _render_report(item: SourceReport) -> str:
+    kind = (
+        "фрагмент документа"
+        if item.kind == "document_excerpt"
+        else "сохранённая заметка пользователя"
+    )
+    when = (
+        f"медицинская дата {item.medical_date.isoformat()}"
+        if item.medical_date is not None
+        else f"дата локального архива {item.recorded_at.isoformat()}"
+    )
+    return f"- {item.citation_label} {kind}; {when}; {_display_bound(item.text, 160)}"
 
 
 def _display_bound(value: str, maximum: int) -> str:
