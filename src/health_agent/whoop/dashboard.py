@@ -10,7 +10,6 @@ from sqlalchemy import Engine
 from health_agent.config import Settings
 from health_agent.metabase import (
     MetabaseClient,
-    _candidate,
     _ensure_collection,
     _ensure_dashboard_card,
     _ensure_database,
@@ -257,32 +256,34 @@ def bootstrap_whoop_dashboard(
         )
         collection = _ensure_collection(client)
         database = _ensure_database(client, settings)
-        short_old_shape = profile_id != DEFAULT_PROFILE_ID and (
+        alternate_old_shape = suffix != legacy_suffix and (
             _objects_owned_by(
                 client,
+                database["id"],
                 collection["id"],
                 legacy_specs,
                 legacy_suffix,
                 legacy=True,
             )
         )
-        short_current_shape = profile_id != DEFAULT_PROFILE_ID and (
+        alternate_current_shape = suffix != legacy_suffix and (
             _objects_owned_by(
                 client,
+                database["id"],
                 collection["id"],
                 specs,
                 legacy_suffix,
                 legacy=False,
             )
         )
-        short_name_reusable = short_old_shape or short_current_shape
+        alternate_name_reusable = alternate_old_shape or alternate_current_shape
         dashboard = _ensure_named_dashboard(
             client,
             collection["id"],
             dashboard_name,
             legacy_name=(
                 f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}"
-                if short_name_reusable
+                if alternate_name_reusable
                 else None
             ),
         )
@@ -300,8 +301,12 @@ def bootstrap_whoop_dashboard(
                     if spec.legacy_name is not None
                     else None
                 ),
-                short_legacy_suffix=(legacy_suffix if short_old_shape else None),
-                short_current_suffix=(legacy_suffix if short_current_shape else None),
+                alternate_legacy_suffix=(
+                    legacy_suffix if alternate_old_shape else None
+                ),
+                alternate_current_suffix=(
+                    legacy_suffix if alternate_current_shape else None
+                ),
             )
             card_ids.append(card["id"])
         layouts = _managed_card_layouts(client, dashboard["id"], set(card_ids))
@@ -330,16 +335,16 @@ def _ensure_named_dashboard(
     legacy_name: str | None = None,
 ) -> dict[str, Any]:
     desired = {"name": name, "collection_id": collection_id}
-    existing = _candidate(
+    existing = _strict_named_candidate(
         _rows(client, "/api/dashboard"),
         name,
-        expected_parent=("collection_id", collection_id),
+        collection_id,
     )
     if existing is None and legacy_name is not None:
-        existing = _candidate(
+        existing = _strict_named_candidate(
             _rows(client, "/api/dashboard"),
             legacy_name,
-            expected_parent=("collection_id", collection_id),
+            collection_id,
         )
     method = "POST" if existing is None else "PUT"
     path = "/api/dashboard" if existing is None else f"/api/dashboard/{existing['id']}"
@@ -357,8 +362,8 @@ def _ensure_whoop_card(
     profile_suffix: str,
     *,
     legacy_spec: WhoopCardSpec | None = None,
-    short_legacy_suffix: str | None = None,
-    short_current_suffix: str | None = None,
+    alternate_legacy_suffix: str | None = None,
+    alternate_current_suffix: str | None = None,
 ) -> dict[str, Any]:
     managed_name = f"{spec.name}{profile_suffix}"
     desired = {
@@ -373,26 +378,34 @@ def _ensure_whoop_card(
         },
         "visualization_settings": _visualization_settings(spec),
     }
-    existing = _candidate(
-        _rows(client, "/api/card"),
-        managed_name,
-        expected_parent=("collection_id", collection_id),
+    existing = _card_snapshot_candidate(
+        client,
+        database_id,
+        collection_id,
+        spec,
+        profile_suffix,
+        legacy=False,
     )
-    if existing is None and short_current_suffix is not None:
+    if existing is None and alternate_current_suffix is not None:
         existing = _card_snapshot_candidate(
             client,
+            database_id,
             collection_id,
             spec,
-            short_current_suffix,
+            alternate_current_suffix,
             legacy=False,
         )
     if existing is None and legacy_spec is not None:
         suffixes = [profile_suffix]
-        if short_legacy_suffix is not None and short_legacy_suffix not in suffixes:
-            suffixes.append(short_legacy_suffix)
+        if (
+            alternate_legacy_suffix is not None
+            and alternate_legacy_suffix not in suffixes
+        ):
+            suffixes.append(alternate_legacy_suffix)
         for legacy_candidate_suffix in suffixes:
             existing = _legacy_card_candidate(
                 client,
+                database_id,
                 collection_id,
                 legacy_spec,
                 legacy_candidate_suffix,
@@ -423,6 +436,7 @@ def _whoop_card_matches(card: dict[str, Any], desired: dict[str, Any]) -> bool:
 
 def _objects_owned_by(
     client: MetabaseClient,
+    database_id: int,
     collection_id: int,
     specs: tuple[WhoopCardSpec, ...],
     legacy_suffix: str,
@@ -434,6 +448,7 @@ def _objects_owned_by(
     for spec in specs:
         card = _card_snapshot_candidate(
             client,
+            database_id,
             collection_id,
             spec,
             legacy_suffix,
@@ -446,10 +461,10 @@ def _objects_owned_by(
             return False
         owned_card_ids.add(card_id)
 
-    legacy_dashboard = _candidate(
+    legacy_dashboard = _strict_named_candidate(
         _rows(client, "/api/dashboard"),
         f"{WHOOP_DASHBOARD_NAME}{legacy_suffix}",
-        expected_parent=("collection_id", collection_id),
+        collection_id,
     )
     if legacy_dashboard is None:
         return False
@@ -482,45 +497,70 @@ def _visualization_settings(spec: WhoopCardSpec) -> dict[str, Any]:
 
 def _legacy_card_candidate(
     client: MetabaseClient,
+    database_id: int,
     collection_id: int,
     spec: WhoopCardSpec,
     suffix: str,
 ) -> dict[str, Any] | None:
-    return _card_snapshot_candidate(client, collection_id, spec, suffix, legacy=True)
+    return _card_snapshot_candidate(
+        client, database_id, collection_id, spec, suffix, legacy=True
+    )
 
 
 def _card_snapshot_candidate(
     client: MetabaseClient,
+    database_id: int,
     collection_id: int,
     spec: WhoopCardSpec,
     suffix: str,
     *,
     legacy: bool,
 ) -> dict[str, Any] | None:
-    candidates = [
+    named_candidates = [
         card
         for card in _rows(client, "/api/card")
         if card.get("name") == f"{spec.name}{suffix}"
         and card.get("collection_id") == collection_id
         and not card.get("archived")
     ]
-    if len(candidates) != 1:
-        return None
-    card = candidates[0]
-    _, query = _native_query(card.get("dataset_query"))
     expected_visualization = (
         _legacy_visualization_settings(spec)
         if legacy
         else _visualization_settings(spec)
     )
-    if (
-        card.get("display") != spec.display
-        or query != spec.query
-        or card.get("visualization_settings") != expected_visualization
-        or (not legacy and card.get("description") != spec.description)
-    ):
-        return None
-    return card
+    matches = []
+    for card in named_candidates:
+        card_database_id, query = _native_query(card.get("dataset_query"))
+        if (
+            card_database_id == database_id
+            and card.get("display") == spec.display
+            and query == spec.query
+            and card.get("visualization_settings") == expected_visualization
+            and (legacy or card.get("description") == spec.description)
+        ):
+            matches.append(card)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple managed Metabase cards named {spec.name}{suffix}")
+    return None
+
+
+def _strict_named_candidate(
+    rows: list[dict[str, Any]], name: str, collection_id: int
+) -> dict[str, Any] | None:
+    matches = [
+        row
+        for row in rows
+        if row.get("name") == name
+        and row.get("collection_id") == collection_id
+        and not row.get("archived")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(f"Multiple managed Metabase objects named {name}")
+    return None
 
 
 def _legacy_visualization_settings(spec: WhoopCardSpec) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import cast
 from uuid import UUID
 
@@ -291,6 +292,96 @@ def test_old_five_card_upgrade_preserves_ids_and_user_card() -> None:
     assert all(request.method != "DELETE" for request in fake.requests)
 
 
+def test_same_name_impostor_in_managed_collection_is_not_overwritten() -> None:
+    fake = FakeMetabase()
+    _seed_fake_infrastructure(fake)
+    impostor = {
+        "id": 99,
+        "name": f"WHOOP — вес [{PROFILE}]",
+        "collection_id": 1,
+        "display": "table",
+        "description": "User-owned",
+        "dataset_query": {
+            "database": 1,
+            "type": "native",
+            "native": {"query": "SELECT secret FROM private_data"},
+        },
+        "visualization_settings": {},
+    }
+    fake.cards.append(impostor)
+    original = deepcopy(impostor)
+    settings = Settings(postgres_password="local-secret")
+    transport = httpx.MockTransport(fake.handle)
+    engine = cast(Engine, FakeEngine())
+
+    first = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+    second = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+
+    assert first == second
+    assert fake.cards[0] == original
+    assert len(fake.cards) == 9
+    assert fake.count_named(f"WHOOP — вес [{PROFILE}]") == 2
+    assert 99 not in first.card_ids
+
+
+def test_same_name_card_in_another_collection_is_not_moved_or_overwritten() -> None:
+    fake = FakeMetabase()
+    _seed_fake_infrastructure(fake)
+    foreign = {
+        "id": 99,
+        "name": f"WHOOP — длительность сна [{PROFILE}]",
+        "collection_id": 999,
+        "display": "line",
+        "description": "Foreign collection",
+        "dataset_query": {
+            "database": 1,
+            "type": "native",
+            "native": {"query": "SELECT 1 AS date, 2 AS sleep_hours"},
+        },
+        "visualization_settings": {},
+    }
+    fake.cards.append(foreign)
+    original = deepcopy(foreign)
+    settings = Settings(postgres_password="local-secret")
+    transport = httpx.MockTransport(fake.handle)
+    engine = cast(Engine, FakeEngine())
+
+    first = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+    second = bootstrap_whoop_dashboard(
+        settings, PROFILE, transport=transport, engine=engine
+    )
+
+    assert first == second
+    assert fake.cards[0] == original
+    assert len(fake.cards) == 9
+    assert 99 not in first.card_ids
+
+
+def test_default_profile_full_uuid_legacy_shape_is_migrated_with_ids() -> None:
+    fake = FakeMetabase()
+    legacy_suffix = f" [{DEFAULT_PROFILE_ID}]"
+    legacy_ids = _seed_legacy_dashboard(fake, DEFAULT_PROFILE_ID, legacy_suffix)
+
+    result = bootstrap_whoop_dashboard(
+        Settings(postgres_password="local-secret"),
+        DEFAULT_PROFILE_ID,
+        transport=httpx.MockTransport(fake.handle),
+        engine=cast(Engine, FakeEngine()),
+    )
+
+    assert result.dashboard_id == 1
+    assert tuple(result.card_ids[index] for index in (0, 2, 4, 5, 7)) == legacy_ids
+    assert len(fake.cards) == 8
+    assert fake.dashboards[0]["name"] == WHOOP_DASHBOARD_NAME
+    assert all("[" not in fake.cards[card_id - 1]["name"] for card_id in legacy_ids)
+
+
 def test_whoop_card_specs_rejects_non_uuid_input() -> None:
     with pytest.raises((TypeError, ValueError)):
         whoop_card_specs(cast(UUID, str(PROFILE)))
@@ -377,24 +468,7 @@ def test_setup_whoop_cli_rejects_unknown_profile(
 def _seed_legacy_dashboard(
     fake: FakeMetabase, profile_id: UUID, suffix: str
 ) -> tuple[int, ...]:
-    fake.collections.append(
-        {"id": 1, "name": "Health Agent", "parent_id": None, "location": "/"}
-    )
-    fake.databases.append(
-        {
-            "id": 1,
-            "name": "Health Agent",
-            "engine": "postgres",
-            "details": {
-                "host": "postgres",
-                "port": 5432,
-                "dbname": "health_agent",
-                "user": "health_dashboard",
-                "password": "local-secret",
-                "ssl": False,
-            },
-        }
-    )
+    _seed_fake_infrastructure(fake)
     specs = _legacy_whoop_card_specs(profile_id)
     cards = []
     dashcards = []
@@ -438,3 +512,24 @@ def _seed_legacy_dashboard(
         }
     )
     return tuple(range(1, 6))
+
+
+def _seed_fake_infrastructure(fake: FakeMetabase) -> None:
+    fake.collections.append(
+        {"id": 1, "name": "Health Agent", "parent_id": None, "location": "/"}
+    )
+    fake.databases.append(
+        {
+            "id": 1,
+            "name": "Health Agent",
+            "engine": "postgres",
+            "details": {
+                "host": "postgres",
+                "port": 5432,
+                "dbname": "health_agent",
+                "user": "health_dashboard",
+                "password": "local-secret",
+                "ssl": False,
+            },
+        }
+    )
