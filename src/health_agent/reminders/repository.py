@@ -113,6 +113,23 @@ class ReminderRepository:
         ).all()
         return tuple(_snapshot(row) for row in rows)
 
+    def active(self, profile_id: UUID, *, limit: int = 20) -> tuple[Reminder, ...]:
+        rows = self.session.scalars(
+            select(HealthReminder)
+            .where(
+                HealthReminder.profile_id == profile_id,
+                HealthReminder.status.in_(
+                    (
+                        ReminderStatus.PENDING_CONFIRMATION.value,
+                        ReminderStatus.SCHEDULED.value,
+                    )
+                ),
+            )
+            .order_by(HealthReminder.due_at, HealthReminder.id)
+            .limit(_limit(limit))
+        ).all()
+        return tuple(_snapshot(row) for row in rows)
+
     def successor(self, profile_id: UUID, public_code: str) -> Reminder | None:
         parent = self._row(profile_id, public_code, lock=False)
         row = self.session.scalar(

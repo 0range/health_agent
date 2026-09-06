@@ -67,8 +67,9 @@ class HealthReminder(Base):
         ),
         CheckConstraint(
             "(repeat_unit IS NULL AND repeat_every IS NULL) OR "
-            "(repeat_unit = 'days' AND repeat_every BETWEEN 1 AND 3650) OR "
-            "(repeat_unit = 'months' AND repeat_every BETWEEN 1 AND 120)",
+            "(repeat_unit IS NOT NULL AND repeat_every IS NOT NULL AND "
+            "((repeat_unit = 'days' AND repeat_every BETWEEN 1 AND 3650) OR "
+            "(repeat_unit = 'months' AND repeat_every BETWEEN 1 AND 120)))",
             name="ck_health_reminders_recurrence",
         ),
         CheckConstraint(

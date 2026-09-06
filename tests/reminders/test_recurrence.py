@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -8,7 +8,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import Engine, func, select
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from alembic import command
 from health_agent.db import session_scope
@@ -148,6 +148,50 @@ def test_successor_is_profile_scoped(clean_database: Engine) -> None:
             repository.successor(OTHER_PROFILE_ID, parent.public_code)
 
 
+def test_foreign_profile_cannot_mutate_or_replay_recurrence_chain(
+    clean_database: Engine,
+) -> None:
+    due = datetime(2026, 9, 6, 7, tzinfo=UTC)
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=OTHER_PROFILE_ID, name="Other"))
+        repository = ReminderRepository(session)
+        parent = _repeating(repository, due=due, unit="days", every=1)
+
+        for transition in (repository.cancel, repository.complete):
+            with pytest.raises(ReminderNotFound):
+                transition(OTHER_PROFILE_ID, parent.public_code, now=due)
+        assert (
+            repository.get(PROFILE_ID, parent.public_code).status
+            is ReminderStatus.SCHEDULED
+        )
+        assert repository.successor(PROFILE_ID, parent.public_code) is None
+
+        repository.complete(
+            PROFILE_ID, parent.public_code, now=due, action_key="rightful-done"
+        )
+        child = repository.successor(PROFILE_ID, parent.public_code)
+        assert child is not None
+        for code, action_key in (
+            (parent.public_code, "rightful-done"),
+            (parent.public_code, "foreign-replay"),
+            (child.public_code, "foreign-child"),
+        ):
+            with pytest.raises(ReminderNotFound):
+                repository.complete(
+                    OTHER_PROFILE_ID, code, now=due, action_key=action_key
+                )
+        with pytest.raises(ReminderNotFound):
+            repository.cancel(OTHER_PROFILE_ID, child.public_code, now=due)
+        assert (
+            repository.get(PROFILE_ID, parent.public_code).status
+            is ReminderStatus.COMPLETED
+        )
+        assert (
+            repository.get(PROFILE_ID, child.public_code).status
+            is ReminderStatus.SCHEDULED
+        )
+
+
 def test_calendar_month_clamp_dst_gap_and_fold() -> None:
     assert next_recurrence_due(
         datetime(2028, 2, 29, 9, tzinfo=UTC),
@@ -186,6 +230,113 @@ def test_migrated_recurrence_schema_matches_models(clean_database: Engine) -> No
             MigrationContext.configure(connection), Base.metadata
         )
     assert differences == []
+
+
+@pytest.mark.parametrize(
+    ("repeat_unit", "repeat_every", "public_code"),
+    [(None, 1, "partial-null-1"), ("days", None, "partial-null-2")],
+)
+def test_database_rejects_partial_null_recurrence_pairs(
+    clean_database: Engine,
+    repeat_unit: str | None,
+    repeat_every: int | None,
+    public_code: str,
+) -> None:
+    with pytest.raises(IntegrityError), session_scope(clean_database) as session:
+        session.add(
+            HealthReminder(
+                profile_id=PROFILE_ID,
+                public_code=public_code,
+                title="Direct write",
+                reason="Constraint regression",
+                source_type="test",
+                source_reference="test",
+                due_at=datetime(2026, 9, 6, tzinfo=UTC),
+                timezone_name="UTC",
+                status=ReminderStatus.PENDING_CONFIRMATION.value,
+                delivery_revision=1,
+                repeat_unit=repeat_unit,
+                repeat_every=repeat_every,
+            )
+        )
+        session.flush()
+
+
+def test_database_accepts_none_and_valid_recurrence_pairs(
+    clean_database: Engine,
+) -> None:
+    with session_scope(clean_database) as session:
+        for public_code, repeat_unit, repeat_every in (
+            ("valid-none", None, None),
+            ("valid-days", "days", 3650),
+            ("valid-months", "months", 120),
+        ):
+            session.add(
+                HealthReminder(
+                    profile_id=PROFILE_ID,
+                    public_code=public_code,
+                    title="Direct write",
+                    reason="Constraint regression",
+                    source_type="test",
+                    source_reference="test",
+                    due_at=datetime(2026, 9, 6, tzinfo=UTC),
+                    timezone_name="UTC",
+                    status=ReminderStatus.PENDING_CONFIRMATION.value,
+                    delivery_revision=1,
+                    repeat_unit=repeat_unit,
+                    repeat_every=repeat_every,
+                )
+            )
+        session.flush()
+
+
+def test_active_query_is_bounded_ordered_and_profile_scoped(
+    clean_database: Engine,
+) -> None:
+    base_due = datetime(2026, 9, 6, tzinfo=UTC)
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=OTHER_PROFILE_ID, name="Other"))
+        repository = ReminderRepository(session)
+        for index in range(25):
+            repository.propose(
+                profile_id=PROFILE_ID,
+                title=f"active-{index:02d}",
+                reason="Active",
+                source_type="test",
+                source_reference="test",
+                due_at=base_due + timedelta(days=index),
+                timezone_name="UTC",
+                public_code=f"active-{index:02d}",
+            )
+        for index in range(3):
+            completed = repository.propose(
+                profile_id=PROFILE_ID,
+                title=f"completed-{index}",
+                reason="Completed",
+                source_type="test",
+                source_reference="test",
+                due_at=base_due - timedelta(days=index + 1),
+                timezone_name="UTC",
+                public_code=f"completed-{index}",
+            )
+            repository.confirm(PROFILE_ID, completed.public_code, now=base_due)
+            repository.complete(PROFILE_ID, completed.public_code, now=base_due)
+        repository.propose(
+            profile_id=OTHER_PROFILE_ID,
+            title="foreign-active",
+            reason="Private",
+            source_type="test",
+            source_reference="test",
+            due_at=base_due - timedelta(days=10),
+            timezone_name="UTC",
+            public_code="foreign-active",
+        )
+
+        active = repository.active(PROFILE_ID, limit=20)
+        assert len(active) == 20
+        assert [item.title for item in active] == [
+            f"active-{index:02d}" for index in range(20)
+        ]
 
 
 def test_overflow_rejects_completion_before_parent_mutation(

@@ -133,11 +133,7 @@ class DatabaseReminderCommands:
 
     def _list(self, profile_id: UUID) -> str:
         with session_scope(self._engine) as session:
-            current = [
-                reminder
-                for reminder in ReminderRepository(session).list(profile_id)
-                if reminder.status.value in {"pending_confirmation", "scheduled"}
-            ][:20]
+            current = ReminderRepository(session).active(profile_id, limit=20)
         if not current:
             return "Текущих напоминаний нет."
         return "\n".join(
