@@ -39,18 +39,27 @@ def gridded_pdf(*, headers=None, rows=None, column_major=True, merged_at=None):
     return result
 
 
-def word_pdf(*, headers=None, rows=None, narrative=None, row_gap=35):
+def word_pdf(*, headers=None, rows=None, narrative=None, physical_grid=True):
     headers = headers or ["Test name", "Result", "Unit", "Reference range"]
     rows = rows or [["Glucose", "5.10", "mmol/L", "3.9-5.5"]]
     pdf = pymupdf.open()
     page = pdf.new_page(width=600, height=300)
-    xs = [35, 260, 350, 440]
+    bounds = [30, 240, 330, 420, 570]
+    xs = [35, 250, 340, 430]
+    row_bounds = [30, 60, *[60 + 40 * i for i in range(1, len(rows) + 1)]]
+    if physical_grid:
+        for x in bounds:
+            page.draw_line((x, row_bounds[0]), (x, row_bounds[-1]))
+        for y in row_bounds:
+            page.draw_line((bounds[0], y), (bounds[-1], y))
     for column, value in enumerate(headers):
-        page.insert_text((xs[column], 45), value, fontsize=8)
+        page.insert_text((xs[column], 48), value, fontsize=8)
     for index, row in enumerate(rows):
-        y = 80 + index * row_gap
+        y = 76 + index * 40
         for column, value in enumerate(row):
-            page.insert_text((xs[column], y), value, fontsize=8)
+            values = value if isinstance(value, list) else [value]
+            for line, fragment in enumerate(values):
+                page.insert_text((xs[column], y + line * 12), fragment, fontsize=8)
     if narrative:
         page.insert_text((35, 220), narrative, fontsize=8)
     result = pdf.tobytes()
@@ -117,16 +126,20 @@ def test_gridded_rejects_unknown_ambiguous_flagged_or_incomplete_rows(row):
 def test_kdl_header_anchors_two_adjacent_rows_and_wrapped_name():
     source = word_pdf(
         rows=[
-            ["C-reactive", "", "", ""],
-            ["protein", "4", "mg/L", "0-5"],
+            [["C-reactive", "protein"], "4", "mg/L", "0-5"],
             ["Glucose", "5.2", "mmol/L", "3.9-5.5"],
         ],
-        row_gap=16,
     )
 
     result = extract_lab_geometry(source, 1)
 
     assert [row.name.text for row in result.rows] == ["C-reactive protein", "Glucose"]
+    assert result.rows[0].name.bbox[0] >= 30
+    assert result.rows[0].name.bbox[2] <= 240
+    assert result.rows[0].result.bbox[0] >= 240
+    assert result.rows[0].result.bbox[2] <= 330
+    assert result.rows[0].name.bbox[1] >= 60
+    assert result.rows[0].name.bbox[3] <= 100
 
 
 def test_kdl_rejects_multiple_result_words_and_does_not_consume_neighbor():
@@ -138,6 +151,46 @@ def test_kdl_rejects_multiple_result_words_and_does_not_consume_neighbor():
     )
     result = extract_lab_geometry(source, 1)
     assert [row.name.text for row in result.rows] == ["Hemoglobin"]
+
+
+def test_kdl_rejects_header_text_without_physical_column_and_row_proof():
+    source = word_pdf(physical_grid=False)
+    assert extract_lab_geometry(source, 1).rows == ()
+
+
+def test_kdl_does_not_accumulate_adjacent_name_row_or_subheading():
+    source = word_pdf(
+        rows=[
+            ["C-reactive", "", "", ""],
+            ["Glucose", "5.2", "mmol/L", "3.9-5.5"],
+        ]
+    )
+    result = extract_lab_geometry(source, 1)
+    assert [row.name.text for row in result.rows] == ["Glucose"]
+
+
+def test_kdl_rejects_word_bbox_crossing_physical_column_boundary():
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=600, height=180)
+    bounds = [30, 240, 330, 420, 570]
+    for x in bounds:
+        page.draw_line((x, 30), (x, 100))
+    for y in (30, 60, 100):
+        page.draw_line((30, y), (570, y))
+    for x, value in zip(
+        (35, 250, 340, 430),
+        ("Test name", "Result", "Unit", "Reference range"),
+        strict=True,
+    ):
+        page.insert_text((x, 48), value, fontsize=8)
+    page.insert_text((35, 78), "Glucose", fontsize=8)
+    page.insert_text((315, 78), "5.1", fontsize=16)
+    page.insert_text((340, 78), "mmol/L", fontsize=8)
+    page.insert_text((430, 78), "3.9-5.5", fontsize=8)
+    source = pdf.tobytes()
+    pdf.close()
+
+    assert extract_lab_geometry(source, 1).rows == ()
 
 
 @pytest.mark.parametrize(

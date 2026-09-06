@@ -155,54 +155,119 @@ def _word_rows(page: pymupdf.Page) -> list[GeometryRow]:
         roles, header_cells = matched
         if not _valid_mapping([cell.bbox for cell in header_cells], page.rect):
             continue
-        centers = [(cell.bbox[0] + cell.bbox[2]) / 2 for cell in header_cells]
-        boundaries = [
-            page.rect.x0,
-            *[(left + right) / 2 for left, right in pairwise(centers)],
-            page.rect.x1,
-        ]
-        body = bands[header_index + 1 :]
-        pending_name: list[tuple] = []
-        pending_bottom: float | None = None
-        for body_band in body:
-            if _match_word_header(body_band) is not None:
-                break
+        geometry = _physical_table_geometry(page, header_cells)
+        if geometry is None:
+            continue
+        columns, body_rows = geometry
+        for row_top, row_bottom in body_rows:
             assigned: dict[str, list[tuple]] = {role: [] for role in roles}
-            for word in body_band:
-                center = (word[0] + word[2]) / 2
-                column = next(
-                    (i for i in range(len(roles)) if boundaries[i] <= center < boundaries[i + 1]),
-                    None,
-                )
-                if column is not None:
-                    assigned[roles[column]].append(word)
-            populated = {role for role, values in assigned.items() if values}
-            if populated == {"name"}:
-                top = min(float(word[1]) for word in body_band)
-                if pending_bottom is not None and top - pending_bottom > 20.0:
-                    pending_name = []
-                pending_name.extend(assigned["name"])
-                pending_bottom = max(float(word[3]) for word in body_band)
+            ambiguous = False
+            for word in words:
+                if word[2] <= columns[0][0] or word[0] >= columns[-1][1]:
+                    continue
+                if word[3] <= row_top or word[1] >= row_bottom:
+                    continue
+                if not _inside_y(word, row_top, row_bottom):
+                    ambiguous = True
+                    break
+                matches = [
+                    index
+                    for index, (left, right) in enumerate(columns)
+                    if left <= word[0] and word[2] <= right
+                ]
+                if len(matches) != 1:
+                    ambiguous = True
+                    break
+                assigned[roles[matches[0]]].append(word)
+            if ambiguous or not assigned["result"]:
                 continue
-            if not assigned["result"]:
-                pending_name = []
-                pending_bottom = None
-                continue
-            if pending_name:
-                top = min(float(word[1]) for word in body_band)
-                if pending_bottom is not None and top - pending_bottom <= 20.0:
-                    assigned["name"] = [*pending_name, *assigned["name"]]
-            pending_name = []
-            pending_bottom = None
             cells = {
                 role: _words_cell(values)
                 for role, values in assigned.items()
                 if values
             }
+            if any(not _valid_bbox(cell.bbox, page.rect) for cell in cells.values()):
+                continue
             row = _accepted_row(cells)
             if row is not None:
                 result.append(row)
     return result
+
+
+def _physical_table_geometry(
+    page: pymupdf.Page, header_cells: tuple[GeometryCell, ...]
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
+    """Return columns and body rows only when drawn grid lines prove both."""
+
+    vertical: dict[float, list[tuple[float, float]]] = {}
+    horizontal: set[tuple[float, float, float]] = set()
+    header_top = min(cell.bbox[1] for cell in header_cells)
+    header_bottom = max(cell.bbox[3] for cell in header_cells)
+    for drawing in page.get_drawings():
+        for item in drawing.get("items", ()):
+            edges: tuple[tuple[pymupdf.Point, pymupdf.Point], ...]
+            if item[0] == "re":
+                rectangle = item[1]
+                edges = (
+                    (pymupdf.Point(rectangle.x0, rectangle.y0), pymupdf.Point(rectangle.x0, rectangle.y1)),
+                    (pymupdf.Point(rectangle.x1, rectangle.y0), pymupdf.Point(rectangle.x1, rectangle.y1)),
+                    (pymupdf.Point(rectangle.x0, rectangle.y0), pymupdf.Point(rectangle.x1, rectangle.y0)),
+                    (pymupdf.Point(rectangle.x0, rectangle.y1), pymupdf.Point(rectangle.x1, rectangle.y1)),
+                )
+            elif item[0] == "l":
+                edges = ((item[1], item[2]),)
+            else:
+                continue
+            for first, second in edges:
+                if abs(first.x - second.x) <= 0.5:
+                    top, bottom = sorted((float(first.y), float(second.y)))
+                    if top <= header_top and bottom > header_bottom:
+                        vertical.setdefault(round(float(first.x), 3), []).append(
+                            (top, bottom)
+                        )
+                elif abs(first.y - second.y) <= 0.5:
+                    left, right = sorted((float(first.x), float(second.x)))
+                    horizontal.add((round(float(first.y), 3), left, right))
+    xs = sorted(vertical)
+    mappings: list[list[tuple[float, float]]] = []
+    for candidate in zip(*(xs[index:] for index in range(5)), strict=False):
+        if len(candidate) != 5:
+            continue
+        columns = list(pairwise(candidate))
+        if all(
+            left <= cell.bbox[0] and cell.bbox[2] <= right
+            for cell, (left, right) in zip(header_cells, columns, strict=True)
+        ):
+            mappings.append(columns)
+    if len(mappings) != 1:
+        return None
+    columns = mappings[0]
+    left, right = columns[0][0], columns[-1][1]
+    ys = sorted(
+        y
+        for y, line_left, line_right in horizontal
+        if line_left <= left + 0.5 and line_right >= right - 0.5
+    )
+    header_rows = [
+        index
+        for index, (top, bottom) in enumerate(pairwise(ys))
+        if top <= header_top and header_bottom <= bottom
+    ]
+    if len(header_rows) != 1:
+        return None
+    body = [
+        (top, bottom)
+        for top, bottom in pairwise(ys[header_rows[0] + 1 :])
+        if all(
+            any(segment_top <= top and bottom <= segment_bottom for segment_top, segment_bottom in vertical[x])
+            for x in (columns[0][0], *[column[1] for column in columns])
+        )
+    ]
+    return (columns, body) if body else None
+
+
+def _inside_y(word: tuple, top: float, bottom: float) -> bool:
+    return top <= word[1] and word[3] <= bottom
 
 
 def _bands(words: list[tuple]) -> list[list[tuple]]:
