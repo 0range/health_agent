@@ -266,6 +266,41 @@ def test_bootstrap_reconciles_only_owned_cards_and_preserves_user_cards(
     assert fake.cards == snapshot
 
 
+def test_bootstrap_adds_newly_verified_available_series(
+    disposable_postgres: DisposablePostgres,
+    db_session: Session,
+) -> None:
+    fake = NativeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    add_row(db_session)
+    db_session.commit()
+    first = bootstrap_lab_dashboard(
+        disposable_postgres.settings,
+        PROFILE,
+        transport=transport,
+        engine=disposable_postgres.engine,
+    )
+
+    add_row(
+        db_session,
+        canonical_name="glucose",
+        source_name="Glucose",
+        source_unit="mg/dL",
+        normalized_unit="mg/dL",
+    )
+    db_session.commit()
+    refreshed = bootstrap_lab_dashboard(
+        disposable_postgres.settings,
+        PROFILE,
+        transport=transport,
+        engine=disposable_postgres.engine,
+    )
+
+    assert refreshed.dashboard_id == first.dashboard_id
+    assert len(refreshed.card_ids) == len(first.card_ids) + 1
+    assert any("Глюкоза" in card["name"] for card in fake.cards)
+
+
 def test_discovery_is_registered_sorted_and_profile_scoped(
     db_session: Session,
     disposable_postgres: DisposablePostgres,

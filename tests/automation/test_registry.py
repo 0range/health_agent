@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from health_agent.automation.registry import (
+    DashboardJobAdapter,
     DriveJobAdapter,
     GmailJobAdapter,
     LabExtractionJobAdapter,
@@ -14,6 +15,7 @@ from health_agent.automation.registry import (
     WhoopJobAdapter,
 )
 from health_agent.config import Settings
+from health_agent.dashboard_destinations import DashboardDestinationStore
 from health_agent.gmail.config import GmailAccount, GmailProfile
 from health_agent.gmail.stores import LocalGmailProfileStore, LocalGmailTokenStore
 from health_agent.google_drive.config import DriveProfile
@@ -25,6 +27,7 @@ from health_agent.google_sheets.stores import (
     LocalSheetsTokenStore,
 )
 from health_agent.google_sheets.types import SheetsAccountIdentity
+from health_agent.models import Profile
 from health_agent.whoop.models import WhoopConnection
 
 PROFILE_A = UUID("00000000-0000-0000-0000-000000000001")
@@ -215,3 +218,44 @@ def test_discovers_only_enabled_extraction_profiles(clean_database, disposable_p
     with session_scope(clean_database) as session:
         session.get_one(LabExtractionProfile, PROFILE_A).enabled = False
     assert tuple(LabExtractionJobAdapter().discover(disposable_postgres.settings)) == ()
+
+
+def test_dashboard_discovery_is_db_profile_origin_and_labs_scoped(
+    tmp_path: Path, session: Session, disposable_postgres
+) -> None:
+    session.add(Profile(id=PROFILE_B, name="Configured dashboard profile"))
+    session.commit()
+    settings = disposable_postgres.settings.model_copy(
+        update={
+            "connector_state_root": tmp_path / "connectors",
+            "metabase_url": "http://127.0.0.1:53000",
+        }
+    )
+    destinations = DashboardDestinationStore(
+        settings.connector_state_root, settings.metabase_url
+    )
+    destinations.save(PROFILE_A, "labs", 7)
+    DashboardDestinationStore(
+        settings.connector_state_root, "http://127.0.0.1:53001"
+    ).save(PROFILE_B, "labs", 8)
+    destinations.save(UUID(int=3), "labs", 9)
+
+    jobs = tuple(DashboardJobAdapter().discover(settings))
+
+    assert [(job.key, job.arguments, job.supports_full) for job in jobs] == [
+        (
+            ("dashboard", str(PROFILE_A), "main"),
+            ("dashboard", "setup-labs", "--profile-id", str(PROFILE_A)),
+            False,
+        )
+    ]
+
+
+def test_unconfigured_dashboard_profiles_produce_no_job(
+    tmp_path: Path, disposable_postgres
+) -> None:
+    settings = disposable_postgres.settings.model_copy(
+        update={"connector_state_root": tmp_path / "connectors"}
+    )
+
+    assert tuple(DashboardJobAdapter().discover(settings)) == ()
