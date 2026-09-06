@@ -43,6 +43,7 @@ from health_agent.panel.models import (
     ProfilePanel,
     ProfileSummary,
 )
+from health_agent.panel.workflows import DatabaseWorkflowAdapter, WorkflowSnapshot
 from health_agent.reminders.repository import ReminderRepository
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import TelegramStatus
@@ -103,6 +104,11 @@ class DriveConfigurationPort(ConnectorStatusReader, Protocol):
     def folder_ids(self, profile_id: UUID) -> tuple[str, ...]: ...
 
     def configure(self, profile_id: UUID, folders: list[str]) -> None: ...
+
+
+class WorkflowPort(Protocol):
+    def snapshot(self, profile_id: UUID) -> WorkflowSnapshot: ...
+    def action(self, profile_id: UUID, fields: dict[str, str]) -> str: ...
 
 
 class ProfileNotFoundError(LookupError):
@@ -461,6 +467,7 @@ class PanelService:
         destinations: tuple[PanelDestination, ...] = (),
         destination_factory: DestinationFactory | None = None,
         healthcheck_reader: DataCoverageReader | None = None,
+        workflows: WorkflowPort | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._profiles = profiles
@@ -470,6 +477,7 @@ class PanelService:
         self._destination_factory = destination_factory
         self._healthcheck_reader = healthcheck_reader
         self._clock = clock
+        self._workflows = workflows
 
     def list_profiles(self) -> tuple[ProfileSummary, ...]:
         return self._profiles.list()
@@ -523,6 +531,20 @@ class PanelService:
         if self._drive is None:
             raise RuntimeError("Google Drive configuration is unavailable")
         self._drive.configure(profile_id, folders)
+
+    def workflow_snapshot(self, profile_id: UUID) -> WorkflowSnapshot:
+        if self._profiles.get(profile_id) is None:
+            raise ProfileNotFoundError(str(profile_id))
+        if self._workflows is None:
+            raise RuntimeError("Medical workflows are unavailable")
+        return self._workflows.snapshot(profile_id)
+
+    def workflow_action(self, profile_id: UUID, fields: dict[str, str]) -> str:
+        if self._profiles.get(profile_id) is None:
+            raise ProfileNotFoundError(str(profile_id))
+        if self._workflows is None:
+            raise RuntimeError("Medical workflows are unavailable")
+        return self._workflows.action(profile_id, fields)
 
     def healthcheck(self) -> HealthcheckSnapshot:
         profiles = self.list_profiles()
@@ -618,17 +640,18 @@ def build_panel_service(settings: Settings) -> PanelService:
         (
             WhoopStatusReader(sessions, TokenStore(settings.whoop_token_root)),
             GmailStatusReader(gmail_profiles, gmail_state, gmail_oauth.local_status),
-            SheetsStatusReader(sheets_profiles, sheets_state, sheets_oauth.local_status),
+            SheetsStatusReader(
+                sheets_profiles, sheets_state, sheets_oauth.local_status
+            ),
             TelegramStatusReader(telegram_status),
             ReminderStatusReader(sessions),
             DatabaseStatusReader(sessions),
         ),
         drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
-        destinations=(
-            PanelDestination("metabase", "Дашборды", settings.metabase_url),
-        ),
+        destinations=(PanelDestination("metabase", "Дашборды", settings.metabase_url),),
         destination_factory=sheets_destination,
         healthcheck_reader=HealthcheckReader(sessions),
+        workflows=DatabaseWorkflowAdapter(sessions),
     )
 
 

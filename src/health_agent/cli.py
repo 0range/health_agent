@@ -114,6 +114,7 @@ from health_agent.telegram.launchd import (
 from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.vault import FileVault
+from health_agent.visits.cli import app as visit_app
 from health_agent.whoop.auth_service import (
     complete_whoop_authorization,
     open_and_wait_for_whoop_authorization,
@@ -158,6 +159,7 @@ app.add_typer(question_app, name="question")
 app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
 app.add_typer(lab_extraction_app, name="lab-extract")
+app.add_typer(visit_app, name="visit")
 
 
 @app.callback()
@@ -425,13 +427,18 @@ def correct_review_item(
         settings = Settings()
         with session_scope(build_engine(settings)) as session:
             corrected = correct_observation(
-                session, observation_id, source_value=value, source_unit=unit,
+                session,
+                observation_id,
+                source_value=value,
+                source_unit=unit,
                 profile_id=profile_id,
                 canonical_name=canonical_name,
             )
             corrected_id = corrected.id
     except Exception:  # noqa: BLE001 -- local DB/source diagnostics are private
-        typer.echo("Correction not applied. Check the pending item, value, unit and profile.")
+        typer.echo(
+            "Correction not applied. Check the pending item, value, unit and profile."
+        )
         raise typer.Exit(1) from None
     typer.echo(
         f"status=corrected observation_id={observation_id} "
@@ -1858,9 +1865,7 @@ def _telegram_launchd_paths(env_file: Path) -> TelegramLaunchdPaths:
     require_private_file(expanded)
     resolved = expanded.resolve()
     settings = Settings(_env_file=resolved)  # type: ignore[call-arg]
-    automation_root = _repository_relative(
-        repository_root, settings.automation_root
-    )
+    automation_root = _repository_relative(repository_root, settings.automation_root)
     return TelegramLaunchdPaths.resolve(
         automation_root=automation_root,
         executable=_current_console_script(),
