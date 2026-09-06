@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from health_agent.insights.models import HealthSignal
-from health_agent.questions.models import EvidenceItem, HealthQuestionContext
+from health_agent.questions.models import (
+    EvidenceItem,
+    HealthQuestionContext,
+    SourceReport,
+)
 
 MAX_PRESENTED_EVIDENCE = 60
 MAX_PRESENTED_SIGNALS = 30
@@ -27,12 +31,14 @@ class QuestionPresentation:
 
     evidence: tuple[EvidenceItem, ...]
     signals: tuple[PresentedSignal, ...]
+    reports: tuple[SourceReport, ...] = ()
 
     @property
     def allowed_citations(self) -> frozenset[str]:
         return frozenset(
             [item.citation_label for item in self.evidence]
             + [item.citation_label for item in self.signals]
+            + [item.citation_label for item in self.reports]
         )
 
 
@@ -78,4 +84,5 @@ def select_presentation(context: HealthQuestionContext) -> QuestionPresentation:
             )
             for signal in selected
         ),
+        reports=context.reports[:10],
     )

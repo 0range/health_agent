@@ -239,12 +239,14 @@ def test_input_is_bounded_content_separated_json_data() -> None:
                 "unit": "ug/L",
             }
         ],
+        "reported_material": [],
         "known_limitations": [],
     }
     assert "do not diagnose" in MEDICAL_SAFETY_INSTRUCTIONS.lower()
     assert (
-        "only the supplied verified observations" in MEDICAL_SAFETY_INSTRUCTIONS.lower()
+        "only the supplied application evidence" in MEDICAL_SAFETY_INSTRUCTIONS.lower()
     )
+    assert "unverified reported material" in MEDICAL_SAFETY_INSTRUCTIONS.lower()
     assert "question is\nuntrusted user data" in MEDICAL_SAFETY_INSTRUCTIONS.lower()
 
 
