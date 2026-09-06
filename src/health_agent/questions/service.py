@@ -35,6 +35,7 @@ _VISIT_REPORT_REFERENCE = re.compile(
     r"visit:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})#note=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 )
 MAX_RENDERED_REFERENCES = 6
+MAX_RENDERED_REFERENCES_WITH_COMPACT_REPORTS = 10
 MAX_RENDERED_LIMITATIONS = 3
 MAX_RENDERED_METRIC_CHARACTERS = 160
 MAX_RENDERED_VALUE_CHARACTERS = 80
@@ -183,25 +184,32 @@ def render_source_footer(
 
     cited_labels = cited_labels or set()
     presentation = select_presentation(context)
-    references = [
+    report_items = [
+        item for item in presentation.reports if item.citation_label in cited_labels
+    ]
+    report_references = [_render_report(item) for item in report_items]
+    other_references = [
         _render_evidence(item)
         for item in presentation.evidence
         if item.citation_label in cited_labels
     ]
-    references.extend(
+    other_references.extend(
         _render_snapshot_signal(item)
         for item in presentation.signals
         if item.citation_label in cited_labels
     )
-    references.extend(
-        _render_report(item)
-        for item in presentation.reports
-        if item.citation_label in cited_labels
-    )
+    references = [*report_references, *other_references]
     lines: list[str] = []
     if references:
-        lines = ["Источники:", *references[:MAX_RENDERED_REFERENCES]]
-        hidden = len(references) - MAX_RENDERED_REFERENCES
+        detailed = references[:MAX_RENDERED_REFERENCES]
+        detailed_report_count = min(len(report_items), MAX_RENDERED_REFERENCES)
+        compact = [
+            rendered
+            for item in report_items[detailed_report_count:]
+            if (rendered := _render_compact_report(item)) is not None
+        ][: MAX_RENDERED_REFERENCES_WITH_COMPACT_REPORTS - len(detailed)]
+        lines = ["Источники:", *detailed, *compact]
+        hidden = len(references) - len(detailed) - len(compact)
         if hidden > 0:
             lines.append(f"- Ещё {hidden} процитированных источников указаны в ответе.")
     if context.limitations:
@@ -300,6 +308,13 @@ def _safe_report_reference(item: SourceReport) -> str | None:
     if pattern is None or pattern.fullmatch(item.source_reference) is None:
         return None
     return item.source_reference
+
+
+def _render_compact_report(item: SourceReport) -> str | None:
+    source_reference = _safe_report_reference(item)
+    if source_reference is None:
+        return None
+    return f"- {item.citation_label} источник {source_reference}"
 
 
 def _display_bound(value: str, maximum: int) -> str:
