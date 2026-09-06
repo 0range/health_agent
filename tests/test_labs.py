@@ -4,6 +4,7 @@ import pytest
 
 from health_agent.labs import (
     CandidateStatus,
+    UnsupportedNormalization,
     normalize_lab_result,
     parse_lab_candidates,
 )
@@ -161,3 +162,51 @@ def test_normalization_preserves_finite_bounded_values(value: str) -> None:
     parsed, unit = normalize_lab_result("ferritin", value, "ng/mL")
     assert parsed == Decimal(value.replace(",", "."))
     assert unit == "ng/mL"
+
+
+@pytest.mark.parametrize(
+    ("canonical_name", "source_unit", "normalized_unit"),
+    [
+        ("white_blood_cells", "тыс/мкл", "10^9/L"),
+        ("white_blood_cells", "*10^9/л", "10^9/L"),
+        ("white_blood_cells", "10*9/литр", "10^9/L"),
+        ("platelets", "10^9/литр", "10^9/L"),
+        ("tsh", "мкМЕ/мл", "uIU/mL"),
+        ("alt", "Ед./л", "U/L"),
+        ("ast", "Ед/л", "U/L"),
+    ],
+)
+def test_normalization_accepts_exact_bootstrap_unit_spellings_without_source_rewrite(
+    canonical_name: str, source_unit: str, normalized_unit: str
+) -> None:
+    source_value = "12,5"
+
+    assert normalize_lab_result(canonical_name, source_value, source_unit) == (
+        Decimal("12.5"),
+        normalized_unit,
+    )
+    assert source_value == "12,5"
+    assert source_unit in {
+        "тыс/мкл",
+        "*10^9/л",
+        "10*9/литр",
+        "10^9/литр",
+        "мкМЕ/мл",
+        "Ед./л",
+        "Ед/л",
+    }
+
+
+@pytest.mark.parametrize(
+    ("canonical_name", "source_unit"),
+    [
+        ("white_blood_cells", "тыс/мл"),
+        ("platelets", "10^9/дл"),
+        ("alt", "Ед./мл"),
+    ],
+)
+def test_normalization_rejects_similar_but_unsupported_bootstrap_units(
+    canonical_name: str, source_unit: str
+) -> None:
+    with pytest.raises(UnsupportedNormalization, match="Unsupported normalization"):
+        normalize_lab_result(canonical_name, "12,5", source_unit)
