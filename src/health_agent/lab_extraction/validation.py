@@ -309,9 +309,26 @@ def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
     if delimiter == "|" and "\t" in excerpt:
         return None
     fields = [field.strip() for field in excerpt.split(delimiter)]
-    if len(fields) not in {3, 4} or any(not field for field in fields):
+    if len(fields) not in {3, 4, 5} or any(not field for field in fields):
         return None
     name = fields[0]
+    if len(fields) == 5:
+        if _VALUE.fullmatch(fields[1]) is None or fields[3] not in {
+            "H",
+            "L",
+            "↑",
+            "↓",
+            "*",
+        }:
+            return None
+        return {
+            "source_name": name,
+            "source_value": fields[1],
+            "source_unit": fields[2],
+            "reference_text": fields[4],
+            "source_flag": fields[3],
+            "evidence_excerpt": excerpt,
+        }
     if _VALUE.fullmatch(fields[1]):
         value, unit = fields[1], fields[2]
     elif _VALUE.fullmatch(fields[2]):

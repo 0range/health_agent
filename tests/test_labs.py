@@ -119,6 +119,23 @@ def test_import_parser_preserves_separated_colon_and_pipe_flag():
     assert candidates[1].reference_text == "0-41"
 
 
+def test_import_parser_preserves_exact_five_field_pipe_flag_only():
+    pages = (
+        ExtractedPage(
+            1,
+            "Glucose | 5.1 | mmol/L | H | 3.9-5.5\n"
+            "Glucose | mmol/L | 5.2 | H | 3.9-5.5\n"
+            "Glucose | 5.3 | mmol/L | forged | 3.9-5.5",
+        ),
+    )
+
+    candidates = parse_lab_candidates(pages)
+
+    assert len(candidates) == 1
+    assert candidates[0].source_flag == "H"
+    assert candidates[0].reference_text == "3.9-5.5"
+
+
 @pytest.mark.parametrize(
     "value",
     [

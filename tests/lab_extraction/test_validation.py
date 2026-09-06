@@ -411,3 +411,47 @@ def test_flag_from_unrelated_later_row_is_rejected():
             },
             text,
         )
+
+
+def test_exact_five_field_pipe_flag_is_preserved_locally_and_by_cloud_validation():
+    text = "Glucose | 5.1 | mmol/L | H | 3.9-5.5"
+    local = parse_local(text)
+    assert len(local.candidates) == 1
+    assert local.candidates[0].source_flag == "H"
+    assert local.candidates[0].reference_text == "3.9-5.5"
+
+    cloud = validate_candidates(
+        payload(
+            source_name="Glucose",
+            source_value="5.1",
+            source_unit="mmol/L",
+            source_flag="H",
+            evidence_excerpt=text,
+        ),
+        text,
+    )
+    assert len(cloud) == 1
+    assert cloud[0].source_flag == "H"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Glucose | 5.1 | mmol/L | forged | 3.9-5.5",
+        "Glucose | mmol/L | 5.1 | H | 3.9-5.5",
+        "Glucose | 5.1 | H | mmol/L | 3.9-5.5",
+    ],
+)
+def test_five_field_pipe_rejects_forged_flag_or_swapped_value(text):
+    assert parse_local(text).candidates == ()
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                source_flag="H",
+                evidence_excerpt=text,
+            ),
+            text,
+        )
