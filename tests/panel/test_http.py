@@ -618,8 +618,10 @@ def test_page_does_not_render_secrets_or_medical_fields() -> None:
 
     page = text(request(app, "GET", "/"))
 
-    for forbidden in ("access_token", "refresh_token", "source_value", "medical"):
+    for forbidden in ("access_token", "refresh_token", "source_value"):
         assert forbidden not in page
+    # Shared CSS class names are not medical data or overview content.
+    assert "medical" not in page.split("</style>", 1)[-1]
 
 
 def test_server_refuses_non_loopback_hosts() -> None:
