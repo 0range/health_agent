@@ -155,6 +155,7 @@ def test_profile_page_renders_safe_cards_and_cli_guidance() -> None:
     assert 'name="csrf_token" value="test-csrf-token"' in page
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"]
+    assert response.headers["Referrer-Policy"] == "same-origin"
 
 
 def test_profile_page_maps_unsynced_and_action_states_to_human_russian() -> None:
@@ -585,6 +586,16 @@ def test_post_rejects_missing_csrf_or_cross_origin() -> None:
 
     assert request(app, "POST", "/profiles", body=b"name=Viktor").status == 403
     assert request(app, "POST", "/profiles", body=valid_body).status == 403
+    assert (
+        request(
+            app,
+            "POST",
+            "/profiles",
+            {"Origin": "null"},
+            valid_body,
+        ).status
+        == 403
+    )
     assert (
         request(
             app,
