@@ -121,10 +121,12 @@ not guarantees of zero retention; see [Yandex setup and consent](yandex-ai.md).
 
 `OPENAI_MAX_OUTPUT_TOKENS` defaults to 2,000 and allows 64–8,000 tokens;
 `OPENAI_REASONING_EFFORT` defaults to `low` for the configured `gpt-5-mini`.
-Both adapters use a 30-second timeout and no automatic retries. For OpenAI the token cap includes
-reasoning tokens, so incomplete results still return unavailable; this policy
-has not been calibrated against live completion rates. Changing models requires
-checking the model's supported reasoning settings.
+Both adapters default to a 30-second timeout and use no automatic retries. Yandex
+question answering alone may be set from 1–60 seconds; its lab extractor remains
+at 30 seconds. For OpenAI the token cap includes reasoning tokens, so incomplete
+results still return unavailable; this policy has not been calibrated against
+live completion rates. Changing models requires checking the model's supported
+reasoning settings.
 
 The hashed Telegram delivery ID also passes through the application to the
 official `X-Client-Request-Id` tracing header. This is **not** a claim of provider
