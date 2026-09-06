@@ -36,14 +36,10 @@ def test_messy_russian_and_english_labs_extend_old_aliases():
 
 
 def test_unknown_analyte_and_unknown_unit_are_not_silently_normalized():
-    unknown = parse_local("Synthetic marker 2.5 mg/L").candidates[0]
-    assert unknown.canonical_name.startswith("unmapped_")
-    with pytest.raises(ValueError):
-        normalize_registered(unknown.canonical_name, "2.5", "mg/L")
-    row = parse_local("Ferritin 42 mystery-unit").candidates[0]
-    assert row.source_unit == "mystery-unit"
-    with pytest.raises(ValueError):
-        normalize_registered("ferritin", "42", "mystery-unit")
+    unknown = parse_local("Synthetic marker 2.5 mg/L")
+    assert unknown.candidates == () and unknown.unresolved
+    unknown_unit = parse_local("Ferritin 42 mystery-unit")
+    assert unknown_unit.candidates == () and unknown_unit.unresolved
 
 
 def payload(**changes):
@@ -153,12 +149,105 @@ def test_common_printed_flag_positions_are_not_lost(text, flag):
     assert row.source_flag == flag
 
 
-def test_both_unknown_name_and_unit_are_retained_review_only():
-    row = parse_local("Synthetic marker 2.5 mystery-unit").candidates[0]
-    assert row.canonical_name.startswith("unmapped_")
-    assert row.source_unit == "mystery-unit"
-    with pytest.raises(ValueError):
-        normalize_registered(row.canonical_name, row.source_value, row.source_unit)
+def test_unknown_name_and_unit_are_unresolved_not_published():
+    result = parse_local("Synthetic marker 2.5 mystery-unit")
+    assert result.candidates == ()
+    assert result.unresolved
+
+
+def test_numeric_protocol_prose_and_name_prefix_pollution_are_not_candidates():
+    for text in (
+        "Order code 12345 status-text",
+        "Glucose commentary 5.1 mmol/L",
+        "Previous Glucose 5.1 mmol/L",
+    ):
+        result = parse_local(text)
+        assert result.candidates == ()
+        assert result.unresolved
+
+
+def test_labelled_and_swapped_pipe_layouts_preserve_exact_source():
+    labelled = (
+        "Показатель: Глюкоза\n"
+        "Результат: 5,1\n"
+        "Единицы: ммоль/л\n"
+        "Референс: 3,9-5,5"
+    )
+    row = parse_local(labelled).candidates[0]
+    assert (row.source_name, row.source_value, row.source_unit) == (
+        "Глюкоза",
+        "5,1",
+        "ммоль/л",
+    )
+    assert row.reference_text == "3,9-5,5"
+    assert row.evidence_excerpt == labelled
+
+    swapped = "Глюкоза | ммоль/л | <5,1 | 3,9-5,5"
+    row = parse_local(swapped).candidates[0]
+    assert row.source_value == "<5,1"
+    assert row.parsed_value is None
+    assert row.evidence_excerpt == swapped
+
+    same_line = "Analyte: Glucose Result: 5.1 Units: mmol/L Reference: 3.9-5.5"
+    row = parse_local(same_line).candidates[0]
+    assert row.evidence_excerpt == same_line
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Показатель: Глюкоза\nРезультат: 5,1",
+        "Показатель: Глюкоза\nРезультат: 5,1\nРезультат: 5,2\nЕдиницы: ммоль/л",
+        "Показатель: Глюкоза\nРезультат: 5,1\nЕдиницы: mystery",
+        "Глюкоза | ммоль/л | 5,1 | 3,9-5,5 | extra",
+        "Глюкоза | 5,1 | 5,2 | ммоль/л",
+    ],
+)
+def test_incomplete_ambiguous_or_extra_layouts_stay_unresolved(text):
+    result = parse_local(text)
+    assert result.candidates == ()
+    assert result.unresolved
+
+
+def test_cloud_layout_proof_rejects_reassigned_or_omitted_fields():
+    text = "Glucose | mmol/L | 5.1 | 3.9-5.5"
+    accepted = payload(
+        source_name="Glucose",
+        source_value="5.1",
+        source_unit="mmol/L",
+        reference_text="3.9-5.5",
+        evidence_excerpt=text,
+    )
+    assert validate_candidates(accepted, text)[0].canonical_name == "glucose"
+    with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+        validate_candidates(
+            payload(
+                source_name="Glucose",
+                source_value="5.1",
+                source_unit="mmol/L",
+                reference_text=None,
+                evidence_excerpt=text,
+            ),
+            text,
+        )
+
+
+def test_cloud_validation_rejects_multirow_and_malformed_explicit_excerpts():
+    for text in (
+        "Glucose 5.1 mmol/L\nALT 20 U/L",
+        "Glucose | 5.1 | mmol/L | 3.9-5.5 | extra",
+    ):
+        with pytest.raises(ValueError, match="candidate_evidence_mismatch"):
+            validate_candidates(
+                payload(
+                    source_name="Glucose",
+                    source_value="5.1",
+                    source_unit="mmol/L",
+                    reference_text=None,
+                    evidence_excerpt=text,
+                ),
+                text,
+            )
 
 
 def test_flag_from_unrelated_later_row_is_rejected():

@@ -8,6 +8,7 @@ from typing import Any
 from health_agent.lab_extraction.registry import (
     bounded_decimal,
     canonical_name,
+    normalize_registered,
 )
 from health_agent.lab_extraction.types import (
     MAX_CANDIDATES,
@@ -30,6 +31,29 @@ _ROW = re.compile(
 )
 _METADATA = re.compile(
     r"^(?:patient|пациент|date|дата|collection|issued|birth|пол|sex|age|возраст|reference|референс)",
+    re.IGNORECASE,
+)
+_VALUE = re.compile(
+    r"[<>≤≥]?[+-]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?"
+)
+_LABEL_NAMES = {
+    "test": "name",
+    "analyte": "name",
+    "показатель": "name",
+    "result": "value",
+    "результат": "value",
+    "unit": "unit",
+    "units": "unit",
+    "единица": "unit",
+    "единицы": "unit",
+    "reference": "reference",
+    "reference range": "reference",
+    "референс": "reference",
+    "референсный интервал": "reference",
+}
+_LABEL = re.compile(
+    r"(?P<label>reference\s+range|референсный\s+интервал|test|analyte|"
+    r"показатель|result|результат|units?|единиц(?:а|ы)|reference|референс)\s*:\s*",
     re.IGNORECASE,
 )
 
@@ -75,7 +99,7 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
         name = _source_string(row["source_name"], 120)
         value = _source_string(row["source_value"], 64)
         unit = _source_string(row["source_unit"], 32)
-        excerpt = _source_string(row["evidence_excerpt"], 500)
+        excerpt = _source_string(row["evidence_excerpt"], 1000)
         reference = row["reference_text"]
         flag = row["source_flag"]
         if flag is not None and flag not in ("H", "L", "↑", "↓", "*"):
@@ -89,6 +113,39 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
             or (flag is not None and flag not in excerpt)
         ):
             raise ValueError("candidate_evidence_mismatch")
+        explicit = _explicit_layout_fields(excerpt)
+        if explicit is not None:
+            expected = {
+                "name": name,
+                "value": value,
+                "unit": unit,
+                "reference": reference,
+                "flag": flag,
+            }
+            if explicit != expected:
+                raise ValueError("candidate_evidence_mismatch")
+            qualified = value.startswith(("<", ">", "≤", "≥"))
+            parsed = bounded_decimal(value[1:] if qualified else value)
+            low, high = _reference_range(reference)
+            result.append(
+                Candidate(
+                    name,
+                    value,
+                    unit,
+                    reference,
+                    excerpt,
+                    canonical_name(name),
+                    None if qualified else parsed,
+                    flag,
+                    low,
+                    high,
+                )
+            )
+            continue
+        if "|" in excerpt or "\t" in excerpt:
+            raise ValueError("candidate_evidence_mismatch")
+        if _LABEL.search(excerpt) is not None:
+            raise ValueError("candidate_evidence_mismatch")
         name_span = _field_span(name, excerpt, text)
         value_span = _field_span(value, excerpt, text, name_span[1])
         unit_span = _field_span(unit, excerpt, text, value_span[1])
@@ -101,8 +158,10 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
         flag_between = flag is not None and gap == flag
         if gap and gap != flag:
             raise ValueError("candidate_evidence_mismatch")
+        tail_end = unit_span[1]
         if reference is not None:
             reference_span = _field_span(reference, excerpt, text, unit_span[1])
+            tail_end = reference_span[1]
             gap = excerpt[unit_span[1] : reference_span[0]].strip(" \t\r\n|:=")
             flag_between = flag_between or (flag is not None and gap == flag)
             if gap and gap != flag:
@@ -115,6 +174,10 @@ def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
                 or re.fullmatch(r"[\s|:=]*", excerpt[tail_start : flag_span[0]]) is None
             ):
                 raise ValueError("candidate_evidence_mismatch")
+            if flag_span[0] >= tail_start:
+                tail_end = flag_span[1]
+        if re.fullmatch(r"[\s|:=]*", excerpt[tail_end:]) is None:
+            raise ValueError("candidate_evidence_mismatch")
         qualified = value.startswith(("<", ">", "≤", "≥"))
         parsed = bounded_decimal(value[1:] if qualified else value)
         low, high = _reference_range(reference)
@@ -156,11 +219,26 @@ def parse_local(text: str) -> LocalResult:
         raise ValueError("page_text_limit")
     rows: list[Candidate] = []
     unresolved = not bool(text.strip())
+    labelled = _parse_labelled(text)
+    if labelled is not None:
+        try:
+            candidates = validate_candidates({"candidates": [labelled]}, text)
+        except ValueError:
+            return LocalResult((), True)
+        return LocalResult(candidates, False)
     for source_line in text.splitlines():
         line = source_line.strip()
         if not line or _METADATA.match(line):
             continue
-        match = _ROW.fullmatch(re.sub(r"\s*\|\s*", " ", line))
+        explicit = _parse_pipe(line) if "|" in line or "\t" in line else None
+        if "|" in line or "\t" in line:
+            if explicit is None:
+                unresolved = True
+                continue
+            row = explicit
+            match = None
+        else:
+            match = _ROW.fullmatch(line)
         if match is not None:
             row = match.groupdict()
             # Cleaning table separators never fabricates evidence: exact original
@@ -186,12 +264,15 @@ def parse_local(text: str) -> LocalResult:
                         if fields[0] == flags[0]
                         else reference[: -len(flags[0])].strip()
                     ) or None
+        if match is not None or explicit is not None:
             try:
                 candidates = validate_candidates({"candidates": [row]}, text)
+                candidate = candidates[0]
+                _require_registered(candidate)
             except ValueError:
                 unresolved = True
             else:
-                rows.extend(candidates)
+                rows.append(candidate)
             continue
         if any(char.isdigit() for char in line) and any(
             char.isalpha() for char in line
@@ -200,3 +281,106 @@ def parse_local(text: str) -> LocalResult:
     if len(rows) > MAX_CANDIDATES:
         raise ValueError("page_candidate_limit")
     return LocalResult(tuple(rows), unresolved)
+
+
+def parse_page_candidates(text: str) -> LocalResult:
+    """Shared strict page parser used by initial import and queued extraction."""
+
+    return parse_local(text)
+
+
+def _require_registered(candidate: Candidate) -> None:
+    if candidate.canonical_name.startswith("unmapped_"):
+        raise ValueError("unsupported_lab_name")
+    raw = (
+        candidate.source_value[1:]
+        if candidate.source_value.startswith(("<", ">", "≤", "≥"))
+        else candidate.source_value
+    )
+    normalize_registered(candidate.canonical_name, raw, candidate.source_unit)
+
+
+def _parse_pipe(excerpt: str) -> dict[str, str | None] | None:
+    delimiter = "|" if "|" in excerpt else "\t"
+    if delimiter == "|" and "\t" in excerpt:
+        return None
+    fields = [field.strip() for field in excerpt.split(delimiter)]
+    if len(fields) not in {3, 4} or any(not field for field in fields):
+        return None
+    name = fields[0]
+    if _VALUE.fullmatch(fields[1]):
+        value, unit = fields[1], fields[2]
+    elif _VALUE.fullmatch(fields[2]):
+        unit, value = fields[1], fields[2]
+    else:
+        return None
+    reference = fields[3] if len(fields) == 4 else None
+    result: dict[str, str | None] = {
+        "source_name": name,
+        "source_value": value,
+        "source_unit": unit,
+        "reference_text": reference,
+        "source_flag": None,
+        "evidence_excerpt": excerpt,
+    }
+    return result
+
+
+def _parse_labelled(text: str) -> dict[str, str | None] | None:
+    excerpt = text.strip()
+    if not excerpt or len(excerpt) > 1000 or len(excerpt.splitlines()) > 8:
+        return None
+    found: dict[str, str] = {}
+    for line in excerpt.splitlines():
+        position = 0
+        while position < len(line):
+            match = _LABEL.match(line, position)
+            if match is None:
+                return None
+            next_match = _LABEL.search(line, match.end())
+            end = len(line) if next_match is None else next_match.start()
+            value = line[match.end() : end].strip()
+            key = _LABEL_NAMES[" ".join(match.group("label").casefold().split())]
+            if not value or key in found:
+                return None
+            found[key] = value
+            position = end
+    if set(found) not in ({"name", "value", "unit"}, {"name", "value", "unit", "reference"}):
+        return None
+    if _VALUE.fullmatch(found["value"]) is None:
+        return None
+    return {
+        "source_name": found["name"],
+        "source_value": found["value"],
+        "source_unit": found["unit"],
+        "reference_text": found.get("reference"),
+        "source_flag": None,
+        "evidence_excerpt": excerpt,
+    }
+
+
+def _explicit_layout_fields(excerpt: str) -> dict[str, str | None] | None:
+    row = _parse_pipe(excerpt) if "|" in excerpt or "\t" in excerpt else _parse_labelled(excerpt)
+    if row is None:
+        return None
+    candidate = Candidate(
+        str(row["source_name"]),
+        str(row["source_value"]),
+        str(row["source_unit"]),
+        row["reference_text"],
+        excerpt,
+        canonical_name(str(row["source_name"])),
+        None,
+        row["source_flag"],
+    )
+    try:
+        _require_registered(candidate)
+    except ValueError:
+        return None
+    return {
+        "name": row["source_name"],
+        "value": row["source_value"],
+        "unit": row["source_unit"],
+        "reference": row["reference_text"],
+        "flag": row["source_flag"],
+    }

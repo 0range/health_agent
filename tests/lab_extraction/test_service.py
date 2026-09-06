@@ -19,7 +19,7 @@ from health_agent.lab_extraction.models import LabExtractionJob
 from health_agent.lab_extraction.queue import profile_lock
 from health_agent.lab_extraction.service import LabExtractionService
 from health_agent.lab_extraction.types import ExtractionError
-from health_agent.lab_extraction.validation import parse_local, validate_candidates
+from health_agent.lab_extraction.validation import validate_candidates
 from health_agent.models import (
     DEFAULT_PROFILE_ID,
     Document,
@@ -425,7 +425,24 @@ def test_local_cloud_aggregate_candidate_cap_is_atomic(clean_database, tmp_path)
     claim = worker.queue.claim(
         DEFAULT_PROFILE_ID, worker.queue.pending(DEFAULT_PROFILE_ID, 1, cloud=True)[0]
     )
-    candidates = tuple(parse_local(line).candidates[0] for line in text.splitlines())
+    candidates = tuple(
+        validate_candidates(
+            {
+                "candidates": [
+                    {
+                        "source_name": f"Marker{i}",
+                        "source_value": str(i),
+                        "source_unit": "U/L",
+                        "reference_text": None,
+                        "source_flag": None,
+                        "evidence_excerpt": line,
+                    }
+                ]
+            },
+            text,
+        )[0]
+        for i, line in enumerate(text.splitlines())
+    )
     worker.queue.publish(claim, text, candidates[:40], cloud=False, unresolved=True)
     worker.queue.reserve_cloud(
         claim, datetime.now(UTC).date(), "synthetic-model", allowed=True
