@@ -30,10 +30,15 @@ class CalendarAPIError(RuntimeError):
 
 
 class GoogleCalendarGateway:
-    def __init__(self, credentials: Credentials, timeout_seconds: int = 30):
+    def __init__(
+        self, credentials: Credentials, timeout_seconds: int = 30, *, http=None
+    ):
+        transport = http or httplib2.Http(timeout=timeout_seconds)
         self.http = AuthorizedHttp(
             credentials,
-            http=httplib2.Http(timeout=timeout_seconds, follow_redirects=False),
+            http=transport,
+            refresh_status_codes=(),
+            max_refresh_attempts=0,
         )
 
     def _request(
@@ -49,6 +54,7 @@ class GoogleCalendarGateway:
                 method=method,
                 body=None if body is None else json.dumps(body),
                 headers={"Content-Type": "application/json", **(headers or {})},
+                redirections=0,
             )
         except Exception as error:
             raise CalendarAPIError() from error
@@ -81,3 +87,8 @@ class GoogleCalendarGateway:
             body,
             {"If-Match": etag or ""},
         )
+
+    def userinfo(self, url: str):
+        if url != "https://openidconnect.googleapis.com/v1/userinfo":
+            raise CalendarAPIError()
+        return self._request("GET", url)

@@ -9,6 +9,7 @@ from uuid import UUID
 
 from health_agent.google_calendar.api import CalendarAPIError
 from health_agent.google_calendar.models import CalendarEvent, CalendarResult
+from health_agent.google_calendar.oauth import CalendarOAuthError
 
 
 def event_id(profile_id: UUID, visit_id: UUID) -> str:
@@ -61,7 +62,12 @@ class CalendarService:
                 or profile.account_email.casefold() != token["account_email"]
             ):
                 return CalendarResult(eid, "deferred", safe_error="account_mismatch")
-            gateway = self.gateway_factory(token["credentials"])
+            if self.oauth is None:
+                return CalendarResult(
+                    eid, "deferred", safe_error="authorization_missing"
+                )
+            credentials = self.oauth.stage(event.profile_id, interactive=False)
+            gateway = self.gateway_factory(credentials)
             remote = gateway.get(profile.encoded_calendar_id, eid)
             recovered = False
             if remote is None:
@@ -117,9 +123,11 @@ class CalendarService:
             return CalendarResult(eid, "updated", updated.get("htmlLink"))
         except CalendarAPIError as error:
             return CalendarResult(eid, "deferred", safe_error=error.safe_code)
+        except CalendarOAuthError as error:
+            return CalendarResult(eid, "deferred", safe_error=str(error))
         except (TimeoutError, ConnectionError):
             return CalendarResult(eid, "deferred", safe_error="write_outcome_unknown")
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
             return CalendarResult(
                 eid, "deferred", safe_error="calendar_configuration_invalid"
             )

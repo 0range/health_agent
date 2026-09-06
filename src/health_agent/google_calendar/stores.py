@@ -23,6 +23,7 @@ from health_agent.google_calendar.models import CalendarProfile
 def _dir(root: Path, profile_id: UUID) -> Path:
     try:
         reject_symlink_components(root)
+        private_directory(root)
         return private_directory(root / str(UUID(str(profile_id))))
     except RuntimeError as error:
         raise RuntimeError("refusing symlinked calendar path") from error

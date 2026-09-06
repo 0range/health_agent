@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
@@ -117,7 +118,7 @@ class CalendarOAuth:
         if (
             not isinstance(subject, str)
             or not isinstance(email, str)
-            or not identity.get("email_verified")
+            or identity.get("email_verified") is not True
         ):
             raise CalendarOAuthError("identity_verification_failed")
         profile = self.profiles.load(profile_id)
@@ -146,13 +147,16 @@ class CalendarOAuth:
             return "reauth_required"
         return (
             "ready"
-            if info.st_mode & 0o777 == 0o600 and not path.is_symlink()
+            if stat.S_ISREG(info.st_mode)
+            and info.st_mode & 0o777 == 0o600
+            and not path.is_symlink()
             else "reauth_required"
         )
 
 
 class _BoundedRequest:
     def __init__(self):
+        self.timeout_seconds = 30
         self.request = Request()
 
     def __call__(self, *args, **kwargs):

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -54,3 +55,64 @@ def test_exact_scopes_accept_email_alias_and_reject_wider(tmp_path: Path):
     tokens.publish_verified(other, "other", "c@d.test", json.loads(wider.to_json()))
     with pytest.raises(CalendarOAuthError, match="invalid_oauth_scopes"):
         service.load(other)
+
+
+def test_authorize_verifies_boolean_identity_and_bound_subject(
+    tmp_path: Path, monkeypatch
+):
+    profile_id = uuid4()
+    service, tokens = oauth(tmp_path, profile_id)
+    credential = credentials()
+    monkeypatch.setattr(service, "stage", lambda *_args, **_kwargs: credential)
+
+    class Identity:
+        def __init__(self):
+            self.payload = {
+                "sub": "subject",
+                "email": "Me@Example.test",
+                "email_verified": True,
+            }
+
+        def userinfo(self, url):
+            assert url == "https://openidconnect.googleapis.com/v1/userinfo"
+            return self.payload
+
+    identity = Identity()
+    service.gateway_factory = lambda _: identity
+    service.authorize(profile_id)
+    assert tokens.load_verified(profile_id)["account_subject"] == "subject"
+    assert service.profiles.load(profile_id).account_email == "me@example.test"
+
+    other = uuid4()
+    service.profiles.save(CalendarProfile(other))
+    identity.payload = {"sub": "other", "email": "x@y.test", "email_verified": "false"}
+    with pytest.raises(CalendarOAuthError, match="identity_verification_failed"):
+        service.authorize(other)
+    assert tokens.load_verified(other) is None
+
+    bound = uuid4()
+    service.profiles.save(
+        CalendarProfile(bound, account_subject="expected", account_email="e@x.test")
+    )
+    identity.payload = {"sub": "different", "email": "x@y.test", "email_verified": True}
+    with pytest.raises(CalendarOAuthError, match="account_mismatch"):
+        service.authorize(bound)
+
+
+def test_expired_refresh_is_bounded_and_persisted(tmp_path: Path, monkeypatch):
+    profile_id = uuid4()
+    service, tokens = oauth(tmp_path, profile_id)
+    expired = credentials()
+    expired.expiry = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    tokens.publish_verified(
+        profile_id, "subject", "a@b.test", json.loads(expired.to_json())
+    )
+
+    def refresh(candidate, request):
+        assert request.timeout_seconds == 30
+        candidate.token = "refreshed"
+        candidate.expiry = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
+
+    monkeypatch.setattr(Credentials, "refresh", refresh)
+    assert service.stage(profile_id, interactive=False).token == "refreshed"
+    assert tokens.load_verified(profile_id)["credentials"]["token"] == "refreshed"
