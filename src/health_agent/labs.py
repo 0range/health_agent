@@ -38,6 +38,8 @@ class LabCandidate:
     page_number: int
     status: CandidateStatus = CandidateStatus.NEEDS_REVIEW
     source_flag: str | None = None
+    reference_low: Decimal | None = None
+    reference_high: Decimal | None = None
 
 
 _ROW_PATTERN = re.compile(
@@ -107,6 +109,8 @@ def parse_lab_candidates(
                     evidence_excerpt=candidate.evidence_excerpt,
                     page_number=page.page_number,
                     source_flag=candidate.source_flag,
+                    reference_low=candidate.reference_low,
+                    reference_high=candidate.reference_high,
                 )
             )
     return tuple(candidates)
