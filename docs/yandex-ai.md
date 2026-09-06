@@ -17,8 +17,8 @@ YANDEX_ALLOWED_PROFILE_IDS=[]
 ```
 
 The Yandex key is separate from `OPENAI_API_KEY`. The folder must have AI Studio access
-and active billing. For the Responses API, grant the service account the
-`ai.assistants.editor` and `ai.languageModels.user` roles and create its API key with the
+and active billing. For native Chat Completions, grant the service account the
+`ai.languageModels.user` role and create its API key with the
 `yc.ai.foundationModels.execute` scope. Yandex's newer key UI may show more granular
 language-model permissions; follow the current official authentication page if the UI
 has changed. Never put a token in chat or git. If using `YANDEX_API_KEY_FILE`, make it a
@@ -26,10 +26,14 @@ regular file with mode `0600`. Keep the profile allowlist empty until informed c
 is recorded; cloud lab processing also requires the provider-neutral `--cloud` opt-in
 and retains its daily budget.
 
-The adapter uses the documented Responses-compatible endpoint, but compatibility of
-every request field remains an acceptance boundary until a synthetic live test. The
-logging opt-out header is requested; it is not a claim of guaranteed zero retention.
-Health scenarios remain blocked until that probe and explicit acceptance for real data.
+The adapter uses Yandex's native Chat Completions compatibility surface. Earlier
+synthetic prototype probes showed that Qwen works with `reasoning_effort=none` and that
+the Responses-style safety identifier causes an HTTP 400, so the adapter disables
+reasoning and omits that unsupported field. Those prototype findings are evidence for
+the wire contract, not acceptance of untested committed code; run the synthetic probe
+below before enabling a profile. `store=False` and the logging opt-out header are
+requests to the provider, not guarantees of zero retention. Health scenarios remain
+blocked until that probe and explicit acceptance for real data.
 
 Synthetic-only probe (invented text, one-off settings, no database):
 
@@ -56,8 +60,7 @@ else:
     print(f"success=true count={len(candidates)}")
 ```
 
-Official references: [SDK endpoint/project example](https://aistudio.yandex.ru/ru/docs/ai-studio/operations/generation/multimodels-request-responses),
-[Responses API](https://aistudio.yandex.ru/ru/docs/ai-studio/api/Responses/createResponse),
+Official references: [OpenAI-compatible Chat Completions](https://yandex.cloud/en/docs/foundation-models/concepts/openai-compatibility),
 [authentication and required roles](https://aistudio.yandex.ru/ru/docs/ai-studio/api-ref/authentication),
 [logging-header caveat](https://aistudio.yandex.ru/docs/en/ai-studio/sdk-ref/sync/sdk.html),
 and [model URI announcement](https://yandex.cloud/en/blog/digest-april-2026).
