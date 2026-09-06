@@ -166,6 +166,15 @@ class Settings(BaseSettings):
         le=60,
         validation_alias="YANDEX_QUESTION_TIMEOUT_SECONDS",
     )
+    yandex_question_reasoning_effort: Literal["none", "low", "medium", "high"] = Field(
+        default="none", validation_alias="YANDEX_QUESTION_REASONING_EFFORT"
+    )
+    yandex_question_max_output_tokens: int | None = Field(
+        default=None,
+        ge=64,
+        le=8_000,
+        validation_alias="YANDEX_QUESTION_MAX_OUTPUT_TOKENS",
+    )
     yandex_allowed_profile_ids: tuple[UUID, ...] = Field(
         default=(), validation_alias="YANDEX_ALLOWED_PROFILE_IDS"
     )

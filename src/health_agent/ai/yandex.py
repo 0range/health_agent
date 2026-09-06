@@ -172,8 +172,12 @@ class YandexResponsesResponder(_YandexAdapter):
             response = self._get_client().chat.completions.create(
                 model=self.model,
                 messages=_chat_question_messages(question, context),
-                max_tokens=self.settings.openai_max_output_tokens,
-                reasoning_effort="none",
+                max_tokens=(
+                    self.settings.yandex_question_max_output_tokens
+                    if self.settings.yandex_question_max_output_tokens is not None
+                    else self.settings.openai_max_output_tokens
+                ),
+                reasoning_effort=self.settings.yandex_question_reasoning_effort,
                 temperature=0,
                 store=False,
                 **options,

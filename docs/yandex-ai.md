@@ -16,6 +16,9 @@ YANDEX_MODEL=qwen3.6-35b-a3b
 # Optional QA-only override; omit to reuse YANDEX_MODEL.
 # YANDEX_QUESTION_MODEL=question-model-id
 YANDEX_QUESTION_TIMEOUT_SECONDS=30
+YANDEX_QUESTION_REASONING_EFFORT=none
+# Optional 64..8000; omit to reuse OPENAI_MAX_OUTPUT_TOKENS (default 2000).
+# YANDEX_QUESTION_MAX_OUTPUT_TOKENS=4000
 YANDEX_ALLOWED_PROFILE_IDS=[]
 ```
 
@@ -32,14 +35,21 @@ and retains its daily budget.
 `YANDEX_QUESTION_MODEL` changes only health-question answers; laboratory
 extraction continues to use `YANDEX_MODEL`. The QA-only timeout defaults to 30
 seconds and accepts 1–60 seconds. Both clients keep automatic retries disabled.
+`YANDEX_QUESTION_REASONING_EFFORT` accepts `none`, `low`, `medium` or `high`,
+defaulting to `none`. `YANDEX_QUESTION_MAX_OUTPUT_TOKENS` is optional and accepts
+64–8,000 tokens; when omitted it falls back to `OPENAI_MAX_OUTPUT_TOKENS`.
+These QA settings do not change extraction: it retains `YANDEX_MODEL`, reasoning
+`none`, a 30-second timeout and `OPENAI_MAX_OUTPUT_TOKENS` (default 2,000).
+Reasoning support depends on the selected question model; a larger token budget
+does not guarantee completion, answer quality or a particular latency.
 Use an alternative question model only after synthetic and owner-approved
 acceptance testing; the example does not activate or recommend a production
 model by itself.
 
 The adapter uses Yandex's native Chat Completions compatibility surface. Earlier
 synthetic prototype probes showed that Qwen works with `reasoning_effort=none` and that
-the Responses-style safety identifier causes an HTTP 400, so the adapter disables
-reasoning and omits that unsupported field. Those prototype findings are evidence for
+the Responses-style safety identifier causes an HTTP 400, so reasoning remains
+disabled by default and the unsupported field is omitted. Those prototype findings are evidence for
 the wire contract; the merged adapter has since passed the linked synthetic smoke.
 Run the probe below when setting up another installation. `store=False` and the logging opt-out header are
 requests to the provider, not guarantees of zero retention. Health scenarios remain

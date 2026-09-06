@@ -98,6 +98,8 @@ def test_yandex_settings_are_separate_and_deny_every_profile_by_default():
     assert configured.yandex_model == "qwen3.6-35b-a3b"
     assert configured.yandex_question_model is None
     assert configured.yandex_question_timeout_seconds == 30
+    assert configured.yandex_question_reasoning_effort == "none"
+    assert configured.yandex_question_max_output_tokens is None
     assert configured.yandex_allowed_profile_ids == ()
 
 
@@ -245,6 +247,78 @@ def test_question_model_falls_back_to_lab_model():
     responder = YandexResponsesResponder(settings(yandex_model="shared-model"))
 
     assert responder.model == "gpt://synthetic-folder/shared-model"
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high"])
+def test_question_reasoning_and_budget_do_not_change_extraction(effort):
+    profile_id = UUID(int=1)
+    configured = settings(
+        yandex_model="lab-model",
+        yandex_question_model="question-model",
+        yandex_question_reasoning_effort=effort,
+        yandex_question_max_output_tokens=4_000,
+        yandex_allowed_profile_ids=(profile_id,),
+    )
+    lab_calls = RecordingCompletions(chat_response())
+    question_calls = RecordingCompletions(chat_response("Answer. [LAB1]"))
+
+    YandexLabExtractor(configured, client=client_for(lab_calls)).extract(
+        profile_id, "Unknown marker"
+    )
+    YandexResponsesResponder(configured, client=client_for(question_calls)).respond(
+        profile_id=profile_id,
+        question="Synthetic?",
+        context=_question_context(profile_id),
+    )
+
+    assert (
+        lab_calls.calls[0]["model"],
+        lab_calls.calls[0]["max_tokens"],
+        lab_calls.calls[0]["reasoning_effort"],
+    ) == ("gpt://synthetic-folder/lab-model", 2_000, "none")
+    assert (
+        question_calls.calls[0]["model"],
+        question_calls.calls[0]["max_tokens"],
+        question_calls.calls[0]["reasoning_effort"],
+    ) == ("gpt://synthetic-folder/question-model", 4_000, effort)
+
+
+@pytest.mark.parametrize("budget", [None, 64, 8_000])
+def test_question_budget_fallback_and_inclusive_bounds_reach_request(budget):
+    profile_id = UUID(int=1)
+    configured = settings(
+        openai_max_output_tokens=2_222,
+        yandex_question_max_output_tokens=budget,
+        yandex_allowed_profile_ids=(profile_id,),
+    )
+    calls = RecordingCompletions(chat_response("Answer. [LAB1]"))
+    YandexResponsesResponder(configured, client=client_for(calls)).respond(
+        profile_id=profile_id,
+        question="Synthetic?",
+        context=_question_context(profile_id),
+    )
+    assert calls.calls[0]["max_tokens"] == (2_222 if budget is None else budget)
+    assert calls.calls[0]["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize("effort", [None, "", "minimal", "invalid"])
+def test_question_reasoning_rejects_unsupported_values(effort):
+    with pytest.raises(ValueError):
+        settings(yandex_question_reasoning_effort=effort)
+
+
+@pytest.mark.parametrize("budget", [0, 63, 8_001, "invalid"])
+def test_question_output_budget_rejects_invalid_values(budget):
+    with pytest.raises(ValueError):
+        settings(yandex_question_max_output_tokens=budget)
+
+
+def test_question_reasoning_and_budget_environment_aliases(monkeypatch):
+    monkeypatch.setenv("YANDEX_QUESTION_REASONING_EFFORT", "low")
+    monkeypatch.setenv("YANDEX_QUESTION_MAX_OUTPUT_TOKENS", "4000")
+    configured = settings()
+    assert configured.yandex_question_reasoning_effort == "low"
+    assert configured.yandex_question_max_output_tokens == 4_000
 
 
 @pytest.mark.parametrize(
