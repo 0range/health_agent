@@ -114,8 +114,8 @@ def test_selector_preserves_old_attention_before_thirty_newer_stable_signals() -
     assert signals[0]["state"] == "attention"
     assert signals[0]["citation_ids"] == ["[OLD]"]
     assert "Normal 29" not in {signal["title"] for signal in signals}
-    assert "short TL;DR" in MEDICAL_SAFETY_INSTRUCTIONS
-    assert "at most five attention" in MEDICAL_SAFETY_INSTRUCTIONS
+    assert "short conclusion" in MEDICAL_SAFETY_INSTRUCTIONS
+    assert "at most three attention" in MEDICAL_SAFETY_INSTRUCTIONS
 
 
 class FakeResponses:
@@ -200,7 +200,7 @@ def test_safety_instructions_keep_dates_and_claims_bound_to_each_source() -> Non
 def test_default_presentation_is_short_direct_and_detail_is_explicit_opt_in() -> None:
     instructions = MEDICAL_SAFETY_INSTRUCTIONS.lower()
 
-    assert "100–180 russian words" in instructions
+    assert "80–120 russian words" in instructions
     assert "at most three main points" in instructions
     assert "start with the direct conclusion" in instructions
     assert "do not dump metrics, statistics, empty sections" in instructions
@@ -210,6 +210,11 @@ def test_default_presentation_is_short_direct_and_detail_is_explicit_opt_in() ->
     assert "never present them as patient facts" in instructions
     assert "question self-contained" in instructions
     assert "no conversational memory" in instructions
+    assert "at most two numeric comparisons" in instructions
+    assert "not proof of overall health" in instructions
+    assert "not a medical normality assessment" in instructions
+    assert "only the topics the person asked about" in instructions
+    assert "comparing their actual supplied timestamps" in instructions
 
 
 @pytest.mark.parametrize(

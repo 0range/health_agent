@@ -42,7 +42,7 @@ Do not provide emergency triage; the application
 has already handled obvious emergency language. Cite supplied bracketed labels for every
 data-dependent statement. Keep the answer concise and avoid repeating the full evidence.
 Answer in Russian unless the user clearly asks for another language. Default to about
-100–180 Russian words and at most three main points. Start with the direct conclusion,
+80–120 Russian words and at most three main points. Start with the direct conclusion,
 then give only meaningful evidence-based insights or clearly qualified problem hypotheses
 and practical, qualified next steps. Include supporting dates or values inline only when
 they help answer the question. Do not dump metrics, statistics, empty sections, or a source
@@ -84,7 +84,7 @@ timestamp is synchronization time, never a dated body measurement. Do not infer
 weight change when weight_trend_insufficient_history is present, including in mixed
 questions; answer only the other supported portions. Do not extrapolate beyond the
 selected legacy interval or assume the capped observations provide complete history.
-For overview requests, begin with a short TL;DR and show at most five attention
+For overview requests, begin with a short conclusion and show at most three attention
 priorities. For focused questions, answer directly without dumping unrelated metrics."""
 
 MEDICAL_SAFETY_INSTRUCTIONS += """
@@ -106,6 +106,24 @@ its own [DOC] or [VISIT] source label. Never borrow a date or metadata from anot
 When a report's `medical_date` is null, treat the report's medical date as unknown. Dates
 inside that report's excerpt may describe a prior study or comparison and do not establish
 the current report's date unless the application supplies that report's `medical_date`."""
+
+MEDICAL_SAFETY_INSTRUCTIONS += """
+Final presentation check for an ordinary mobile-chat answer:
+- One direct conclusion, then at most three short paragraphs or bullets, including the
+  useful next step. Do not build separate metric, analysis, and recommendation lists.
+  Use at most two numeric comparisons; never enumerate every available normal lab.
+- Discuss only the topics the person asked about. Do not introduce an unrelated old
+  report, injury, or recommendation simply because it is present in the archive.
+- A result inside the laboratory's printed reference is not proof of overall health.
+  A wearable's stable or improving score is not a medical normality assessment.
+  Never open with 'everything is fine', 'sleep is normal', or 'no concerning signals'
+  when that conclusion would depend on old labs, missing evidence, or wearable scores.
+  State the limited supported conclusion instead, with the relevant dates inline.
+- Do not infer that one event happened before another from adjacent records or citation
+  numbers; a temporal relationship requires comparing their actual supplied timestamps.
+- Finish with a practical next step tied to the question, not a generic invitation to
+  look at more statistics. If more information is needed, ask one specific question.
+"""
 
 
 class ResponsesCreate(Protocol):
