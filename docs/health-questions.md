@@ -1,25 +1,38 @@
 # Health questions
 
-The local Health Agent can answer a free-form health question from a selected
-profile’s verified lab results and normalized WHOOP records. It is an
+TL;DR: ask through the CLI or a bound private Telegram chat. Answers use one
+profile's verified labs, WHOOP records and bounded health snapshot, plus separately
+attributed clinical-document excerpts and saved visit answers. Imported does not
+mean verified, and this is not a complete search of the medical archive. It is an
 information aid, not diagnosis, treatment, or emergency care.
 
 ## Local use
 
-Start the local database and apply its schema first. Configure an OpenAI API key
-only in the current shell or in a private regular file (`.tokens/openai-api-key`
-by default, mode `0600`, no symlink). Then ask one profile-scoped question:
+Start the local database and apply its schema first. Choose the permitted provider:
+`AI_PROVIDER=openai` (the default) or `AI_PROVIDER=yandex`. For OpenAI, configure
+the key only in the current shell or a private regular file
+(`.tokens/openai-api-key` by default, mode `0600`, no symlink). For Yandex, follow
+the [Yandex AI Studio guide](yandex-ai.md): it requires its own key, folder and an
+explicit profile allowlist, empty by default. A configured bot does not grant
+permission to share that profile's health data with a cloud provider.
+
+Then ask one profile-scoped question:
 
 ```bash
 uv run health-agent question ask --profile-id PROFILE_UUID "How has my sleep been?"
 uv run health-agent question status --profile-id PROFILE_UUID
 ```
 
-The answer has a deterministic `Sources:` footer. Evidence labels such as
-`[LAB1]` and `[SLEEP1]` map only to the bounded, verified observations selected
-for that request. An empty or insufficient source window produces an explicit
-insufficient-evidence answer. Obvious urgent symptoms receive immediate local
-emergency guidance before an OpenAI request.
+`question status` and Telegram `/status` count the capped recent observation list,
+not all verified archive rows or the separate snapshot/reports. Thus `lab=0` can
+coexist with dated historical labs available to an answer through the snapshot.
+
+Accepted answers have a deterministic `Источники:` footer for cited material.
+Labels such as `[LAB1]`, `[SLEEP1]`, `[SNAP1]`, `[DOC1]` and `[VISIT1]` refer only
+to the selected observations, snapshot signals or attributed reports. Unknown
+labels and uncited generated answers fail closed. Missing or insufficient evidence
+produces an explicit limitation, not invented measurements. Obvious urgent
+symptoms receive immediate local emergency guidance before any provider request.
 
 ## Telegram
 
@@ -39,7 +52,7 @@ CLI commands and never starts synchronization. See the
 [Telegram connector guide](integrations/telegram.md) for binding and token
 storage details.
 
-Prepared question and explicit review-command replies are temporarily spooled under
+Prepared question and explicit medical-command replies are temporarily spooled under
 `TELEGRAM_ROOT/prepared-replies` before delivery. Files contain the final reply
 (including its Sources footer or displayed review candidate) and an opaque authentication-scope hash, never a
 question, raw retrieval context, credentials, or dialogue history. The directory
@@ -57,33 +70,58 @@ allowing a deferred import acknowledgement to complete after restart.
 JPEG/PNG originals use the shared vault with bounded local OCR. `/review` presents
 one unverified item from this profile/bot/chat; only `/confirm UUID`,
 `/correct UUID VALUE UNIT`, or `/reject UUID` changes review state. Corrected
-values retain immutable source lineage. Question retrieval still consumes only
-verified facts. Manual weight is intentionally absent: WHOOP is the v0.1 source.
+values retain immutable source lineage. Unreviewed lab candidates are not patient
+measurements in question context; clinical excerpts and saved visit answers use a
+separate, unverified reported-material channel. Manual weight is intentionally
+absent: WHOOP is the v0.1 source.
 
 ## Data boundaries and privacy
 
-Every retrieval predicate includes the bound `profile_id`. The question context
-is read-only and limited to verified labs and normalized WHOOP sleep, recovery,
-cycle, workout, and current-weight values within fixed windows; it excludes raw
-payloads, document text and filenames, external account identifiers, and other
-profiles’ records. The production responder makes one stateless Responses API
-request with `store=False`, a one-way profile safety identifier, bounded output,
-and no conversation or response chaining. Questions, evidence, answers, and
-keys are not printed by status commands or operational errors.
+Retrieval is read-only and profile-scoped. The provider receives bounded selected
+question/evidence text, including the clinical excerpts and saved visit answers
+described below. It does not receive original PDFs/images, filenames,
+raw WHOOP payloads, external account identifiers or other profiles'
+records. Source pointers include local document/page and visit/note identifiers.
+Questions, evidence, answers and keys are not printed by status commands or
+operational errors.
 
-General and current-weight questions select 30 days; sleep/recovery selects 14
-days; explicit weight-change questions select 90 days. Each source is capped at
-10 items. Both temporal bounds are inclusive: labs use their collected/issued
+The observation list uses 30 days for general/current-weight questions, 14 days
+for sleep/recovery and 90 days for explicit weight-change questions, capped at
+10 items per source. Both temporal bounds are inclusive: labs use their collected/issued
 calendar date, while WHOOP uses observation time (body snapshots use sync-as-of
-time). Old and future body snapshots are excluded. The exact selected UTC
-interval, source cap, and time semantics are passed to the model and shown in
-the deterministic Sources footer even when the question requests a longer
-period. A body snapshot cannot establish weight change. Mixed sleep/weight-change
-questions can answer the supported sleep portion while retaining that limitation.
+time). Old and future body records are excluded from this windowed list. The exact
+UTC interval, source cap and time semantics are passed to the model; the footer
+shows cited facts/dates and applicable limitations. Requesting a longer period
+does not expand these windows. A body snapshot cannot establish weight change.
+Mixed sleep/weight-change questions can answer supported sleep findings while
+retaining that limitation.
+
+The separate health snapshot has its own dates: latest verified labs per analyte
+and source unit may predate the observation window, missing lab dates remain
+unknown, wearable comparisons use the recent seven days against the preceding
+28 days, and weight is a sync-time snapshot, not a measured trend. Presentation
+selects at most 30 snapshot signals and prioritizes at most five attention items.
+Old findings must not be described as today's condition; a gap is not a normal result.
+
+`reported_material` contains at most five clinical-document excerpts and five saved
+visit answers, each capped at 1,400 characters. Document selection examines at most
+60 qualifying pages, takes one anchored section per document and excludes known
+original-integrity errors and future medical dates. Visit answers exclude cancelled
+visits and future-created notes. These channels use their own medical/recorded dates,
+not the observation window; archive/import time is never a medical event date.
+Reports are attributed wording or saved user notes, not verified measurements or
+established diagnoses. This bounded selection is not exhaustive archive retrieval.
+
+The OpenAI adapter makes a stateless Responses request with `store=False`, a hashed
+profile safety identifier and no conversation chaining. Yandex uses native Chat
+Completions, `reasoning_effort=none`, temperature zero, `store=False` and a logging
+opt-out header; it omits the unsupported Responses safety-identifier field. Its
+profile allowlist is checked before sending. These provider options are requests,
+not guarantees of zero retention; see [Yandex setup and consent](yandex-ai.md).
 
 `OPENAI_MAX_OUTPUT_TOKENS` defaults to 2,000 and allows 64–8,000 tokens;
 `OPENAI_REASONING_EFFORT` defaults to `low` for the configured `gpt-5-mini`.
-The SDK uses a 30-second timeout and no automatic retries. The token cap includes
+Both adapters use a 30-second timeout and no automatic retries. For OpenAI the token cap includes
 reasoning tokens, so incomplete results still return unavailable; this policy
 has not been calibrated against live completion rates. Changing models requires
 checking the model's supported reasoning settings.
@@ -96,18 +134,20 @@ establishes a deterministic replay contract. Exact bytes come from the local
 reply spool. See the official [request-ID documentation](https://developers.openai.com/api/reference/overview#supplying-your-own-request-id-with-x-client-request-id)
 and [reasoning-token guidance](https://developers.openai.com/api/docs/guides/reasoning#controlling-costs).
 
-Enabling this responder intentionally sends the bounded selected question and
-evidence to OpenAI. Do not enable it until that external processing is
-appropriate for the profile. The offline test suite uses a fake Responses client
-and synthetic disposable data; it does not use a real key, Telegram bot, OAuth,
-or personal health data.
+Using either responder intentionally sends selected question and health evidence
+to that provider; obtain the relevant profile owner's permission first. Yandex
+enforces `YANDEX_ALLOWED_PROFILE_IDS` separately from provider selection. Cloud
+lab extraction additionally requires its own explicit `--cloud` opt-in and budget;
+enabling question answering does not approve imported lab candidates. Offline
+tests use fake clients and synthetic disposable data, not real credentials,
+Telegram accounts, OAuth or personal health data.
 
 Implementation follows the official [Responses create reference](https://platform.openai.com/docs/api-reference/responses/create)
 and [API safety best practices](https://developers.openai.com/api/docs/guides/safety-best-practices).
 
 ## Live-only validation
 
-Before relying on this feature, the owner must separately validate a real
-BotFather token, a bound private-chat update and delivery, and a permitted
-OpenAI account/key with non-sensitive test data. That validation is deliberately
-not performed by this repository’s tests or by the commands above.
+Before relying on this feature, separately validate the intended bot binding and
+delivery and the selected, permitted provider using non-sensitive input. The
+commands above perform real operations when configured; offline tests do not
+establish live authorization, medical accuracy or complete archive coverage.
