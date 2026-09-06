@@ -37,6 +37,14 @@ class HealthReminder(Base):
     __table_args__ = (
         UniqueConstraint("id", "profile_id", name="uq_health_reminders_id_profile"),
         UniqueConstraint("public_code", name="uq_health_reminders_public_code"),
+        UniqueConstraint(
+            "recurrence_parent_id", name="uq_health_reminders_recurrence_parent"
+        ),
+        ForeignKeyConstraint(
+            ["recurrence_parent_id", "profile_id"],
+            ["health_reminders.id", "health_reminders.profile_id"],
+            name="fk_health_reminders_recurrence_parent_profile",
+        ),
         CheckConstraint(
             "status IN ('pending_confirmation', 'scheduled', 'completed', 'cancelled')",
             name="ck_health_reminders_status",
@@ -56,6 +64,17 @@ class HealthReminder(Base):
         ),
         CheckConstraint(
             "delivery_revision >= 1", name="ck_health_reminders_delivery_revision"
+        ),
+        CheckConstraint(
+            "(repeat_unit IS NULL AND repeat_every IS NULL) OR "
+            "(repeat_unit IS NOT NULL AND repeat_every IS NOT NULL AND "
+            "((repeat_unit = 'days' AND repeat_every BETWEEN 1 AND 3650) OR "
+            "(repeat_unit = 'months' AND repeat_every BETWEEN 1 AND 120)))",
+            name="ck_health_reminders_recurrence",
+        ),
+        CheckConstraint(
+            "recurrence_parent_id IS NULL OR recurrence_parent_id <> id",
+            name="ck_health_reminders_recurrence_not_self",
         ),
     )
 
@@ -79,6 +98,9 @@ class HealthReminder(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_revision: Mapped[int] = mapped_column(Integer, default=1)
+    repeat_unit: Mapped[str | None] = mapped_column(String(10))
+    repeat_every: Mapped[int | None] = mapped_column(Integer)
+    recurrence_parent_id: Mapped[UUID | None] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -132,6 +154,9 @@ class Reminder:
     completed_at: datetime | None
     cancelled_at: datetime | None
     delivery_revision: int
+    repeat_unit: str | None = None
+    repeat_every: int | None = None
+    recurrence_parent_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

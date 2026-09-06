@@ -83,3 +83,55 @@ def test_cancel_pending_and_reject_malformed_without_llm(
         commands.handle(_context(PROFILE_ID), f"/reminder_confirm {code}")
         == commands.unavailable_text
     )
+
+
+def test_new_list_confirm_done_and_cancel_recurring_chain(
+    clean_database: Engine,
+) -> None:
+    commands = DatabaseReminderCommands(clean_database, clock=lambda: NOW)
+    context = _context(PROFILE_ID, 101)
+
+    proposal = commands.handle(
+        context, "/reminder_new 2026-09-06T10:00 | Annual checkup | 12months"
+    )
+    replay = commands.handle(
+        context, "/reminder_new 2026-09-06T10:00 | Annual checkup | 12months"
+    )
+    assert proposal == replay
+    assert proposal is not None and "12" in proposal and "месяц" in proposal.casefold()
+
+    with session_scope(clean_database) as session:
+        reminders = ReminderRepository(session).list(PROFILE_ID)
+        assert len(reminders) == 1
+        parent = reminders[0]
+
+    assert (
+        commands.handle(context, "/reminder_new 2026-09-07T10:00 | Altered | 12months")
+        == commands.unavailable_text
+    )
+    assert "Annual checkup" in (
+        commands.handle(_context(PROFILE_ID, 102), "/reminders") or ""
+    )
+    commands.handle(
+        _context(PROFILE_ID, 103), f"/reminder_confirm {parent.public_code}"
+    )
+    done = commands.handle(
+        _context(PROFILE_ID, 104), f"/reminder_done {parent.public_code}"
+    )
+    assert done is not None and "отмен" in done.casefold()
+
+    with session_scope(clean_database) as session:
+        child = ReminderRepository(session).successor(PROFILE_ID, parent.public_code)
+        assert child is not None
+    commands.handle(_context(PROFILE_ID, 105), f"/reminder_cancel {child.public_code}")
+
+
+def test_new_rejects_bad_syntax_and_list_is_bounded(clean_database: Engine) -> None:
+    commands = DatabaseReminderCommands(clean_database, clock=lambda: NOW)
+    assert (
+        commands.handle(_context(PROFILE_ID), "/reminder_new tomorrow")
+        == commands.new_usage_text
+    )
+    assert (
+        commands.handle(_context(PROFILE_ID), "/reminders extra") == commands.usage_text
+    )

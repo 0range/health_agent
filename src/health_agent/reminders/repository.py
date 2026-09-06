@@ -18,7 +18,11 @@ from health_agent.reminders.models import (
     ReminderStatus,
     ReminderStatusSummary,
 )
-from health_agent.reminders.time import require_aware_utc, validate_timezone
+from health_agent.reminders.time import (
+    next_recurrence_due,
+    require_aware_utc,
+    validate_timezone,
+)
 
 _PUBLIC_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,31}$")
 
@@ -51,7 +55,10 @@ class ReminderRepository:
         timezone_name: str,
         now: datetime | None = None,
         public_code: str | None = None,
+        repeat_unit: str | None = None,
+        repeat_every: int | None = None,
     ) -> Reminder:
+        recurrence = _validate_recurrence(repeat_unit, repeat_every)
         timestamp = require_aware_utc(now or _now())
         due = require_aware_utc(due_at)
         zone = validate_timezone(timezone_name)
@@ -80,6 +87,9 @@ class ReminderRepository:
             completed_at=None,
             cancelled_at=None,
             delivery_revision=1,
+            repeat_unit=recurrence[0],
+            repeat_every=recurrence[1],
+            recurrence_parent_id=None,
             created_at=timestamp,
             updated_at=timestamp,
             **values,
@@ -102,6 +112,33 @@ class ReminderRepository:
             .order_by(HealthReminder.due_at, HealthReminder.id)
         ).all()
         return tuple(_snapshot(row) for row in rows)
+
+    def active(self, profile_id: UUID, *, limit: int = 20) -> tuple[Reminder, ...]:
+        rows = self.session.scalars(
+            select(HealthReminder)
+            .where(
+                HealthReminder.profile_id == profile_id,
+                HealthReminder.status.in_(
+                    (
+                        ReminderStatus.PENDING_CONFIRMATION.value,
+                        ReminderStatus.SCHEDULED.value,
+                    )
+                ),
+            )
+            .order_by(HealthReminder.due_at, HealthReminder.id)
+            .limit(_limit(limit))
+        ).all()
+        return tuple(_snapshot(row) for row in rows)
+
+    def successor(self, profile_id: UUID, public_code: str) -> Reminder | None:
+        parent = self._row(profile_id, public_code, lock=False)
+        row = self.session.scalar(
+            select(HealthReminder).where(
+                HealthReminder.profile_id == profile_id,
+                HealthReminder.recurrence_parent_id == parent.id,
+            )
+        )
+        return None if row is None else _snapshot(row)
 
     def confirm(
         self,
@@ -185,10 +222,56 @@ class ReminderRepository:
             return _snapshot(row)
         if row.status != ReminderStatus.SCHEDULED.value:
             raise InvalidReminderTransition("reminder_transition_not_allowed")
+        child_due = (
+            next_recurrence_due(
+                row.due_at,
+                timestamp,
+                row.timezone_name,
+                row.repeat_unit,
+                row.repeat_every,
+            )
+            if row.repeat_unit is not None and row.repeat_every is not None
+            else None
+        )
         row.status = ReminderStatus.COMPLETED.value
         row.completed_at = timestamp
         row.updated_at = timestamp
         self._event(row, "completed", timestamp, action_key=action_key)
+        if child_due is not None:
+            child = HealthReminder(
+                profile_id=row.profile_id,
+                public_code=f"r{secrets.token_urlsafe(9)}",
+                title=row.title,
+                reason=row.reason,
+                source_type=row.source_type,
+                source_reference=row.source_reference,
+                due_at=child_due,
+                timezone_name=row.timezone_name,
+                status=ReminderStatus.SCHEDULED.value,
+                confirmed_at=timestamp,
+                proposal_notified_at=None,
+                delivered_at=None,
+                completed_at=None,
+                cancelled_at=None,
+                delivery_revision=1,
+                repeat_unit=row.repeat_unit,
+                repeat_every=row.repeat_every,
+                recurrence_parent_id=row.id,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self.session.add(child)
+            self.session.flush()
+            self._event(
+                child,
+                "proposed",
+                timestamp,
+                {
+                    "due_at": child.due_at.isoformat(),
+                    "recurrence_parent_id": str(row.id),
+                },
+            )
+            self._event(child, "confirmed", timestamp)
         self.session.flush()
         return _snapshot(row)
 
@@ -468,6 +551,9 @@ def _snapshot(row: HealthReminder) -> Reminder:
         completed_at=row.completed_at,
         cancelled_at=row.cancelled_at,
         delivery_revision=row.delivery_revision,
+        repeat_unit=row.repeat_unit,
+        repeat_every=row.repeat_every,
+        recurrence_parent_id=row.recurrence_parent_id,
     )
 
 
@@ -488,3 +574,19 @@ def _limit(value: int) -> int:
     if value < 1 or value > 1_000:
         raise ValueError("invalid_limit")
     return value
+
+
+def _validate_recurrence(
+    repeat_unit: str | None, repeat_every: int | None
+) -> tuple[str | None, int | None]:
+    if repeat_unit is None and repeat_every is None:
+        return None, None
+    if repeat_unit == "days" and repeat_every is not None and 1 <= repeat_every <= 3650:
+        return repeat_unit, repeat_every
+    if (
+        repeat_unit == "months"
+        and repeat_every is not None
+        and 1 <= repeat_every <= 120
+    ):
+        return repeat_unit, repeat_every
+    raise ValueError("invalid_recurrence")

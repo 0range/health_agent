@@ -138,3 +138,44 @@ def test_full_confirmed_reminder_flow_survives_dispatch_cycles_and_isolates_prof
     assert stored_second.status is ReminderStatus.PENDING_CONFIRMATION
     assert sum("Repeat ferritin" in text for _, text in gateway.sent) == 3
     assert sum("Other private reminder" in text for _, text in gateway.sent) == 1
+
+
+def test_recurring_telegram_flow_delivers_real_successor(
+    clean_database: Engine, tmp_path: Path
+) -> None:
+    clock = Clock()
+    state = SqliteTelegramState(tmp_path / "telegram-recurring.sqlite3", clock=clock)
+    state.register_bot(BOT_ID, "health_bot")
+    state.bind_identity(BOT_ID, TelegramIdentity(101, PROFILE_ID, 101))
+    gateway = Gateway()
+    dispatcher = ReminderDispatcher(
+        clean_database,
+        TelegramMessenger(BOT_ID, cast(TelegramGateway, gateway), state),
+        clock=clock,
+    )
+    commands = DatabaseReminderCommands(clean_database, clock=clock)
+
+    proposal = commands.handle(
+        _context(PROFILE_ID, 20, clock),
+        "/reminder_new 2026-09-05T10:00 | Daily check | 1days",
+    )
+    assert proposal is not None
+    assert dispatcher.run().proposals_sent == 1
+
+    with session_scope(clean_database) as session:
+        parent = ReminderRepository(session).list(PROFILE_ID)[0]
+    commands.handle(
+        _context(PROFILE_ID, 21, clock), f"/reminder_confirm {parent.public_code}"
+    )
+    assert dispatcher.run().due_sent == 1
+    done = commands.handle(
+        _context(PROFILE_ID, 22, clock), f"/reminder_done {parent.public_code}"
+    )
+    assert done is not None and "/reminder_cancel" in done
+
+    with session_scope(clean_database) as session:
+        child = ReminderRepository(session).successor(PROFILE_ID, parent.public_code)
+        assert child is not None
+    clock.value += timedelta(days=1)
+    assert dispatcher.run().due_sent == 1
+    assert any(child.public_code in text for _, text in gateway.sent)

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import calendar
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -50,3 +51,50 @@ def require_aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime_must_be_timezone_aware")
     return value.astimezone(UTC)
+
+
+def next_recurrence_due(
+    previous_due: datetime,
+    completed_at: datetime,
+    timezone_name: str,
+    repeat_unit: str,
+    repeat_every: int,
+) -> datetime:
+    """Advance the later lifecycle instant by a calendar recurrence interval."""
+
+    zone = validate_timezone(timezone_name)
+    due = require_aware_utc(previous_due)
+    completed = require_aware_utc(completed_at)
+    if not (
+        (repeat_unit == "days" and 1 <= repeat_every <= 3650)
+        or (repeat_unit == "months" and 1 <= repeat_every <= 120)
+    ):
+        raise ValueError("invalid_recurrence")
+    try:
+        base = max(due, completed).astimezone(zone)
+        wall = base.replace(tzinfo=None)
+        if repeat_unit == "days":
+            target = wall + timedelta(days=repeat_every)
+        else:
+            month_index = wall.year * 12 + wall.month - 1 + repeat_every
+            year, zero_based_month = divmod(month_index, 12)
+            month = zero_based_month + 1
+            day = min(wall.day, calendar.monthrange(year, month)[1])
+            target = wall.replace(year=year, month=month, day=day)
+    except (OverflowError, ValueError) as error:
+        raise ValueError("invalid_recurrence_date") from error
+    return _resolve_recurrence_wall_time(target, zone)
+
+
+def _resolve_recurrence_wall_time(wall: datetime, zone: ZoneInfo) -> datetime:
+    for minute in range(181):
+        candidate_wall = wall + timedelta(minutes=minute)
+        candidates: list[datetime] = []
+        for fold in (0, 1):
+            candidate = candidate_wall.replace(tzinfo=zone, fold=fold)
+            round_trip = candidate.astimezone(UTC).astimezone(zone)
+            if round_trip.replace(tzinfo=None) == candidate_wall:
+                candidates.append(candidate.astimezone(UTC))
+        if candidates:
+            return min(candidates)
+    raise ValueError("invalid_recurrence_date")
