@@ -1,10 +1,9 @@
-"""Consent-gated Yandex AI Studio adapters over its Responses endpoint."""
+"""Consent-gated Yandex AI Studio adapters over native Chat Completions."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from openai import APIStatusError, OpenAI
@@ -14,22 +13,67 @@ from health_agent.lab_extraction.openai import (
     _INSTRUCTIONS,
     _SCHEMA,
     _status_error_code,
-    parse_lab_response,
 )
 from health_agent.lab_extraction.types import (
     MAX_CLOUD_CHARACTERS,
     Candidate,
     ExtractionError,
 )
+from health_agent.lab_extraction.validation import validate_candidates
 from health_agent.questions.models import HealthQuestionContext
 from health_agent.questions.openai import (
     MEDICAL_SAFETY_INSTRUCTIONS,
     build_responder_input,
-    hashed_safety_identifier,
 )
 from health_agent.questions.service import QuestionResponderError
 
 YANDEX_BASE_URL = "https://ai.api.cloud.yandex.net/v1"
+MAX_CHAT_CONTENT_CHARACTERS = 80_000
+
+
+def _chat_content(response: Any) -> str:
+    """Return one completed assistant message or a safe lab extraction code."""
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, (list, tuple)) or len(choices) != 1:
+        raise ExtractionError("cloud_invalid_output")
+    choice = choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason == "length":
+        raise ExtractionError("cloud_incomplete")
+    if finish_reason != "stop":
+        raise ExtractionError("cloud_invalid_output")
+    message = getattr(choice, "message", None)
+    if message is None or getattr(message, "role", None) != "assistant":
+        raise ExtractionError("cloud_invalid_output")
+    if getattr(message, "refusal", None) is not None:
+        raise ExtractionError("cloud_refused")
+    if getattr(message, "tool_calls", None) or getattr(message, "function_call", None):
+        raise ExtractionError("cloud_invalid_output")
+    content = getattr(message, "content", None)
+    if (
+        not isinstance(content, str)
+        or not content.strip()
+        or len(content) > MAX_CHAT_CONTENT_CHARACTERS
+    ):
+        raise ExtractionError("cloud_invalid_output")
+    return content.strip()
+
+
+def _chat_question_messages(
+    question: str, context: HealthQuestionContext
+) -> list[dict[str, object]]:
+    blocks = build_responder_input(question, context)[0]["content"]
+    if not isinstance(blocks, list):  # pragma: no cover - builder contract guard
+        raise TypeError("question content must be a list")
+    return [
+        {"role": "system", "content": MEDICAL_SAFETY_INSTRUCTIONS},
+        {
+            "role": "user",
+            "content": [
+                {**cast(dict[str, object], block), "type": "text"} for block in blocks
+            ],
+        },
+    ]
 
 
 def _component(value: str, label: str) -> str:
@@ -74,6 +118,8 @@ class _YandexAdapter:
 
 
 class YandexResponsesResponder(_YandexAdapter):
+    """Historical name for the native Yandex Chat Completions responder."""
+
     def respond(
         self,
         *,
@@ -87,23 +133,21 @@ class YandexResponsesResponder(_YandexAdapter):
             options: dict[str, object] = {}
             if request_id is not None:
                 options["extra_headers"] = {"X-Client-Request-Id": request_id}
-            response = self._get_client().responses.create(
+            response = self._get_client().chat.completions.create(
                 model=self.model,
-                instructions=MEDICAL_SAFETY_INSTRUCTIONS,
-                input=build_responder_input(question, context),
-                max_output_tokens=self.settings.openai_max_output_tokens,
+                messages=_chat_question_messages(question, context),
+                max_tokens=self.settings.openai_max_output_tokens,
+                reasoning_effort="none",
+                temperature=0,
                 store=False,
-                safety_identifier=hashed_safety_identifier(profile_id),
                 **options,
             )
         except Exception:  # noqa: BLE001 -- provider details stay private
             raise QuestionResponderError("Yandex responder unavailable") from None
-        if getattr(response, "status", None) != "completed":
-            raise QuestionResponderError("Yandex response was not completed")
-        output = getattr(response, "output_text", None)
-        if not isinstance(output, str) or not output.strip():
-            raise QuestionResponderError("Yandex response was invalid")
-        return output.strip()
+        try:
+            return _chat_content(response)
+        except ExtractionError:
+            raise QuestionResponderError("Yandex response was invalid") from None
 
 
 class YandexLabExtractor(_YandexAdapter):
@@ -113,28 +157,33 @@ class YandexLabExtractor(_YandexAdapter):
             raise ExtractionError("cloud_input_limit")
         arguments = {
             "model": self.model,
-            "instructions": _INSTRUCTIONS,
-            "input": json.dumps({"page_text": text}, ensure_ascii=False),
-            "max_output_tokens": self.settings.openai_max_output_tokens,
+            "messages": [
+                {"role": "system", "content": _INSTRUCTIONS},
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": self.settings.openai_max_output_tokens,
+            "reasoning_effort": "none",
+            "temperature": 0,
             "store": False,
-            "text": {
-                "format": {
-                    "type": "json_schema",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
                     "name": "lab_candidates",
                     "strict": True,
                     "schema": _SCHEMA,
-                }
+                },
             },
-            "safety_identifier": hashlib.sha256(
-                b"health-agent-lab-extraction-v1:" + profile_id.bytes
-            ).hexdigest(),
         }
         try:
-            response = self._get_client().responses.create(**arguments)
+            response = self._get_client().chat.completions.create(**arguments)
         except APIStatusError as error:
             raise ExtractionError(_status_error_code(error)) from None
         except ExtractionError:
             raise
         except Exception:  # noqa: BLE001 -- transport details stay private
             raise ExtractionError("cloud_outcome_unknown") from None
-        return parse_lab_response(response, text)
+        output = _chat_content(response)
+        try:
+            return validate_candidates(json.loads(output), text)
+        except (TypeError, ValueError):
+            raise ExtractionError("cloud_invalid_output") from None
