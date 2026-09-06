@@ -86,7 +86,7 @@ class CalendarProfileStore:
             )
 
     def load(self, profile_id: UUID) -> CalendarProfile:
-        value = _read(self.path_for(profile_id))
+        value = _read(self.root / str(UUID(str(profile_id))) / "profile.json")
         if value.get("profile_id") != str(profile_id):
             raise ValueError("stored calendar profile belongs to another profile")
         return CalendarProfile(
@@ -135,7 +135,8 @@ class CalendarTokenStore:
             )
 
     def load_verified(self, profile_id: UUID) -> dict[str, Any] | None:
-        path = self.path_for(profile_id)
+        path = self.root / str(UUID(str(profile_id))) / "token.json"
+        reject_symlink_components(path)
         if not path.exists():
             return None
         value = _read(path)

@@ -20,6 +20,7 @@ from health_agent.db import build_engine, session_scope
 _DATABASE_PATTERN = re.compile(r"test_health_agent_[0-9a-f]{32}")
 _CONTAINER_PATTERN = re.compile(r"health-agent-pytest-[0-9a-f]{32}")
 _TABLES_IN_DELETE_ORDER = (
+    "visit_calendar_publications",
     "health_visit_notes",
     "health_visits",
     "lab_extraction_jobs",

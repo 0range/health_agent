@@ -25,6 +25,7 @@ VISIT_COMMANDS = frozenset(
         "visit_done",
         "visit_cancel",
         "visit_move",
+        "visit_calendar",
     }
 )
 _LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
@@ -41,10 +42,45 @@ class DatabaseVisitCommands:
     usage_text = "Формат: /visit_new YYYY-MM-DDTHH:MM | название. Список: /visits. Действия: /visit КОД."
     unavailable_text = "Визит не найден или действие недоступно."
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, publication=None) -> None:
         self._engine = engine
+        self._publication = publication
 
     def handle(self, context: MessageContext, text: str) -> str | None:
+        from health_agent.google_calendar.publication import publication_notice
+
+        pieces = text.strip().split(maxsplit=1)
+        name = pieces[0].split("@", 1)[0].casefold() if pieces else ""
+        arguments = pieces[1].strip() if len(pieces) == 2 else ""
+        if name == "/visit_calendar":
+            if len(arguments.split()) != 1:
+                return "Формат: /visit_calendar КОД"
+            if self._publication is None:
+                return "Calendar недоступен; визит остаётся локальным."
+            try:
+                result = self._publication.publish(context.profile_id, arguments)
+                return publication_notice(result) or "Calendar: публикация уже подтверждена."
+            except VisitNotFound:
+                return self.unavailable_text
+            except Exception:  # noqa: BLE001 - never echo local/network details.
+                return "Calendar недоступен; локальный визит сохранён. Повторите публикацию."
+        response = self._handle_local(context, text)
+        if (self._publication is not None and name in {
+            "/visit_question", "/visit_answer", "/visit_move", "/visit_done", "/visit_cancel"
+        } and response is not None and response not in {
+            self.usage_text, self.unavailable_text,
+            "Не удалось сохранить или прочитать визит. Попробуйте позже."
+        }):
+            # _handle_local's session_scope has exited and committed.
+            try:
+                notice = publication_notice(self._publication.sync_visit(context.profile_id, arguments.split()[0]))
+            except Exception:  # noqa: BLE001
+                notice = "Calendar: повторная синхронизация отложена; локальные изменения сохранены."
+            if notice:
+                response += "\n" + notice
+        return response
+
+    def _handle_local(self, context: MessageContext, text: str) -> str | None:
         pieces = text.strip().split(maxsplit=1)
         if not pieces or not pieces[0].startswith("/"):
             return None
@@ -159,6 +195,7 @@ def render_visit(visit: Visit, notes: tuple[VisitNote, ...]) -> str:
                 f"Подготовиться: /visit_prepare {code}",
                 f"Вопрос: /visit_question {code} текст",
                 f"Записать ответ: /visit_answer {code} текст",
+                f"Опубликовать в Calendar: /visit_calendar {code}",
             ]
         )
     if visit.status == "planned":

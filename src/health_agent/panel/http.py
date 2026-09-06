@@ -53,6 +53,7 @@ _CONNECTOR_LABELS = {
     "drive": "Google Drive",
     "gmail": "Gmail",
     "sheets": "Google Таблица",
+    "calendar": "Google Calendar",
     "telegram": "Telegram",
     "reminders": "Напоминания",
     "database": "Локальная база",
@@ -615,6 +616,7 @@ def _render_medical(
     profile_id: UUID, snapshot: WorkflowSnapshot, csrf: str, notice: str | None = None
 ) -> str:
     note_map = dict(snapshot.notes)
+    calendar_map = dict(snapshot.calendar)
     visits = (
         "".join(
             f'<article class="card"><h3>{escape(visit.title)}</h3><p>{escape(visit.public_code)} · {escape({"planned": "запланирован", "completed": "завершён", "cancelled": "отменён"}[visit.status])} · {visit.starts_at.astimezone(ZoneInfo(visit.timezone_name)):%Y-%m-%d %H:%M}</p>'
@@ -622,7 +624,7 @@ def _render_medical(
                 f"<p>{'Вопрос' if note.kind == 'question' else 'Ответ'}: {escape(note.text)}</p>"
                 for note in note_map.get(visit.public_code, ())
             )
-            + "</article>"
+            + f'<p>Calendar: {escape({"local_only": "только локально", "queued": "в очереди", "published": "подтверждено"}.get(calendar_map.get(visit.public_code, "local_only"), "статус недоступен"))}</p></article>'
             for visit in snapshot.visits
         )
         or '<p class="muted">Визитов пока нет.</p>'
@@ -668,7 +670,15 @@ def _render_medical(
                     ("visit_prepare", "Подготовить"),
                     ("visit_done", "Завершить визит"),
                     ("visit_cancel", "Отменить визит"),
+                    ("visit_calendar", "Опубликовать в Calendar"),
                 )
+            ),
+            _workflow_form(
+                profile_id,
+                csrf,
+                "visit_move",
+                visit_code + '<label>Новое время</label><input name="when" type="datetime-local" required>',
+                "Перенести визит",
             ),
             _workflow_form(
                 profile_id,
@@ -694,7 +704,7 @@ def _render_medical(
     )
     return _page(
         "Визиты и напоминания",
-        f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Все даты вводятся в часовом поясе Europe/Moscow. События сохраняются локально; Calendar автоматически не публикуется.</p>{notice_html}<h2>Визиты (до 20)</h2>{visits}<h2>Напоминания (до 20)</h2>{reminders}<h2>Действия</h2>{forms}',
+        f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Все даты вводятся в часовом поясе Europe/Moscow. События сохраняются локально. После явной публикации изменения синхронизируются с Calendar.</p><p>{escape(snapshot.calendar_connection)}</p>{notice_html}<h2>Визиты (до 20)</h2>{visits}<h2>Напоминания (до 20)</h2>{reminders}<h2>Действия</h2>{forms}',
     )
 
 
@@ -910,6 +920,8 @@ def _cli_guidance(card: ConnectorCard, profile_id: UUID) -> str:
     healthy = card.status in {"ready", "configured"} and card.error_code is None
     if healthy:
         return "действий не требуется."
+    if card.connector == "calendar":
+        return f"проверьте в Terminal: health-agent calendar status --profile-id {profile_id}; настройка: calendar configure --profile-id {profile_id}; авторизация: calendar authorize --profile-id {profile_id} --interactive"
     if card.connector == "drive":
         if card.status == "not_configured":
             return "укажите папку Google Drive в форме ниже."

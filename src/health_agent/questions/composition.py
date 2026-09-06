@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from health_agent.ai.yandex import YandexResponsesResponder
 from health_agent.config import Settings
 from health_agent.db import build_engine, session_scope
+from health_agent.google_calendar.composition import build_publication_service
 from health_agent.importer import ImportReport, import_document
 from health_agent.models import Profile
 from health_agent.questions.context import HealthContextBuilder
@@ -411,7 +412,7 @@ def build_telegram_question_runtime(
         CompositeTelegramTextActions(
             (
                 TelegramReviewActions(engine),
-                DatabaseVisitCommands(engine),
+                DatabaseVisitCommands(engine, build_publication_service(settings, engine)),
                 DatabaseReminderCommands(engine),
             )
         ),

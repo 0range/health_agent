@@ -25,11 +25,14 @@ class WorkflowSnapshot:
     visits: tuple[Visit, ...]
     notes: tuple[tuple[str, tuple[VisitNote, ...]], ...]
     reminders: tuple[Reminder, ...]
+    calendar: tuple[tuple[str, str], ...] = ()
+    calendar_connection: str = ""
 
 
 class DatabaseWorkflowAdapter:
-    def __init__(self, sessions: Callable[[], AbstractContextManager[Session]]) -> None:
+    def __init__(self, sessions: Callable[[], AbstractContextManager[Session]], publication=None) -> None:
         self._sessions = sessions
+        self._publication = publication
 
     def snapshot(self, profile_id: UUID) -> WorkflowSnapshot:
         with self._sessions() as session:
@@ -40,7 +43,16 @@ class DatabaseWorkflowAdapter:
                 for visit in visits
             )
             reminders = ReminderRepository(session).active(profile_id, limit=20)
-            return WorkflowSnapshot(visits, notes, reminders)
+        calendar: tuple[tuple[str, str], ...] = ()
+        connection = "Calendar не настроен. Публикация только по явному выбору."
+        if self._publication is not None:
+            from health_agent.google_calendar.composition import CalendarStatusReader
+            calendar = tuple((visit.public_code, self._publication.snapshot(profile_id, visit.public_code).status) for visit in visits)
+            try:
+                connection = CalendarStatusReader(self._publication).cards(profile_id)[0].detail
+            except Exception:  # noqa: BLE001
+                connection = "Локальный статус Calendar недоступен."
+        return WorkflowSnapshot(visits, notes, reminders, calendar, connection)
 
     def action(self, profile_id: UUID, fields: Mapping[str, str]) -> str:
         operation = fields["operation"]
@@ -48,8 +60,20 @@ class DatabaseWorkflowAdapter:
         if not identity or len(identity) > 200:
             raise ValueError("invalid_action_identity")
         key = f"panel:{profile_id}:{identity}"
+        if operation == "visit_calendar":
+            from health_agent.google_calendar.publication import publication_notice
+            if self._publication is None:
+                raise ValueError("calendar_unavailable")
+            return publication_notice(self._publication.publish(profile_id, fields["code"])) or "Calendar: без изменений."
         with self._sessions() as session:
-            return _apply(session, profile_id, operation, fields, key)
+            notice = _apply(session, profile_id, operation, fields, key)
+        if self._publication is not None and operation in {"visit_question", "visit_answer", "visit_done", "visit_cancel", "visit_move"}:
+            from health_agent.google_calendar.publication import publication_notice
+            try:
+                notice += " " + publication_notice(self._publication.sync_visit(profile_id, fields["code"]))
+            except Exception:  # noqa: BLE001
+                notice += " Calendar: синхронизация отложена; локальные изменения сохранены."
+        return notice
 
 
 def _apply(
@@ -82,6 +106,11 @@ def _apply(
         return "Запись сохранена."
     if operation == "visit_prepare":
         return render_brief(prepare_visit(session, profile_id, fields["code"]))
+    if operation == "visit_move":
+        visit = visits.get(profile_id, fields["code"])
+        start = parse_local_datetime(fields["when"], visit.timezone_name)
+        visits.reschedule(profile_id, fields["code"], starts_at=start, ends_at=start + (visit.ends_at - visit.starts_at), timezone_name=visit.timezone_name)
+        return "Время визита сохранено."
     if operation in {"visit_done", "visit_cancel"}:
         method = visits.complete if operation.endswith("done") else visits.cancel
         method(profile_id, fields["code"])

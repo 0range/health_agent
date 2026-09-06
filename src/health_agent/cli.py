@@ -36,6 +36,7 @@ from health_agent.gmail.stores import (
     LocalGmailStateStore,
     LocalGmailTokenStore,
 )
+from health_agent.google_calendar.composition import create_calendar_cli
 from health_agent.google_drive.api import GoogleDriveGateway
 from health_agent.google_drive.config import DriveProfile
 from health_agent.google_drive.medical_consumer import MedicalDriveConsumer
@@ -160,6 +161,7 @@ app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
 app.add_typer(lab_extraction_app, name="lab-extract")
 app.add_typer(visit_app, name="visit")
+app.add_typer(create_calendar_cli(), name="calendar")
 
 
 @app.callback()

@@ -4,6 +4,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from health_agent.config import Settings
+from health_agent.google_calendar import publication as calendar_publication
 from health_agent.google_sheets import models as google_sheets_models
 from health_agent.lab_extraction import models as lab_extraction_models
 from health_agent.models import Base
@@ -11,7 +12,7 @@ from health_agent.reminders import models as reminder_models
 from health_agent.visits import models as visit_models
 from health_agent.whoop import models as whoop_models
 
-_ = google_sheets_models, lab_extraction_models, reminder_models, visit_models, whoop_models
+_ = calendar_publication, google_sheets_models, lab_extraction_models, reminder_models, visit_models, whoop_models
 
 config = context.config
 if config.config_file_name is not None:
