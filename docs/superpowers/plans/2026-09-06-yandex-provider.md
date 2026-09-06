@@ -4,7 +4,9 @@
 
 **Goal:** Make the existing question and laboratory workflows selectable between OpenAI and Yandex, without sending live data during implementation.
 
-**Architecture:** Thin Yandex wrappers reuse current Responses prompts/parsers and validation. Provider selection occurs at existing composition boundaries. A Yandex-specific per-profile allowlist guards both calls; no routing framework or DB redesign.
+**Architecture:** Thin Yandex wrappers reuse current prompts/parsers and validation over native Chat (Task 2 supersedes Task 1's initial Responses transport). Provider selection occurs at existing composition boundaries. A Yandex-specific per-profile allowlist guards both calls; no routing framework or DB redesign.
+
+**Status:** Tasks 1–2 complete and independently reviewed. Merged-code synthetic live checks passed; [acceptance report](../reports/2026-09-06-yandex-live-probes.md). Real profile activation remains separate.
 
 **Tech Stack:** Python, Pydantic Settings, existing OpenAI SDK, pytest and disposable PostgreSQL fixtures.
 
@@ -32,7 +34,7 @@
 - Add safe `yandex_not_configured` and `cloud_provider_consent_required` codes. Consent failure must not make a paid attempt or increment the daily request budget: guard service before reservation while preserving local publish. Existing injected cloud-extractor tests still work with OpenAI settings.
 - Add provider-neutral `--cloud/--no-cloud` opt-in to lab CLI, preserving `--openai/--no-openai` behavior for OpenAI only. Reject legacy `--openai` if Yandex selected; never misrepresent whom the user enabled. Update service configure parameter with backwards-compatible alias if needed.
 
-- [ ] **Step 1: Add failing tests for settings, profile denial and routing.** Use explicit synthetic settings (`_env_file=None`) to avoid local secrets. Denied tests must prove the injected client's call list stays empty for both adapters and a service-level denied run reserves zero cloud calls while local extraction proceeds.
+- [x] **Step 1: Add failing tests for settings, profile denial and routing.** Use explicit synthetic settings (`_env_file=None`) to avoid local secrets. Denied tests must prove the injected client's call list stays empty for both adapters and a service-level denied run reserves zero cloud calls while local extraction proceeds.
 
 ```python
 def test_yandex_requires_explicit_profile_consent():
@@ -43,11 +45,11 @@ def test_yandex_requires_explicit_profile_consent():
     assert client.calls == []
 ```
 
-- [ ] **Step 2: Run focused tests red, record failure.** `uv run pytest tests/ai/test_yandex.py -q`.
-- [ ] **Step 3: Implement the settings, wrappers and wiring above.** Build upon existing adapters; avoid copying the full medical prompt, input builder, lab schema or parser. Preserve existing public constructor signatures/default behavior. Synthetic clients provide completed Responses envelopes; no live endpoint use.
-- [ ] **Step 4: Cover authorized calls and failures.** Test exact endpoint/project/headers with a patched SDK constructor, key separation, malformed config rejection, authorized vs second-profile denial, output token bound, store flag, absent reasoning, no tools; valid lab JSON with evidence substring accepted, forged evidence/malformed output/refusal/incomplete rejected; timeout/401/429 safe and no retries; actual model and extraction tag recorded by service/queue; CLI legacy and neutral opt-in. Keep OpenAI test behavior unchanged.
-- [ ] **Step 5: Document short setup and synthetic probe.** `docs/yandex-ai.md` starts with TL;DR and exact env fields. Explain separate folder/service-account API key and billing prerequisites, no tokens in chat/git, no real profile allowlist before consent, health scenarios still blocked until synthetic live test and real data acceptance. Link the official sources from the spec. Include a small synthetic-only Python example using a one-off Settings object with UUID(int=1) allowed and no database, then call lab extractor on invented Glucose text; print only success/count, never provider exception. Do not run it.
-- [ ] **Step 6: Verify and commit.** Focused tests first, then `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`, `git diff --check`. Report inherited warnings separately. Stage only owned files and commit. No production settings, API calls, migrations, token files or broad cleanup.
+- [x] **Step 2: Run focused tests red, record failure.** `uv run pytest tests/ai/test_yandex.py -q`.
+- [x] **Step 3: Implement the settings, wrappers and wiring above.** Build upon existing adapters; avoid copying the full medical prompt, input builder, lab schema or parser. Preserve existing public constructor signatures/default behavior. Synthetic clients provide completed Responses envelopes; no live endpoint use.
+- [x] **Step 4: Cover authorized calls and failures.** Test exact endpoint/project/headers with a patched SDK constructor, key separation, malformed config rejection, authorized vs second-profile denial, output token bound, store flag, absent reasoning, no tools; valid lab JSON with evidence substring accepted, forged evidence/malformed output/refusal/incomplete rejected; timeout/401/429 safe and no retries; actual model and extraction tag recorded by service/queue; CLI legacy and neutral opt-in. Keep OpenAI test behavior unchanged.
+- [x] **Step 5: Document short setup and synthetic probe.** `docs/yandex-ai.md` starts with TL;DR and exact env fields. Explain separate folder/service-account API key and billing prerequisites, no tokens in chat/git, no real profile allowlist before consent, health scenarios still blocked until synthetic live test and real data acceptance. Link the official sources from the spec. Include a small synthetic-only Python example using a one-off Settings object with UUID(int=1) allowed and no database, then call lab extractor on invented Glucose text; print only success/count, never provider exception. Do not run it.
+- [x] **Step 6: Verify and commit.** Focused tests first, then `uv run pytest -q`, `uv run ruff check .`, `uv run mypy src`, `git diff --check`. Report inherited warnings separately. Stage only owned files and commit. No production settings, API calls, migrations, token files or broad cleanup.
 
 ### Task 2: Native Chat Completions compatibility after real synthetic probes
 
@@ -60,8 +62,8 @@ def test_yandex_requires_explicit_profile_consent():
 - Questions: system message with existing `MEDICAL_SAFETY_INSTRUCTIONS`; reuse `build_responder_input(question, context)` and convert content types from `input_text` to Chat `text`, preserving both bounded JSON content blocks and their separation. No copied prompt/input-builder logic.
 - Require exactly one choice, `finish_reason='stop'`, assistant message, nonempty bounded string content, no refusal and no tool/function calls. Maximum accepted content length 80000. Labs map incomplete/length to `cloud_incomplete`, refusal to `cloud_refused`, malformed/tool-call output to `cloud_invalid_output`. Preserve API status safe-code mapping and zero retries; question errors remain safe QuestionResponderError. Untrusted raw response/errors never logged.
 
-- [ ] **Step 1: Update tests red.** Native recording fake exposes `chat.completions.create` only. Assert both outbound contracts above, no Responses calls/unsupported safety identifier, raw unchanged lab source, preserved question JSON block boundaries, profile guards before calls. Existing mocked Responses envelopes must no longer be accepted as successful Chat output.
-- [ ] **Step 2: Implement minimal native Chat adapter path.** A shared local response-content extractor may validate one completed assistant choice for both wrappers; no new providers/framework/settings. Preserve all shared lab validators and OpenAI behavior.
+- [x] **Step 1: Update tests red.** Native recording fake exposes `chat.completions.create` only. Assert both outbound contracts above, no Responses calls/unsupported safety identifier, raw unchanged lab source, preserved question JSON block boundaries, profile guards before calls. Existing mocked Responses envelopes must no longer be accepted as successful Chat output.
+- [x] **Step 2: Implement minimal native Chat adapter path.** A shared local response-content extractor may validate one completed assistant choice for both wrappers; no new providers/framework/settings. Preserve all shared lab validators and OpenAI behavior.
 
 ```python
 def test_native_chat_requires_a_single_completed_assistant_choice():
@@ -72,5 +74,5 @@ def test_native_chat_requires_a_single_completed_assistant_choice():
     assert len(client.chat.completions.calls) == 1
 ```
 
-- [ ] **Step 3: Cover accepted and refused envelopes.** Test exact simple/table/multiline/qualified source evidence against existing validator, bad source excerpt remains rejected, malformed JSON, incomplete finish reason, wrong message role, empty/multiple choices, refusal, tool/function calls, oversize/empty/nonstring content, timeout/401/429 and no retry. Both authorized QA and denial remain tested. No blanket skip/removal of relevant old cases.
-- [ ] **Step 4: Verify and commit.** Focused `tests/ai/test_yandex.py`, existing question/OpenAI/lab tests, full synthetic suite once, Ruff/mypy/diffcheck. Update short setup guide: native Chat, Qwen reasoning disabled, unsupported safety identifier omitted, headers/store are requests not retention guarantees. Report earlier synthetic live findings as prototype evidence, not acceptance of untested committed code. Root alone runs final real synthetic probes; no key/production reads/calls by implementer.
+- [x] **Step 3: Cover accepted and refused envelopes.** Test exact simple/table/multiline/qualified source evidence against existing validator, bad source excerpt remains rejected, malformed JSON, incomplete finish reason, wrong message role, empty/multiple choices, refusal, tool/function calls, oversize/empty/nonstring content, timeout/401/429 and no retry. Both authorized QA and denial remain tested. No blanket skip/removal of relevant old cases.
+- [x] **Step 4: Verify and commit.** Focused `tests/ai/test_yandex.py`, existing question/OpenAI/lab tests, full synthetic suite once, Ruff/mypy/diffcheck. Update short setup guide: native Chat, Qwen reasoning disabled, unsupported safety identifier omitted, headers/store are requests not retention guarantees. Report earlier synthetic live findings as prototype evidence, not acceptance of untested committed code. Root alone runs final real synthetic probes; no key/production reads/calls by implementer.

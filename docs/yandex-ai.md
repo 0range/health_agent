@@ -1,9 +1,9 @@
 # Yandex AI Studio setup
 
 TL;DR: Yandex is an optional, explicitly selected provider. It is disabled for every
-profile by default, and this repository has only synthetic offline acceptance. Do not
-send real health data until a synthetic live probe succeeds and the specific profile
-owner separately accepts the data-sharing boundary.
+profile by default. Merged adapters passed a small synthetic live extraction/QA probe
+([results](superpowers/reports/2026-09-06-yandex-live-probes.md)); real health-data
+sharing still requires the specific profile owner's acceptance.
 
 Set these exact environment fields (or use the private key file):
 
@@ -30,8 +30,8 @@ The adapter uses Yandex's native Chat Completions compatibility surface. Earlier
 synthetic prototype probes showed that Qwen works with `reasoning_effort=none` and that
 the Responses-style safety identifier causes an HTTP 400, so the adapter disables
 reasoning and omits that unsupported field. Those prototype findings are evidence for
-the wire contract, not acceptance of untested committed code; run the synthetic probe
-below before enabling a profile. `store=False` and the logging opt-out header are
+the wire contract; the merged adapter has since passed the linked synthetic smoke.
+Run the probe below when setting up another installation. `store=False` and the logging opt-out header are
 requests to the provider, not guarantees of zero retention. Health scenarios remain
 blocked until that probe and explicit acceptance for real data.
 

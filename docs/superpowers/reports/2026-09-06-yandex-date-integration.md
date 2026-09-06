@@ -1,5 +1,8 @@
 # Yandex and medical-date integration
 
+Later update: key creation, native Chat migration and synthetic live checks are complete;
+see [current Yandex acceptance](2026-09-06-yandex-live-probes.md). The setup-pending notes below describe the earlier checkpoint. Real-data activation remains pending consent.
+
 TL;DR: Yandex adapters and conservative medical-date recovery are merged. Combined synthetic suite: **974 passed**. Live archive: **7 dates recovered**, no lab observations approved. Yandex live acceptance is still pending credentials/synthetic smoke; no health data sent to Yandex.
 
 ## Code acceptance

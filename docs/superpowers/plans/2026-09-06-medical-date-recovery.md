@@ -30,7 +30,7 @@
 - Importer `_infer_medical_dates` delegates to parser with enumerated pages and preserves tuple-return compatibility; remove obsolete regex/date parser, no other importer behavior changes.
 - `review recover-dates --profile-id UUID [--limit 200] [--apply]`: use standard Settings/engine/session_scope; print only stable aggregate counts, mode and safe error code. Do not print dates, text, filenames or raw exceptions. Profile ID is required. Default is dry-run.
 
-- [ ] **Step 1: Write failing pure-parser and backfill tests.** Include examples below, label-only+date-only next line, CRLF offsets, exact token boundaries, invalid leap date, future date, duplicate/conflicting pages, study-only date, unrelated next-line birth label, page-boundary split. For database fixtures create two profiles; assert dates/status/review untouched in dry run and foreign profile, existing dates preserved, conflicts not cleared, and idempotent apply.
+- [x] **Step 1: Write failing pure-parser and backfill tests.** Include examples below, label-only+date-only next line, CRLF offsets, exact token boundaries, invalid leap date, future date, duplicate/conflicting pages, study-only date, unrelated next-line birth label, page-boundary split. For database fixtures create two profiles; assert dates/status/review untouched in dry run and foreign profile, existing dates preserved, conflicts not cleared, and idempotent apply.
 
 ```python
 def test_extended_collection_label():
@@ -44,7 +44,7 @@ def test_study_date_is_not_issue_date():
     assert found.issued_date is None
 ```
 
-- [ ] **Step 2: Record red.** `uv run pytest tests/test_medical_dates.py -q`.
-- [ ] **Step 3: Implement the pure parser, backfill and narrow wiring above.** No schema changes, heuristics or background jobs. The existing archive can be read later by root; do not inspect real patient text in agent output.
-- [ ] **Step 4: Test CLI dry-run/apply and integration.** Verify safe failure output, explicit profile requirement, null-only persistence after lock, parser use on initial PDF/text import, and that reviewed chart rows are not altered by existing/conflicting date recovery. Run focused tests then full suite once, Ruff, mypy, diff-check.
-- [ ] **Step 5: Document and commit.** Short TL;DR instructions for preview/apply, excluded roles and why missing dates are left empty. Stage only owned files. Report RED/GREEN commands and full results, no live calls/data changes.
+- [x] **Step 2: Record red.** `uv run pytest tests/test_medical_dates.py -q`.
+- [x] **Step 3: Implement the pure parser, backfill and narrow wiring above.** No schema changes, heuristics or background jobs. The existing archive can be read later by root; do not inspect real patient text in agent output.
+- [x] **Step 4: Test CLI dry-run/apply and integration.** Verify safe failure output, explicit profile requirement, null-only persistence after lock, parser use on initial PDF/text import, and that reviewed chart rows are not altered by existing/conflicting date recovery. Run focused tests then full suite once, Ruff, mypy, diff-check.
+- [x] **Step 5: Document and commit.** Short TL;DR instructions for preview/apply, excluded roles and why missing dates are left empty. Stage only owned files. Report RED/GREEN commands and full results, no live calls/data changes.
