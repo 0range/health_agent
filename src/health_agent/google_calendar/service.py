@@ -1,0 +1,125 @@
+"""Idempotent profile-bound Calendar event synchronization."""
+
+from __future__ import annotations
+
+import hashlib
+import html
+from typing import Any
+from uuid import UUID
+
+from health_agent.google_calendar.api import CalendarAPIError
+from health_agent.google_calendar.models import CalendarEvent, CalendarResult
+
+
+def event_id(profile_id: UUID, visit_id: UUID) -> str:
+    return hashlib.sha256(
+        f"health-agent-visit-v1:{profile_id}:{visit_id}".encode()
+    ).hexdigest()
+
+
+def _body(event: CalendarEvent) -> dict[str, Any]:
+    private = {
+        "profile_id": str(event.profile_id),
+        "visit_id": str(event.visit_id),
+        "managed_by": "health-agent-visit-v1",
+    }
+    questions = "\n".join(f"• {html.escape(q)}" for q in event.questions)
+    return {
+        "id": event_id(event.profile_id, event.visit_id),
+        "summary": event.title,
+        "description": questions,
+        "start": {
+            "dateTime": event.starts_at.isoformat(),
+            "timeZone": event.timezone_name,
+        },
+        "end": {"dateTime": event.ends_at.isoformat(), "timeZone": event.timezone_name},
+        "visibility": "private",
+        "extendedProperties": {"private": private},
+    }
+
+
+class CalendarService:
+    def __init__(self, profiles, tokens, oauth, gateway_factory):
+        self.profiles, self.tokens, self.oauth, self.gateway_factory = (
+            profiles,
+            tokens,
+            oauth,
+            gateway_factory,
+        )
+
+    def sync(self, event: CalendarEvent) -> CalendarResult:
+        eid = event_id(event.profile_id, event.visit_id)
+        try:
+            profile = self.profiles.load(event.profile_id)
+            token = self.tokens.load_verified(event.profile_id)
+            if not profile.enabled or token is None:
+                return CalendarResult(
+                    eid, "deferred", safe_error="authorization_missing"
+                )
+            if (
+                profile.account_subject != token["account_subject"]
+                or profile.account_email.casefold() != token["account_email"]
+            ):
+                return CalendarResult(eid, "deferred", safe_error="account_mismatch")
+            gateway = self.gateway_factory(token["credentials"])
+            remote = gateway.get(profile.encoded_calendar_id, eid)
+            recovered = False
+            if remote is None:
+                if event.cancelled:
+                    return CalendarResult(eid, "unchanged")
+                try:
+                    remote = gateway.insert(profile.encoded_calendar_id, _body(event))
+                except CalendarAPIError as error:
+                    if error.status not in {0, 409}:
+                        raise
+                    remote = gateway.get(profile.encoded_calendar_id, eid)
+                    if remote is None:
+                        return CalendarResult(
+                            eid, "deferred", safe_error="write_outcome_unknown"
+                        )
+                    recovered = True
+                else:
+                    recovered = False
+                if not recovered:
+                    return CalendarResult(eid, "created", remote.get("htmlLink"))
+            private = remote.get("extendedProperties", {}).get("private", {})
+            if (
+                remote.get("id") != eid
+                or not isinstance(remote.get("etag"), str)
+                or private.get("profile_id") != str(event.profile_id)
+                or private.get("visit_id") != str(event.visit_id)
+                or remote.get("attendees")
+            ):
+                return CalendarResult(
+                    eid, "deferred", safe_error="remote_ownership_mismatch"
+                )
+            if recovered:
+                return CalendarResult(eid, "unchanged", remote.get("htmlLink"))
+            if event.cancelled:
+                if remote.get("status") == "cancelled":
+                    return CalendarResult(eid, "unchanged")
+                gateway.patch(
+                    profile.encoded_calendar_id,
+                    eid,
+                    {"status": "cancelled"},
+                    remote.get("etag"),
+                )
+                return CalendarResult(eid, "cancelled")
+            desired = _body(event)
+            if all(remote.get(k) == v for k, v in desired.items() if k != "id"):
+                return CalendarResult(eid, "unchanged", remote.get("htmlLink"))
+            updated = gateway.patch(
+                profile.encoded_calendar_id,
+                eid,
+                {k: v for k, v in desired.items() if k != "id"},
+                remote.get("etag"),
+            )
+            return CalendarResult(eid, "updated", updated.get("htmlLink"))
+        except CalendarAPIError as error:
+            return CalendarResult(eid, "deferred", safe_error=error.safe_code)
+        except (TimeoutError, ConnectionError):
+            return CalendarResult(eid, "deferred", safe_error="write_outcome_unknown")
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return CalendarResult(
+                eid, "deferred", safe_error="calendar_configuration_invalid"
+            )
