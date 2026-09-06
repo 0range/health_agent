@@ -15,11 +15,25 @@ from health_agent.panel.http import (
     MAX_FORM_BYTES,
     PanelApplication,
     _cli_guidance,
+    _render_card,
     _safe_destination_url,
     serve_panel,
 )
 from health_agent.panel.models import ConnectorCard, PanelDestination, ProfileSummary
 from health_agent.panel.service import PanelService
+
+
+def test_calendar_healthcheck_card_has_readable_connection_copy() -> None:
+    card = ConnectorCard(
+        "calendar", "oauth_required",
+        "Calendar: oauth_required. Публикаций в очереди: 0.",
+    )
+    page = _render_card(card, uuid4(), 0)
+    visible, technical = page.split('<details class="technical-details">', 1)
+    assert "Требуется подключить Calendar. Публикаций в очереди: 0." in visible
+    assert "oauth_required" not in visible
+    assert "через вход в Google" in visible
+    assert "oauth_required" in technical
 
 
 @pytest.mark.parametrize("key", ("metabase_labs", "metabase_whoop"))

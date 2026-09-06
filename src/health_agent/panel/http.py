@@ -824,9 +824,14 @@ def _render_card(card: ConnectorCard, profile_id: UUID, index: int) -> str:
         else ""
     )
     guidance = _cli_guidance(card, profile_id)
+    detail = (
+        _calendar_connection_text(card.detail)
+        if card.connector == "calendar"
+        else card.detail
+    )
     return f"""<article class="card" data-state="{product_status}" aria-labelledby="{heading_id}">
 <div class="card-head"><h3 id="{heading_id}">{escape(connector_label)}</h3><span class="status-pill">{label}</span></div>
-<p>{escape(card.detail)}</p>{last_success}{action}<details class="technical-details"><summary>Подробности</summary>
+<p>{escape(detail)}</p>{last_success}{action}<details class="technical-details"><summary>Подробности</summary>
 <p>Технический статус: {escape(card.status)}</p>{accounts}{raw_time}{error}<p>Команда проверки: {escape(guidance)}</p></details></article>"""
 
 
@@ -945,6 +950,8 @@ def _human_action(card: ConnectorCard) -> str:
         return "Подключите или переподключите Gmail."
     if card.connector == "sheets":
         return "Подключите или переподключите Google Таблицу."
+    if card.connector == "calendar":
+        return "Подключите Google Calendar один раз через вход в Google."
     if card.connector == "telegram":
         return "Завершите подключение Telegram."
     if card.connector == "reminders":
