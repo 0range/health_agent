@@ -207,6 +207,59 @@ def test_subprocess_executor_discards_child_output_and_maps_fixed_statuses(
     assert "LEAK" not in result.safe_line()
 
 
+def test_subprocess_executor_accepts_dashboard_ready_status(
+    monkeypatch, tmp_path: Path
+) -> None:
+    job = AutomationJob(
+        "dashboard",
+        "profile-1",
+        "main",
+        False,
+        ("dashboard", "setup-labs", "--profile-id", "profile-1"),
+    )
+
+    def fake_run(arguments, **kwargs):
+        del kwargs
+        return subprocess.CompletedProcess(arguments, 0, "status=ready\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = SubprocessJobExecutor(
+        Path("/bin/tool"), tmp_path / ".env", tmp_path
+    ).execute(job, "incremental")
+
+    assert result == AutomationResult(
+        "dashboard", "profile-1", "main", "incremental", "succeeded"
+    )
+
+
+def test_non_dashboard_ready_status_fails_without_full_checkpoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    job = _job("whoop", "profile-1", "main")
+
+    def fake_run(arguments, **kwargs):
+        del kwargs
+        return subprocess.CompletedProcess(arguments, 0, "status=ready\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    state_path = tmp_path / "state.json"
+    runner = AutomationRunner(
+        Settings(),
+        [FakeAdapter("whoop", (job,))],
+        SubprocessJobExecutor(Path("/bin/tool"), tmp_path / ".env", tmp_path),
+        AutomationState(state_path),
+        FakeLock(),
+        clock=lambda: NOW,
+    )
+
+    assert runner.run() == (
+        AutomationResult(
+            "whoop", "profile-1", "main", "full", "failed", "unknown_status"
+        ),
+    )
+    assert not state_path.exists()
+
+
 def test_corrupt_or_symlinked_checkpoint_fails_without_running_job(tmp_path: Path) -> None:
     job = _job("whoop", "profile-1", "main")
     target = tmp_path / "target.json"
@@ -375,9 +428,46 @@ def test_malformed_gmail_token_fails_through_real_subprocess_without_leak(
         "gmail", profile_id, "main", "full", "failed", "connector_failed"
     )
     assert "RAW_SECRET" not in result.safe_line()
-def test_extraction_runs_after_all_connectors_before_sheets(tmp_path):
-    jobs = tuple(_job(source, "profile-1", "main") for source in ("sheets", "whoop", "lab_extraction", "drive", "gmail"))
+
+
+def test_extraction_and_sheets_run_before_dashboard_refresh(tmp_path):
+    jobs = tuple(
+        _job(source, "profile-1", "main")
+        for source in (
+            "dashboard",
+            "sheets",
+            "whoop",
+            "lab_extraction",
+            "drive",
+            "gmail",
+        )
+    )
     executor = FakeExecutor()
     runner = _runner(tmp_path, [FakeAdapter("drive", jobs)], executor, FakeLock())
     runner.run()
-    assert [key[0] for key, _ in executor.calls] == ["drive", "gmail", "whoop", "lab_extraction", "sheets"]
+    assert [key[0] for key, _ in executor.calls] == [
+        "drive",
+        "gmail",
+        "whoop",
+        "lab_extraction",
+        "sheets",
+        "dashboard",
+    ]
+
+
+def test_dashboard_failure_does_not_invalidate_prior_jobs(tmp_path: Path) -> None:
+    sheets = _job("sheets", "profile-1", "main")
+    dashboard = _job("dashboard", "profile-1", "main")
+    executor = FakeExecutor({dashboard.key: "raise"})
+
+    results = _runner(
+        tmp_path,
+        [FakeAdapter("dashboard", (dashboard, sheets))],
+        executor,
+        FakeLock(),
+    ).run()
+
+    assert [(result.source, result.status) for result in results] == [
+        ("sheets", "succeeded"),
+        ("dashboard", "failed"),
+    ]

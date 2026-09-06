@@ -60,7 +60,10 @@ class SubprocessJobExecutor:
             for field in line.split()
             if field.startswith("status=") and "=" in field
         }
-        if statuses and statuses <= {"succeeded", "synced"}:
+        if statuses and (
+            statuses <= {"succeeded", "synced"}
+            or (job.source == "dashboard" and statuses == {"ready"})
+        ):
             return AutomationResult(*job.key, mode, "succeeded")
         if statuses == {"deferred"}:
             return AutomationResult(*job.key, mode, "deferred", "connector_deferred")
@@ -159,5 +162,5 @@ class AutomationRunner:
                 )
         # Imported documents commit first; extraction is a separate bounded job;
         # the managed Sheets projection then sees the newly pending candidates.
-        phases = {"lab_extraction": 1, "sheets": 2}
+        phases = {"lab_extraction": 1, "sheets": 2, "dashboard": 3}
         return tuple(sorted(jobs, key=lambda job: (phases.get(job.source, 0), job.key))), tuple(failures)

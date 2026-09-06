@@ -12,11 +12,13 @@ from sqlalchemy import select
 
 from health_agent.automation.models import AutomationJob, AutomationSource
 from health_agent.config import Settings
+from health_agent.dashboard_destinations import DashboardDestinationStore
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.stores import LocalGmailProfileStore
 from health_agent.google_drive.stores import LocalProfileStore
 from health_agent.google_sheets.stores import LocalSheetsProfileStore
 from health_agent.lab_extraction.models import LabExtractionProfile
+from health_agent.models import Profile
 from health_agent.whoop.models import WhoopConnection
 
 
@@ -238,8 +240,50 @@ class CalendarJobAdapter:
         return tuple(jobs)
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardJobAdapter:
+    source: AutomationSource = "dashboard"
+
+    def discover(self, settings: Settings) -> Iterable[AutomationJob]:
+        engine = build_engine(settings)
+        try:
+            with session_scope(engine) as session:
+                profile_ids = session.scalars(
+                    select(Profile.id).order_by(Profile.id).limit(1000)
+                ).all()
+        finally:
+            engine.dispose()
+        destinations = DashboardDestinationStore(
+            settings.connector_state_root, settings.metabase_url
+        )
+        return tuple(
+            AutomationJob(
+                "dashboard",
+                str(profile_id),
+                "main",
+                False,
+                (
+                    "dashboard",
+                    "setup-labs",
+                    "--profile-id",
+                    str(profile_id),
+                ),
+            )
+            for profile_id in profile_ids
+            if "labs" in destinations.load(profile_id)
+        )
+
+
 def configured_job_adapters(
     settings: Settings, executable: Path
 ) -> tuple[JobAdapter, ...]:
     del settings, executable
-    return (WhoopJobAdapter(), GmailJobAdapter(), DriveJobAdapter(), LabExtractionJobAdapter(), SheetsJobAdapter(), CalendarJobAdapter())
+    return (
+        WhoopJobAdapter(),
+        GmailJobAdapter(),
+        DriveJobAdapter(),
+        LabExtractionJobAdapter(),
+        SheetsJobAdapter(),
+        CalendarJobAdapter(),
+        DashboardJobAdapter(),
+    )
