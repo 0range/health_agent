@@ -24,6 +24,8 @@ The user requested comparison of other Yandex models and document OCR. Real synt
 
 ## Sources checked 2026-09-06
 
+Activation acceptance correction: actual WHOOP QA revealed grouped citation labels and bracketed internal JSON keys, rejected by the existing exact-citation validator. Clarify the Yandex QA system message with separate-token examples and reserve brackets for supplied evidence IDs. The shared medical instructions, evidence selection and validators remain unchanged; no automatic repairs or retries. This completes the existing citation contract, not a new product behavior.
+
 - Official model URI: https://yandex.cloud/en/blog/digest-april-2026
 - Official SDK/endpoint/project example: https://aistudio.yandex.ru/ru/docs/ai-studio/operations/generation/multimodels-request-responses
 - Responses API: https://aistudio.yandex.ru/ru/docs/ai-studio/api/Responses/createResponse
