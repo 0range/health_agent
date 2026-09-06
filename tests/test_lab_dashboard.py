@@ -54,6 +54,11 @@ def test_specs_are_unit_specific_profile_bound_and_unaggregated() -> None:
     assert "LIMIT" not in specs[1].query and "GROUP BY" not in specs[1].query
     assert specs[1].metrics == ("result", "reference_low", "reference_high")
     assert "date_label" in specs[1].query
+    chart_settings = lab_dashboard._visualization(specs[1])
+    assert chart_settings["graph.y_axis.auto_split"] is False
+    assert {value["axis"] for value in chart_settings["series_settings"].values()} == {
+        "left"
+    }
     assert "нет подтверждённых датированных значений" in specs[1].description
     assert len(DEFAULT_SERIES) == 13
     with pytest.raises(ValueError):
@@ -160,18 +165,18 @@ def test_real_queries_filter_and_preserve_repeats(db_session: Session) -> None:
     detail = db_session.execute(text(specs[0].query)).mappings().all()
     assert len(detail) == 4
     assert {row["source_flag"] for row in detail} == {"H"}
-    assert {row["comparison"] for row in detail} == {"within"}
+    assert {row["comparison"] for row in detail} == {"В референсе"}
 
 
 @pytest.mark.parametrize(
     "reference,low,high,expected",
     [
-        (None, None, None, "unknown"),
-        ("<100", None, "100", "unknown"),
-        ("10–100 mg/dL", "10", "100", "unknown"),
-        ("10–100", "20", "100", "unknown"),
-        ("50–100", "50", "100", "below"),
-        ("1–10", "1", "10", "above"),
+        (None, None, None, "Не определено"),
+        ("<100", None, "100", "Не определено"),
+        ("10–100 mg/dL", "10", "100", "Не определено"),
+        ("10–100", "20", "100", "Не определено"),
+        ("50–100", "50", "100", "Ниже референса"),
+        ("1–10", "1", "10", "Выше референса"),
     ],
 )
 def test_printed_range_comparison_is_conservative(
@@ -191,7 +196,7 @@ def test_printed_range_comparison_is_conservative(
     row = db_session.execute(text(specs[0].query)).mappings().one()
     assert row["comparison"] == expected
     chart = db_session.execute(text(specs[1].query)).mappings().one()
-    assert (chart["reference_low"] is None) == (expected == "unknown")
+    assert (chart["reference_low"] is None) == (expected == "Не определено")
 
 
 class NativeMetabase(FakeMetabase):
@@ -394,6 +399,14 @@ def test_exact_legacy_owned_queries_migrate_but_custom_sql_stays_blocked(
     transport = httpx.MockTransport(fake.handle)
     settings, engine = disposable_postgres.settings, disposable_postgres.engine
     bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    deployed = lab_dashboard.lab_card_specs(
+        PROFILE, (FERRITIN,), _russian_comparison=False
+    )
+    for card, spec in zip(fake.cards, deployed, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+    bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    assert "В референсе" in fake.cards[0]["dataset_query"]["native"]["query"]
+
     legacy = lab_dashboard.lab_card_specs(PROFILE, (FERRITIN,), _legacy=True)
     for card, spec in zip(fake.cards, legacy, strict=True):
         card["dataset_query"]["native"]["query"] = spec.query

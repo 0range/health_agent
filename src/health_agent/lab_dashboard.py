@@ -141,9 +141,14 @@ source_rows AS (
 
 
 def lab_card_specs(
-    profile_id: UUID, series: tuple[LabSeries, ...], *, _legacy: bool = False
+    profile_id: UUID,
+    series: tuple[LabSeries, ...],
+    *,
+    _legacy: bool = False,
+    _russian_comparison: bool = True,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
+    russian_comparison = _russian_comparison and not _legacy
     if len(series) > _MAX_SERIES or len(
         {(s.canonical_name, s.unit) for s in series}
     ) != len(series):
@@ -156,19 +161,24 @@ def lab_card_specs(
         _history_cte(profile_id, legacy=_legacy)
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
-  CASE WHEN NOT compatible_range THEN 'unknown'
-       WHEN parsed_value < reference_low THEN 'below'
-       WHEN parsed_value > reference_high THEN 'above' ELSE 'within' END AS comparison,
+  CASE WHEN NOT compatible_range THEN {unknown}
+       WHEN parsed_value < reference_low THEN {below}
+       WHEN parsed_value > reference_high THEN {above} ELSE {within} END AS comparison,
   document_id, page_number, id AS observation_id
 FROM valid_rows ORDER BY result_date DESC, canonical_name, document_id, page_number, id
-LIMIT 1000""",
+LIMIT 1000""".format(
+            unknown=_literal("Не определено" if russian_comparison else "unknown"),
+            below=_literal("Ниже референса" if russian_comparison else "below"),
+            above=_literal("Выше референса" if russian_comparison else "above"),
+            within=_literal("В референсе" if russian_comparison else "within"),
+        ),
         (),
         "table",
         "Последние 1000 подтверждённых датированных значений этого профиля. "
         "Пустая таблица означает: подтверждённых датированных результатов пока нет. "
         "Точный результат, единица, референс и флаг из источника; документ и страница. "
-        "below/within/above — только числовое сравнение с напечатанным двухсторонним "
-        "референсом в той же единице; иначе unknown. Это не диагноз.",
+        "Сравнение — только с напечатанным двухсторонним референсом в той же "
+        "единице; иначе «Не определено». Это не диагноз.",
     )
     charts = tuple(
         LabCardSpec(
@@ -237,12 +247,6 @@ def _visualization(spec: LabCardSpec) -> dict[str, Any]:
                 '["name","source_flag"]': {"column_title": "Флаг источника"},
                 '["name","comparison"]': {
                     "column_title": "Сравнение",
-                    "value_remappings": [
-                        {"value": "below", "new_value": "Ниже референса"},
-                        {"value": "within", "new_value": "В референсе"},
-                        {"value": "above", "new_value": "Выше референса"},
-                        {"value": "unknown", "new_value": "Не определено"},
-                    ],
                 },
             }
         }
@@ -252,13 +256,14 @@ def _visualization(spec: LabCardSpec) -> dict[str, Any]:
         "graph.x_axis.title_text": "Дата · отдельные измерения",
         "graph.x_axis.scale": "ordinal",
         "graph.y_axis.title_text": spec.unit,
+        "graph.y_axis.auto_split": False,
         "graph.show_dots": True,
         "graph.show_values": False,
         "graph.missing": "none",
         "series_settings": {
-            "result": {"title": "Результат"},
-            "reference_low": {"title": "Нижняя граница референса"},
-            "reference_high": {"title": "Верхняя граница референса"},
+            "result": {"title": "Результат", "axis": "left"},
+            "reference_low": {"title": "Нижняя граница референса", "axis": "left"},
+            "reference_high": {"title": "Верхняя граница референса", "axis": "left"},
         },
     }
 
@@ -304,7 +309,10 @@ def bootstrap_lab_dashboard(
         cards = _rows(client, "/api/card")
         owned: list[dict[str, Any] | None] = []
         legacy_specs = lab_card_specs(profile_id, series, _legacy=True)
-        for spec, legacy_spec in zip(specs, legacy_specs, strict=True):
+        deployed_specs = lab_card_specs(profile_id, series, _russian_comparison=False)
+        for spec, legacy_spec, deployed_spec in zip(
+            specs, legacy_specs, deployed_specs, strict=True
+        ):
             candidates = [c for c in cards if c.get("name") == spec.name]
             if len(candidates) > 1:
                 raise ValueError("Lab card ownership collision")
@@ -320,6 +328,7 @@ def bootstrap_lab_dashboard(
                     not in {
                         (database["id"], spec.query),
                         (database["id"], legacy_spec.query),
+                        (database["id"], deployed_spec.query),
                     }
                 ):
                     raise ValueError("Lab card ownership collision")
@@ -451,6 +460,9 @@ def _detach_unselected_owned_cards(
         )
         expected = lab_card_specs(profile_id, (possible[name],))[1]
         legacy_expected = lab_card_specs(profile_id, (possible[name],), _legacy=True)[1]
+        deployed_expected = lab_card_specs(
+            profile_id, (possible[name],), _russian_comparison=False
+        )[1]
         if (
             current.get("name") == name
             and current.get("collection_id") == collection_id
@@ -458,6 +470,7 @@ def _detach_unselected_owned_cards(
             in {
                 (database_id, expected.query),
                 (database_id, legacy_expected.query),
+                (database_id, deployed_expected.query),
             }
         ):
             retired.add(card["id"])
