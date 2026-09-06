@@ -174,6 +174,41 @@ def test_yandex_consent_denial_preserves_local_and_reserves_no_cloud_call(
         assert job.local_completed is True
 
 
+def test_yandex_local_only_waits_then_explicit_consent_and_cloud_resume(
+    clean_database, tmp_path
+):
+    add_page(clean_database, "ALT 53 H U/L 0-41\nGlucose\n5.1 mmol/L")
+    cloud = Cloud()
+    settings = Settings(
+        _env_file=None,
+        ai_provider="yandex",
+        yandex_folder_id="synthetic-folder",
+        vault_root=tmp_path / "vault",
+        temporary_root=tmp_path / "tmp",
+    )
+    worker = LabExtractionService(clean_database, settings, cloud_extractor=cloud)
+    worker.configure(DEFAULT_PROFILE_ID, cloud=False)
+
+    local_only = worker.run(DEFAULT_PROFILE_ID)
+
+    assert local_only.inserted == 1
+    assert local_only.cloud_requests == 0
+    assert worker.status(DEFAULT_PROFILE_ID).waiting_cloud == 1
+    assert worker.status(DEFAULT_PROFILE_ID).attention == 0
+    assert worker.status(DEFAULT_PROFILE_ID).cloud_requests_today == 0
+    assert cloud.calls == []
+    with session_scope(clean_database) as session:
+        assert session.scalars(select(LabObservation.source_name)).all() == ["ALT"]
+
+    settings.yandex_allowed_profile_ids = (DEFAULT_PROFILE_ID,)
+    worker.configure(DEFAULT_PROFILE_ID, cloud=True)
+    resumed = worker.run(DEFAULT_PROFILE_ID)
+
+    assert resumed.cloud_requests == 1
+    assert len(cloud.calls) == 1
+    assert worker.status(DEFAULT_PROFILE_ID).waiting_cloud == 0
+
+
 def test_yandex_records_actual_model_and_extraction_method(clean_database, tmp_path):
     add_page(clean_database, "Glucose\n5.1 mmol/L")
     cloud = Cloud()

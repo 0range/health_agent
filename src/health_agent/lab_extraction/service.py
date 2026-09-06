@@ -138,6 +138,7 @@ class LabExtractionService:
                         raise ExtractionError("cloud_input_limit")
                     if (
                         self.settings.ai_provider == "yandex"
+                        and state.cloud_enabled
                         and profile_id not in self.settings.yandex_allowed_profile_ids
                     ):
                         raise ExtractionError("cloud_provider_consent_required")
