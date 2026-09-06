@@ -79,6 +79,11 @@ from health_agent.models import (
     SourceRecord,
 )
 from health_agent.panel.http import serve_panel
+from health_agent.panel.launchd import (
+    PANEL_LABEL,
+    PanelLaunchdManager,
+    panel_launchd_paths,
+)
 from health_agent.panel.service import build_panel_service
 from health_agent.questions.composition import (
     build_question_application,
@@ -274,6 +279,50 @@ def serve_management_panel() -> None:
         pass
     finally:
         server.server_close()
+
+
+@panel_app.command("install")
+def install_panel(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Keep the local panel running at login, without a development terminal."""
+    _run_panel_launchd("install", env_file)
+
+
+@panel_app.command("status")
+def panel_status(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Show LaunchAgent registration, not an HTTP health verdict."""
+    _run_panel_launchd("status", env_file)
+
+
+@panel_app.command("stop")
+def stop_panel(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
+    """Stop only the panel; retain its configuration and all health data."""
+    _run_panel_launchd("stop", env_file)
+
+
+def _panel_launchd_manager(env_file: Path) -> PanelLaunchdManager:
+    settings, repository_root, resolved_env = _reminder_settings(env_file)
+    return PanelLaunchdManager(panel_launchd_paths(
+        automation_root=settings.automation_root,
+        executable=_current_console_script(), environment_file=resolved_env,
+        working_directory=repository_root,
+    ))
+
+
+def _run_panel_launchd(action: str, env_file: Path) -> None:
+    try:
+        manager = _panel_launchd_manager(env_file)
+        if action == "install":
+            status = manager.install()
+        elif action == "status":
+            status = manager.status()
+        elif action == "stop":
+            status = manager.stop()
+        else:
+            raise ValueError("invalid_panel_action")
+    except Exception:  # noqa: BLE001 -- local configuration and transport stay private.
+        typer.echo("status=failed safe_error=panel_launchd_failed", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(f"status={status} label={PANEL_LABEL}")
 
 
 @profile_app.command("create")
