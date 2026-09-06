@@ -283,9 +283,10 @@ def test_health_question_has_separate_attributed_lab_and_report(archive):
         material = json.loads(payload["content"][1]["text"])["reported_material"]
         assert material[0]["kind"] == "document_excerpt"
         assert "verified_observations" not in material[0]
-        assert "[LAB1]" in result.text and "[DOC1]" in result.text
-        assert "Источники:" in result.text and "3.9-5.5" in result.text
-        assert str(archive.report.document_id) in result.text
+        assert "[LAB1]" not in result.text and "[DOC1]" not in result.text
+        assert "Источники:" not in result.text
+        assert str(archive.report.document_id) not in result.text
+        assert "5.10 mmol/L" in result.text
         assert "Это не диагноз" in result.text and "срок повторения" in result.text
         assert "FOREIGN" not in repr(received) and "7.70" not in repr(received)
 

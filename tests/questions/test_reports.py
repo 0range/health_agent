@@ -187,6 +187,7 @@ def _document(
         collected_date=collected_date,
         processing_status="needs_attention",
         safe_error_code=safe_error,
+        created_at=NOW - timedelta(hours=2),
     )
     session.add(document)
     session.flush()
@@ -217,6 +218,8 @@ def _visit_note(
             status=status,
             creation_key=uuid4().hex,
             creation_fingerprint=uuid4().hex + uuid4().hex,
+            created_at=NOW - timedelta(hours=2),
+            updated_at=NOW - timedelta(hours=2),
         )
     )
     session.flush()
@@ -227,5 +230,6 @@ def _visit_note(
             kind=kind,
             text=text,
             action_key=uuid4().hex,
+            created_at=NOW - timedelta(hours=1),
         )
     )

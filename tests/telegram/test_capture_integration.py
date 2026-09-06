@@ -134,7 +134,8 @@ def test_production_photo_review_confirm_429_restart_question(
     assert (
         service().process_update(update(4, "What is my ferritin?")).status == "replied"
     )
-    assert "[LAB1]" in sent[-1][1]
+    assert "[LAB1]" not in sent[-1][1]
+    assert sent[-1][1] == "Recorded ferritin is 42 ng/mL."
     assert len(contexts) == 1 and len(contexts[0].evidence) == 1
     assert contexts[0].evidence[0].metric == "ferritin"
     assert contexts[0].evidence[0].value == "42"
