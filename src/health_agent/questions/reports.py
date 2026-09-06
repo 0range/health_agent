@@ -19,7 +19,15 @@ MAX_QUALIFYING_PAGES = 60
 _ANCHOR = r"(?:Заключение|Рекомендации|Диагноз|Conclusion|Recommendations|Assessment)"
 _SECTION_START = re.compile(rf"(?im)^{_ANCHOR}(?:[ \t]*:)?(?:[ \t]+.*)?$")
 _SECTION_END = re.compile(rf"(?im)^(?:{_ANCHOR})(?:[ \t]*:)?(?:[ \t]+.*)?$")
-_DISQUALIFYING_ERRORS = frozenset({"unreadable_original", "vault_integrity"})
+_DISQUALIFYING_ERRORS = frozenset(
+    {
+        "unreadable_original",
+        "vault_integrity",
+        "unsafe_extraction_path",
+        "original_size_limit",
+        "original_mime_mismatch",
+    }
+)
 _ANCHOR_PREFIXES = (
     "заключение",
     "рекомендации",
@@ -72,9 +80,14 @@ def _document_reports(
         recorded_at = _aware_utc(document.created_at)
         if recorded_at > as_of:
             continue
-        medical_date = document.collected_date or document.issued_date
-        if medical_date is not None and medical_date > as_of.date():
+        stored_dates = tuple(
+            value
+            for value in (document.collected_date, document.issued_date)
+            if value is not None
+        )
+        if any(value > as_of.date() for value in stored_dates):
             continue
+        medical_date = document.collected_date or document.issued_date
         excerpt = _first_section(page.extracted_text or "")
         if excerpt is None:
             continue

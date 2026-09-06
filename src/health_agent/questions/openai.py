@@ -32,7 +32,8 @@ MAX_LIMITATION_MESSAGE_CHARACTERS = 500
 MAX_SNAPSHOT_TEXT_CHARACTERS = 500
 
 MEDICAL_SAFETY_INSTRUCTIONS = """You are a careful health-information assistant.
-Use only the supplied verified observations; do not invent, retrieve, or assume facts.
+Use only the supplied application evidence; do not invent, retrieve, or assume facts.
+Keep verified observations distinct from attributed, unverified reported material.
 Do not diagnose, prescribe treatment, claim causality, or replace professional care.
 Clearly distinguish recorded observations from tentative, non-diagnostic possibilities.
 If the evidence cannot answer the question, say so plainly and suggest appropriate

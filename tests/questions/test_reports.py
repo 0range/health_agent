@@ -4,6 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from health_agent.models import DEFAULT_PROFILE_ID, Document, DocumentPage, Profile
@@ -41,6 +42,68 @@ def test_read_reports_is_profile_bound_section_anchored_and_date_safe(
     assert reports[0].medical_date is None
     assert reports[0].source_reference == f"document:{owner.id}#page=1"
     assert reports[0].citation_label == "[DOC1]"
+
+
+@pytest.mark.parametrize(
+    ("collected", "issued"),
+    (
+        (date(2026, 9, 1), date(2026, 9, 7)),
+        (date(2026, 9, 7), date(2026, 9, 1)),
+    ),
+)
+def test_either_future_medical_date_excludes_document(
+    session: Session, collected: date, issued: date
+) -> None:
+    _document(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Conclusion: future-dated synthetic report",
+        issued,
+        collected_date=collected,
+    )
+    session.flush()
+    assert read_reports(session, DEFAULT_PROFILE_ID, as_of=NOW) == ()
+
+
+@pytest.mark.parametrize(
+    "safe_error",
+    (
+        "unreadable_original",
+        "vault_integrity",
+        "unsafe_extraction_path",
+        "original_size_limit",
+        "original_mime_mismatch",
+    ),
+)
+def test_original_readability_and_integrity_errors_exclude_document(
+    session: Session, safe_error: str
+) -> None:
+    _document(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Conclusion: stale synthetic text",
+        None,
+        safe_error=safe_error,
+    )
+    session.flush()
+    assert read_reports(session, DEFAULT_PROFILE_ID, as_of=NOW) == ()
+
+
+def test_section_stops_before_next_anchor_and_visit_truncation_is_visible(
+    session: Session,
+) -> None:
+    _document(
+        session,
+        DEFAULT_PROFILE_ID,
+        "Conclusion: first section\nline\nRecommendations: second section",
+        None,
+    )
+    _visit_note(session, DEFAULT_PROFILE_ID, "answer", "x" * 1_500, "planned")
+    session.flush()
+    reports = read_reports(session, DEFAULT_PROFILE_ID, as_of=NOW)
+    assert reports[0].text == "Conclusion: first section\nline"
+    assert len(reports[1].text) == 1_400
+    assert reports[1].text.endswith("…")
 
 
 def test_visit_answers_exclude_questions_cancelled_foreign_and_future(
@@ -106,7 +169,13 @@ class _Responder:
 
 
 def _document(
-    session: Session, profile_id: UUID, text: str, medical_date: date | None
+    session: Session,
+    profile_id: UUID,
+    text: str,
+    medical_date: date | None,
+    *,
+    collected_date: date | None = None,
+    safe_error: str = "no_lab_candidates",
 ) -> Document:
     document = Document(
         profile_id=profile_id,
@@ -115,9 +184,9 @@ def _document(
         media_type="application/pdf",
         document_type="unknown_document",
         issued_date=medical_date,
-        collected_date=None,
+        collected_date=collected_date,
         processing_status="needs_attention",
-        safe_error_code="no_lab_candidates",
+        safe_error_code=safe_error,
     )
     session.add(document)
     session.flush()
