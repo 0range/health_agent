@@ -12,6 +12,7 @@ from sqlalchemy import Engine, insert, text
 from sqlalchemy.orm import Session
 from test_metabase import FakeMetabase
 
+from health_agent import lab_dashboard
 from health_agent.lab_dashboard import (
     DEFAULT_SERIES,
     LabSeries,
@@ -46,6 +47,7 @@ def test_specs_are_unit_specific_profile_bound_and_unaggregated() -> None:
     assert all(str(PROFILE) in spec.query for spec in specs)
     assert "LIMIT" not in specs[1].query and "GROUP BY" not in specs[1].query
     assert specs[1].metrics == ("result", "reference_low", "reference_high")
+    assert "date_label" in specs[1].query
     assert "нет подтверждённых датированных значений" in specs[1].description
     assert len(DEFAULT_SERIES) == 13
     with pytest.raises(ValueError):
@@ -146,6 +148,8 @@ def test_real_queries_filter_and_preserve_repeats(db_session: Session) -> None:
     assert len(chart) == 3
     assert {row["observation_id"] for row in chart} >= {first, second}
     assert {row["date"] for row in chart} == {date(2020, 1, 1)}
+    assert len({row["date_label"] for row in chart}) == 3
+    assert {row["reference_high"] for row in chart} == {Decimal(100)}
     assert len(db_session.execute(text(specs[2].query)).all()) == 1
     detail = db_session.execute(text(specs[0].query)).mappings().all()
     assert len(detail) == 4
@@ -213,6 +217,9 @@ def test_bootstrap_reconciles_only_owned_cards_and_preserves_user_cards(
     fake = NativeMetabase()
     transport = httpx.MockTransport(fake.handle)
     settings, engine = disposable_postgres.settings, disposable_postgres.engine
+    with Session(engine) as setup_session:
+        add_row(setup_session)
+        setup_session.commit()
     first = bootstrap_lab_dashboard(
         settings, PROFILE, transport=transport, engine=engine
     )
@@ -231,14 +238,14 @@ def test_bootstrap_reconciles_only_owned_cards_and_preserves_user_cards(
     second = bootstrap_lab_dashboard(
         settings, PROFILE, transport=transport, engine=engine
     )
-    assert first == second and len(fake.cards) == 14
+    assert first == second and len(fake.cards) == 2
     assert str(PROFILE) in fake.dashboards[0]["name"]
     layouts = fake.dashboards[0]["dashcards"]
     assert next(c for c in layouts if c["card_id"] == first.card_ids[0])["size_x"] == 24
     assert all(c["size_x"] == 12 for c in layouts if c["card_id"] in first.card_ids[1:])
     retained = next(c for c in layouts if c["card_id"] == 999)
     assert retained["visualization_settings"] == user_card["visualization_settings"]
-    assert retained["row"] == 64
+    assert retained["row"] == 16
     assert fake.cards[1]["visualization_settings"]["graph.show_values"] is False
     assert fake.cards[1]["visualization_settings"]["graph.show_dots"] is True
     fake.cards[1]["dataset_query"]["native"]["query"] = "SELECT 123"
@@ -271,8 +278,7 @@ def test_discovery_is_registered_sorted_and_profile_scoped(
     )
     db_session.commit()
     series = discover_lab_series(disposable_postgres.engine, PROFILE)
-    assert series[:13] == DEFAULT_SERIES
-    assert series[13:] == (LabSeries("glucose", "Глюкоза", "mg/dL"),)
+    assert series == (LabSeries("glucose", "Глюкоза", "mg/dL"),)
     assert len(series) <= 80
 
 
@@ -304,10 +310,16 @@ def test_discovery_bound_with_all_registered_pairs(
     db_session.commit()
     series = discover_lab_series(disposable_postgres.engine, PROFILE)
     assert len(series) == 80
-    assert series[:13] == DEFAULT_SERIES
-    assert series[13:] == tuple(
-        sorted(series[13:], key=lambda s: (s.canonical_name, s.unit))
-    )
+    priorities = {
+        (item.canonical_name, item.unit): index
+        for index, item in enumerate(DEFAULT_SERIES)
+    }
+    positions = [
+        priorities[(item.canonical_name, item.unit)]
+        for item in series
+        if (item.canonical_name, item.unit) in priorities
+    ]
+    assert positions == sorted(positions)
 
 
 def test_other_profile_and_legacy_dashboard_are_untouched(
@@ -337,9 +349,8 @@ def test_other_profile_and_legacy_dashboard_are_untouched(
     assert first.dashboard_id != second.dashboard_id
     assert set(first.card_ids).isdisjoint(second.card_ids)
     assert fake.dashboards[0] == legacy
-    assert all(
-        str(PROFILE) in c["dataset_query"]["native"]["query"] for c in fake.cards[:14]
-    )
+    assert str(PROFILE) in fake.cards[0]["dataset_query"]["native"]["query"]
+    assert str(UUID(int=2)) in fake.cards[1]["dataset_query"]["native"]["query"]
 
 
 def test_disappearing_series_is_detached_not_deleted(
@@ -353,7 +364,7 @@ def test_disappearing_series_is_detached_not_deleted(
     first = bootstrap_lab_dashboard(
         settings, PROFILE, engine=engine, transport=transport
     )
-    assert len(first.card_ids) == 15
+    assert len(first.card_ids) == 2
     row = db_session.get(LabObservation, observation_id)
     assert row is not None
     row.status = ReviewStatus.REJECTED
@@ -361,11 +372,32 @@ def test_disappearing_series_is_detached_not_deleted(
     second = bootstrap_lab_dashboard(
         settings, PROFILE, engine=engine, transport=transport
     )
-    assert len(second.card_ids) == 14
-    assert len(fake.cards) == 15
+    assert len(second.card_ids) == 1
+    assert len(fake.cards) == 2
     assert {c["card_id"] for c in fake.dashboards[0]["dashcards"]} == set(
         second.card_ids
     )
+
+
+def test_exact_legacy_owned_queries_migrate_but_custom_sql_stays_blocked(
+    disposable_postgres: DisposablePostgres, db_session: Session
+) -> None:
+    add_row(db_session)
+    db_session.commit()
+    fake = NativeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings, engine = disposable_postgres.settings, disposable_postgres.engine
+    bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    legacy = lab_dashboard.lab_card_specs(PROFILE, (FERRITIN,), _legacy=True)
+    for card, spec in zip(fake.cards, legacy, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+
+    bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    assert "date_label" in fake.cards[1]["dataset_query"]["native"]["query"]
+
+    fake.cards[1]["dataset_query"]["native"]["query"] += "\n-- user edit"
+    with pytest.raises(ValueError, match="collision"):
+        bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
 
 
 @pytest.mark.parametrize(

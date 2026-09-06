@@ -23,6 +23,7 @@ from health_agent.automation.storage import (
     require_private_file,
 )
 from health_agent.config import Settings
+from health_agent.dashboard_destinations import DashboardDestinationStore
 from health_agent.db import build_engine, session_scope
 from health_agent.gmail.api import GoogleGmailGateway
 from health_agent.gmail.config import GmailAccount, GmailProfile
@@ -66,6 +67,7 @@ from health_agent.importer import (
     reject_observation,
     set_document_medical_dates,
 )
+from health_agent.lab_dashboard import bootstrap_lab_dashboard
 from health_agent.lab_extraction.cli import app as lab_extraction_app
 from health_agent.medical_dates import recover_document_dates
 from health_agent.metabase import bootstrap_metabase
@@ -524,6 +526,9 @@ def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
     if not _profile_exists(settings, profile_id):
         raise typer.BadParameter("profile does not exist", param_hint="--profile-id")
     result = bootstrap_whoop_dashboard(settings, profile_id)
+    DashboardDestinationStore(
+        settings.connector_state_root, settings.metabase_url
+    ).save(profile_id, "whoop", result.dashboard_id)
     typer.echo(
         " ".join(
             (
@@ -534,6 +539,22 @@ def setup_whoop_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
                 f"url={result.dashboard_url}",
             )
         )
+    )
+
+
+@dashboard_app.command("setup-labs")
+def setup_lab_dashboard(profile_id: UUID = DEFAULT_PROFILE_ID) -> None:
+    """Provision the profile-isolated verified laboratory dashboard."""
+    settings = Settings()
+    if not _profile_exists(settings, profile_id):
+        raise typer.BadParameter("profile does not exist", param_hint="--profile-id")
+    result = bootstrap_lab_dashboard(settings, profile_id)
+    DashboardDestinationStore(
+        settings.connector_state_root, settings.metabase_url
+    ).save(profile_id, "labs", result.dashboard_id)
+    typer.echo(
+        f"status=ready profile_id={profile_id} dashboard_id={result.dashboard_id} "
+        f"cards={len(result.card_ids)} url={result.dashboard_url}"
     )
 
 
