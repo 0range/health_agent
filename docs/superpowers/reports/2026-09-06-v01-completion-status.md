@@ -1,28 +1,62 @@
-# v0.1 completion ledger
+# v0.1 — установленная версия
 
-TL;DR: integrated code passes1269tests and live source/Sheets/browser flows work. Final medical-answer quality is NOT accepted: Qwen mixed dates/body regions in real answers despite valid citations. Bounded alternative-model comparison is running. Automatic new-chart refresh has one review fix pending. User acceptance deferred until the end; no completion claim from test counts.
+TL;DR: основа согласованной сокращённой v0.1 установлена на Mac. В базе и Google
+Sheets — **134 проверенных результата, 19 показателей, 2018–2026 годы**.
+WHOOP, Drive, Gmail, Telegram и таблица подключены; лабораторный дашборд обновлён.
+Это не заявление о полном распознавании каждого документа или клинической
+безошибочности AI. Пользовательская приёмка ещё не проведена.
 
-## Current work
+## Что проверено 6 сентября 2026
 
-1. Recurring reminders, doctor visits/questions/answers, Telegram and medical panel composition complete and reviewed. Compact accessible medical UI4383071 independently reviewed and merged. Empty state now only two collapsed creation forms. Final browser checks ongoing.
-2. Separate Calendar adapterdebbf95 and explicit publication workflow41f6edf reviewed/merged. Event edits/prepared questions sync after commit; durable per-profile opt-in; no attendees. Actual Calendar OAuth requires owner at final acceptance, not yet performed.
-3. Strict extractionc2d3e96 plus standalone-flag compatibility2781415, source-proven PDF geometry117e9e7 and immutable evidence persistence90fa36a reviewed/merged. Source-linked clinical report/visit-answer QAa3a0d85 and cited clinical locator priorityab734cf reviewed/merged. Source excerpts remain distinct from verified lab measurements.
-4. Lab dashboardb846cce reviewed/merged; actual staging Metabase0.63.13 browser confirms same-day measurements not summed, Russian comparison values, and a single common result/reference axis. Unit families remain separate. Profile destination map and panel links repaired15f6e20.
-5. Five connected synthetic journeysd899bd6 reviewed/merged,8tests. Latest full suite1269passed/5upstreamSWIGwarnings/20.86s; Ruffclean/mypy132clean. Subsequent clinicalprompt/panelcopy/dashboardrefresh changes require final rerun.
-6. Production and staging schema0014_v01_workflow_evidence applied. Fresh private backupdata/pre0014-backup/database.dump (0600), container pg_restore list verified. New persistent panel LaunchAgentadc98f9 installed, actual /healthcheck HTTP200; Telegram stopped/reinstalled to load merged code. Actual reboot not tested.
-7. Owner archive repair committed after visual verification of all14 source rows across4pages/2documents. Exact source SHA/cells/dates crosschecked against private manifest.584obsolete unmapped parser artifacts rejected via existing audit-preserving review API, not deleted; original documents retained. Repair121PDF/4supportedpages/14inserted/1blocked. Extraction worker maintenance resume still under final audit; no budgets/job counters reset.
-8. Sheets live sync now succeeds14labs/0review/0decisions after reviewed stale-date compatibility8856bf6; root caught canonical None→blank hash mismatch in first implementation. Direct bound Sheet readback confirms15rowsincludingheader/10columns/literalvalues. Lab dashboard4has8cards. WHOOP/Gmail live incremental succeeded; Drive failed transiently once, then normal incremental succeeded with0changes. No auth reset needed.
-9. Native browser POST initially failed403 because no-referrer generated Origin:null. Reviewed63266f6 switches to same-origin while retaining exactOrigin/Host/CSRF checks; actual staging browser now createsvisit, preparesquestions, savesanswer and createsrecurringreminder. All records only syntheticprofile9901/staging56432. Production panel/Telegram reinstalled; /healthcheck shows7connected sources andCalendarOAuthrequired. Calendarlocalconfigurationexists/clientfilepresent, noauthorization or remoteevents yet.
-10. Owner extraction resumed enabled/cloud-enabled withunchanged20/daycap. At last check259waiting/9attention/21complete/8cloudrequeststoday. Original121docs/289pages imported, NOTfullynormalized. UnsupportedKDL/formats unresolved. No secondprofile/auth/productiontestfixtures.
-11. Medical QA wire/citations/liveprovider working, but content check FAILED: Qwen35B none transfersdatefromanotherreport and calls kneeMRIspine. Sharedpromptb2bedc8 reinforcesunknown dates/absence-not-medical-indication but didnotfullyresolve. Root comparingthreeexistingYandexmodels under same consent withprivateoutputs/no prodconfigchange. Do not characterize a nonfallback response or syntactically valid citation as clinical correctness.
-12. New-seriesdashboardrefreshcc70e86 awaiting narrowfix: runner mustacceptready onlyfordashboard, nototherconnectors/fullsuccesscheckpoints. Root+independentreviewer foundsameImportant. Existingconfigured-profile/origin-onlydiscovery/order/failureisolation accepted.
+| Часть | Фактический результат |
+| --- | --- |
+| Локальная база | PostgreSQL на 55432, схема 0014; 122 документа / 290 страниц сохранены |
+| История анализов | 120 строк добавлены отдельным проходом со второй сверкой оригиналов; 14 прежних сохранены; 26 документов с проверенными показателями |
+| Происхождение данных | Литеральные значения, единицы, референсы, даты и SHA оригиналов сверены; независимая проверка 120/120 строк в БД пройдена; повторный импорт добавляет 0 строк |
+| Сомнительные значения | Две противоречащие строки одного бланка сохранены в Needs review; ни одна не выбрана как истинная и не опубликована в истории |
+| Google Sheets | Обратное чтение подтвердило 134 результата; даты 2018-08-02…2026-09-03; оригиналы доступны по ссылкам |
+| Графики | Дашборд 4: 1 таблица + 21 график; все 22 запроса вернули данные без ошибок, SQL и настройки отображения совпали с ожидаемыми; WHOOP-дашборд сохранён |
+| Telegram / AI | Отдельная модель вопросов DeepSeek v4 Flash в Yandex, reasoning none, таймаут 30 с; разбор документов остаётся на Qwen |
+| Проверки кода | 1323 теста прошли; Ruff и mypy чистые; 5 известных предупреждений PyMuPDF/SWIG |
+| Дополнительные проверки импорта | 30 синтетических тестов проверенного импорта и 14 тестов очереди противоречий; тестовые данные не попадали в рабочую БД |
+| Восстановление | Свежий backup реально восстановлен в отдельную временную БД: схема и количества записей совпали; удалена только временная восстановленная БД |
+| Фоновая работа | LaunchAgents панели, Telegram и синхронизации загружены; после перезапуска проверен heartbeat Telegram; страница состояния и Metabase отвечают |
 
-## Deployment checkpoint before this run
+## Полезность и границы
 
-Yandex owner-only enabled, Qwen real QA with exact citations accepted; Telegram heartbeat ready and owner ping delivered. PostgreSQL local, Drive/Gmail/WHOOP/Sheets configured. 121 docs,289pages,7dated;584pending,0verified. Do not mistake pending count for extracted clinical coverage. Extraction requests stay budgeted; failed source matching must not be fixed by weakening global evidence validation.
+- Свободные вопросы используют проверенные анализы, WHOOP и отдельно атрибутированные
+  выдержки из заключений. Реальные контрольные ответы о текущей картине и сне:
+  705/674 символа, 6.45/5.19 секунды. Вопрос о динамике веса честно сообщил об
+  отсутствии истории вместо придуманного тренда.
+- Проверка заключений обнаружила ошибку переноса технической даты в дату исследования.
+  Для недатированных документов такие даты теперь скрываются только во входе модели;
+  оригиналы и подтверждённые даты не меняются. Повторный ответ сохранил неизвестные
+  даты и правильную область исследования. Это узкая проверка, не гарантия всех ответов.
+- Каждый вопрос самостоятельный. Истории разговора у модели пока нет.
+- Подтверждены ключевые показатели, а не все строки всех анализов. B9 и другие
+  отсутствующие в проверенной выборке показатели не объявляются загруженными.
+  Неподдержанные PDF/страницы остаются в очереди извлечения; один файл может иметь
+  проверенные ключевые результаты и ещё не разобранные остальные строки.
+- Монoмерный пост-ПЭГ пролактин не смешан с общим пролактином; разные единицы
+  и их графики не объединены без доказанного пересчёта.
+- Графики показывают лабораторные референсы, когда они однозначны. Это не
+  индивидуальные медицинские цели. Старые анализы не описывают состояние сегодня.
+- Новые файлы сохраняются; полное автоматическое извлечение любого формата не обещается.
+  Бюджет облачного разбора 20 запросов в день не сбрасывался.
+- Mac должен быть включён и не спать, Docker — работать. Реальная перезагрузка
+  компьютера и пользовательская приёмка нового сообщения/файла ещё не проверены.
+- Панель состояния просмотрена в браузере. Production Metabase в браузере требует
+  повторного входа: данные/настройки проверены через API, но финальная пиксельная
+  проверка новых графиков не выполнена. В Sheets проверены значения, сохранность
+  данных и ширины колонок; нативное отображение после расширения истории не проверено.
 
-## Decisions
+## Не блокирует этот запуск
 
-Owner extraction maintenance ended after strictpipelineaudit andsource-backedreconciliation; dailybudget20 unchanged. Rejected legacyrows andimmutableoriginals remainrecoverable throughbackup/reviewaudit. Allclinicalgeneration remainsassistance, notdiagnosis; knownQwenfailure requiresmodelacceptance beforehandoff.
+Calendar OAuth, подключение Ксюши, память диалога, расширенные чекапы и напоминания,
+Oura/COROS/TrainingPeaks, история веса, питание и среда сна —
+[бэклог](../../backlog.md). Имеющийся код календаря/визитов/напоминаний не удалён.
 
-Keep existing stack; no framework migration. Generic clinician question templates may be generated without inventing patient-specific advice. Screening intervals must be explicitly selected by user/clinician. Google Calendar code will use separate authorization and idempotent event IDs, with no attendee invitations. No synthetic test data in production.
+Граница версии: [согласованный объём](../specs/2026-09-06-v01-launch-boundary-design.md).
+Медицинские документы, секреты, точные транскрипции и backup остаются в локальных
+игнорируемых каталогах, не в Git. Более ранние отчёты — исторические снимки,
+а не текущие количества данных.
