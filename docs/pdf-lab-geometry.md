@@ -23,3 +23,20 @@ call; the returned collection is size-checked before Python geometry accumulatio
 or interpretation. Malformed PDFs and invalid requested pages use the single
 public error code `invalid_pdf_geometry`; unsupported valid pages return an empty
 result.
+
+## Immutable persistence
+
+Supported geometry can be stored as one immutable `page_evidence` record per
+document, page, method, and exact source hash. JSON retains every source cell and
+bbox. Pending observations reference that same document/page evidence through a
+composite foreign key. Replays compare exact JSON and never overwrite evidence;
+complete source identity deduplicates observations across every review status.
+
+The bounded repair API reads only regular, non-symlinked content-addressed PDFs
+inside the selected vault, verifies their SHA-256, and scans at most 150 documents,
+100 pages per document, 25 MiB per PDF, and 40 observations per page. Dry runs use
+rollback-only savepoints and leave no evidence or observation rows behind.
+Vault reads walk from the filesystem root through directory descriptors using
+`O_DIRECTORY` and `O_NOFOLLOW`, then open the digest-named file relative to the
+verified prefix descriptor. This prevents an ancestor-symlink swap between a path
+check and the final open.

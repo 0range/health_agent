@@ -34,6 +34,11 @@ from health_agent.models import (
     utc_now,
 )
 from health_agent.pdf import extract_pdf
+from health_agent.pdf_evidence import (
+    MAX_PDF_BYTES,
+    MAX_ROWS_PER_PAGE,
+    persist_pdf_evidence,
+)
 from health_agent.vault import FileVault
 
 ImportStatus = Literal["imported", "duplicate", "ocr_required", "needs_attention"]
@@ -193,9 +198,66 @@ def import_document(
         )
         session.flush()
 
+        geometry_inserted = 0
+        if (
+            actual_media_type == "application/pdf"
+            and stored_file.size_bytes <= MAX_PDF_BYTES
+        ):
+            try:
+                geometry = persist_pdf_evidence(
+                    session,
+                    document.id,
+                    profile_id=profile_id,
+                    pdf_bytes=stored_file.path.read_bytes(),
+                )
+                geometry_inserted = geometry.inserted
+            except (OSError, ValueError):
+                geometry_inserted = 0
+        persisted_identities: set[
+            tuple[int, str, str, str | None, str | None, str | None]
+        ] = {
+            tuple(row)
+            for row in session.execute(
+                select(
+                    LabObservation.page_number,
+                    LabObservation.source_name,
+                    LabObservation.source_value,
+                    LabObservation.source_unit,
+                    LabObservation.reference_text,
+                    LabObservation.source_flag,
+                ).where(LabObservation.document_id == document.id)
+            )
+        }
+        page_candidate_counts: dict[int, int] = {}
+        for identity in persisted_identities:
+            page_candidate_counts[identity[0]] = (
+                page_candidate_counts.get(identity[0], 0) + 1
+            )
+        unique_candidates_list: list[LabCandidate] = []
+        flat_capacity_blocked = False
+        for candidate in candidates:
+            identity = (
+                candidate.page_number,
+                candidate.source_name,
+                candidate.raw_source_value,
+                candidate.unit,
+                candidate.reference_text,
+                candidate.source_flag,
+            )
+            if identity in persisted_identities:
+                continue
+            if page_candidate_counts.get(candidate.page_number, 0) >= MAX_ROWS_PER_PAGE:
+                flat_capacity_blocked = True
+                continue
+            unique_candidates_list.append(candidate)
+            persisted_identities.add(identity)
+            page_candidate_counts[candidate.page_number] = (
+                page_candidate_counts.get(candidate.page_number, 0) + 1
+            )
+        unique_candidates = tuple(unique_candidates_list)
         observations = [
             _observation_from_candidate(document.id, candidate)
-            for candidate in candidates
+            for candidate in unique_candidates
         ]
         session.add_all(observations)
         session.flush()
@@ -203,6 +265,17 @@ def import_document(
             ReviewItem(observation=observation, reason_code="parsed_candidate")
             for observation in observations
         )
+
+        if geometry_inserted:
+            document.document_type = "laboratory_report"
+            document.processing_status = "needs_review"
+            processing_status = "needs_review"
+            if document.safe_error_code == "no_lab_candidates":
+                document.safe_error_code = None
+        if flat_capacity_blocked:
+            document.processing_status = "needs_attention"
+            document.safe_error_code = "page_candidate_limit"
+            processing_status = "needs_attention"
 
         report_status: ImportStatus = "imported"
         if processing_status == "ocr_required":
@@ -213,8 +286,8 @@ def import_document(
             status=report_status,
             processing_status=processing_status,
             document_id=document.id,
-            candidate_count=len(observations),
-            review_count=len(observations),
+            candidate_count=len(observations) + geometry_inserted,
+            review_count=len(observations) + geometry_inserted,
         )
 
 
@@ -325,6 +398,7 @@ def correct_observation(
         document_id=original.document_id,
         page_number=original.page_number,
         supersedes_observation_id=original.id,
+        page_evidence_id=original.page_evidence_id,
         canonical_name=corrected_name,
         source_name=original.source_name,
         source_value=source_value,
@@ -367,8 +441,8 @@ def _observation_from_candidate(
         source_unit=candidate.unit,
         normalized_value=None,
         normalized_unit=None,
-        reference_low=None,
-        reference_high=None,
+        reference_low=candidate.reference_low,
+        reference_high=candidate.reference_high,
         reference_text=candidate.reference_text,
         source_flag=candidate.source_flag,
         evidence_excerpt=candidate.evidence_excerpt,
