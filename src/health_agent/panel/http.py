@@ -15,6 +15,8 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from health_agent.panel.models import (
     ConnectorCard,
     DataCoverage,
@@ -150,7 +152,7 @@ class PanelApplication:
                     workflow = self._service.workflow_snapshot(medical_id)
                 except ProfileNotFoundError:
                     return self._not_found()
-                except RuntimeError:
+                except (RuntimeError, SQLAlchemyError):
                     return self._html(
                         503, _message_page("Медицинские планы временно недоступны.")
                     )
@@ -253,7 +255,7 @@ class PanelApplication:
             return self._not_found()
         except (KeyError, TypeError, ValueError, OverflowError, LookupError):
             return self._html(400, _message_page("Проверьте поля формы и повторите."))
-        except RuntimeError:
+        except (RuntimeError, SQLAlchemyError):
             return self._html(
                 503, _message_page("Медицинские планы временно недоступны.")
             )
@@ -615,7 +617,7 @@ def _render_medical(
     note_map = dict(snapshot.notes)
     visits = (
         "".join(
-            f'<article class="card"><h3>{escape(visit.title)}</h3><p>{escape(visit.public_code)} · {escape(visit.status)} · {visit.starts_at.astimezone(ZoneInfo(visit.timezone_name)):%Y-%m-%d %H:%M}</p>'
+            f'<article class="card"><h3>{escape(visit.title)}</h3><p>{escape(visit.public_code)} · {escape({"planned": "запланирован", "completed": "завершён", "cancelled": "отменён"}[visit.status])} · {visit.starts_at.astimezone(ZoneInfo(visit.timezone_name)):%Y-%m-%d %H:%M}</p>'
             + "".join(
                 f"<p>{'Вопрос' if note.kind == 'question' else 'Ответ'}: {escape(note.text)}</p>"
                 for note in note_map.get(visit.public_code, ())
@@ -627,7 +629,7 @@ def _render_medical(
     )
     reminders = (
         "".join(
-            f'<article class="card"><h3>{escape(item.title)}</h3><p>{escape(item.public_code)} · {escape(item.status.value)} · {item.due_at.astimezone(ZoneInfo(item.timezone_name)):%Y-%m-%d %H:%M}</p></article>'
+            f'<article class="card"><h3>{escape(item.title)}</h3><p>{escape(item.public_code)} · {escape({"pending_confirmation": "ожидает подтверждения", "scheduled": "запланировано"}[item.status.value])} · {item.due_at.astimezone(ZoneInfo(item.timezone_name)):%Y-%m-%d %H:%M}{f" · каждые {item.repeat_every} {'дней' if item.repeat_unit == 'days' else 'месяцев'}" if item.repeat_unit else ""}</p></article>'
             for item in snapshot.reminders
         )
         or '<p class="muted">Активных напоминаний пока нет.</p>'
@@ -685,7 +687,11 @@ def _render_medical(
             ),
         )
     )
-    notice_html = f'<p class="notice">{escape(notice)}</p>' if notice else ""
+    notice_html = (
+        f'<p class="notice">{escape(notice).replace(chr(10), "<br>")}</p>'
+        if notice
+        else ""
+    )
     return _page(
         "Визиты и напоминания",
         f'<a class="back" href="/profiles/{profile_id}">← Обзор профиля</a><h1>Визиты и напоминания</h1><p>Все даты вводятся в часовом поясе Europe/Moscow. События сохраняются локально; Calendar автоматически не публикуется.</p>{notice_html}<h2>Визиты (до 20)</h2>{visits}<h2>Напоминания (до 20)</h2>{reminders}<h2>Действия</h2>{forms}',

@@ -1,8 +1,18 @@
+from datetime import date
+from decimal import Decimal
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from health_agent.db import session_scope
-from health_agent.models import Profile
+from health_agent.models import (
+    Document,
+    DocumentPage,
+    LabObservation,
+    Profile,
+    ReviewStatus,
+)
 from health_agent.panel.http import PanelApplication
 from health_agent.panel.service import PanelService, SqlAlchemyProfileRepository
 from health_agent.panel.workflows import DatabaseWorkflowAdapter
@@ -98,3 +108,183 @@ def test_unknown_and_foreign_profile_cannot_mutate(clean_database):
         == 400
     )
     assert service.workflow_snapshot(PROFILE).visits[0].status == "planned"
+
+
+def test_reminder_replay_completion_and_csrf(clean_database):
+    service, app = (
+        _service(clean_database),
+        PanelApplication(_service(clean_database), csrf_token="csrf"),
+    )
+    fields = {
+        "operation": "reminder_create",
+        "action_id": "repeat",
+        "title": "Check",
+        "when": "2026-10-01T10:00",
+        "repeat_unit": "months",
+        "repeat_every": "1",
+    }
+    assert (
+        _post(app, PROFILE, fields).status == _post(app, PROFILE, fields).status == 200
+    )
+    reminder = service.workflow_snapshot(PROFILE).reminders[0]
+    assert len(service.workflow_snapshot(PROFILE).reminders) == 1
+    assert (
+        _post(
+            app,
+            PROFILE,
+            {
+                "operation": "reminder_confirm",
+                "action_id": "confirm",
+                "code": reminder.public_code,
+            },
+        ).status
+        == 200
+    )
+    assert (
+        _post(
+            app,
+            PROFILE,
+            {
+                "operation": "reminder_done",
+                "action_id": "done",
+                "code": reminder.public_code,
+            },
+        ).status
+        == 200
+    )
+    assert len(service.workflow_snapshot(PROFILE).reminders) == 1
+    before = len(service.workflow_snapshot(PROFILE).visits)
+    denied = app.handle(
+        "POST",
+        f"/profiles/{PROFILE}/medical",
+        {"Host": "127.0.0.1:8766", "Origin": "http://127.0.0.1:8766"},
+        urlencode(
+            {
+                "csrf_token": "bad",
+                "operation": "visit_create",
+                "action_id": "bad",
+                "title": "No",
+                "when": "2026-10-01T10:00",
+            }
+        ).encode(),
+    )
+    assert (
+        denied.status == 403
+        and len(service.workflow_snapshot(PROFILE).visits) == before
+    )
+
+
+def test_prepare_renders_verified_owner_sources_only_and_get_is_read_only(
+    clean_database,
+):
+    other = uuid4()
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=other, name="Other"))
+        session.flush()
+        for profile, value, status in (
+            (PROFILE, "95", ReviewStatus.VERIFIED),
+            (PROFILE, "777", ReviewStatus.NEEDS_REVIEW),
+            (other, "888", ReviewStatus.VERIFIED),
+        ):
+            doc = Document(
+                profile_id=profile,
+                sha256=uuid4().hex * 2,
+                vault_path="/private/not-output",
+                media_type="application/pdf",
+                document_type="lab",
+                collected_date=date(2026, 9, 1),
+            )
+            session.add(doc)
+            session.flush()
+            session.add(
+                DocumentPage(
+                    document_id=doc.id, page_number=1, extraction_method="test"
+                )
+            )
+            session.flush()
+            session.add(
+                LabObservation(
+                    document_id=doc.id,
+                    page_number=1,
+                    canonical_name="glucose",
+                    source_name="Glucose",
+                    source_value=value,
+                    parsed_value=Decimal(value),
+                    source_unit="mg/dL",
+                    normalized_value=Decimal(value),
+                    normalized_unit="mg/dL",
+                    evidence_excerpt="test",
+                    confidence=1,
+                    status=status,
+                )
+            )
+            session.flush()
+    service, app = (
+        _service(clean_database),
+        PanelApplication(_service(clean_database), csrf_token="csrf"),
+    )
+    _post(
+        app,
+        PROFILE,
+        {
+            "operation": "visit_create",
+            "action_id": "visit",
+            "title": "Doctor",
+            "when": "2026-10-01T10:00",
+        },
+    )
+    code = service.workflow_snapshot(PROFILE).visits[0].public_code
+    assert service.workflow_snapshot(PROFILE).notes[0][1] == ()
+    app.handle("GET", f"/profiles/{PROFILE}/medical", {"Host": "127.0.0.1:8766"}, b"")
+    assert service.workflow_snapshot(PROFILE).notes[0][1] == ()
+    response = _post(
+        app,
+        PROFILE,
+        {"operation": "visit_prepare", "action_id": "prepare", "code": code},
+    )
+    assert (
+        response.status == 200
+        and b"95" in response.body
+        and b"document:" in response.body
+    )
+    assert b"777" not in response.body and b"888" not in response.body
+    assert "исключённых из подготовки: 1".encode() in response.body
+
+
+def test_medical_routes_hide_database_failures():
+    sentinel = "private-sql-sentinel"
+
+    class Broken:
+        def workflow_snapshot(self, _profile):
+            raise SQLAlchemyError(sentinel)
+
+        def workflow_action(self, _profile, _fields):
+            raise SQLAlchemyError(sentinel)
+
+    app = PanelApplication(Broken(), csrf_token="csrf")  # type: ignore[arg-type]
+    get = app.handle(
+        "GET", f"/profiles/{PROFILE}/medical", {"Host": "127.0.0.1:8766"}, b""
+    )
+    post = _post(
+        app,
+        PROFILE,
+        {"operation": "visit_done", "action_id": "x", "code": "visit-code"},
+    )
+    assert (
+        get.status == post.status == 503
+        and sentinel.encode() not in get.body + post.body
+    )
+
+
+def test_duplicate_fields_and_unknown_operations_are_rejected(clean_database):
+    app = PanelApplication(_service(clean_database), csrf_token="csrf")
+    path = f"/profiles/{PROFILE}/medical"
+    headers = {"Host": "127.0.0.1:8766", "Origin": "http://127.0.0.1:8766"}
+    duplicate = app.handle(
+        "POST",
+        path,
+        headers,
+        b"csrf_token=csrf&operation=visit_done&operation=visit_cancel&action_id=x&code=visit-code",
+    )
+    unknown = _post(app, PROFILE, {"operation": "erase_everything", "action_id": "x"})
+    assert duplicate.status == unknown.status == 400

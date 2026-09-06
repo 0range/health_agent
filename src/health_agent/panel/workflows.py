@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
@@ -16,6 +17,7 @@ from health_agent.reminders.time import parse_local_datetime
 from health_agent.visits.models import Visit, VisitNote
 from health_agent.visits.preparation import prepare_visit
 from health_agent.visits.repository import VisitRepository
+from health_agent.visits.telegram import render_brief
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,11 +28,11 @@ class WorkflowSnapshot:
 
 
 class DatabaseWorkflowAdapter:
-    def __init__(self, sessions: Callable[[], object]) -> None:
+    def __init__(self, sessions: Callable[[], AbstractContextManager[Session]]) -> None:
         self._sessions = sessions
 
     def snapshot(self, profile_id: UUID) -> WorkflowSnapshot:
-        with self._sessions() as session:  # type: ignore[attr-defined]
+        with self._sessions() as session:
             visit_repo = VisitRepository(session)
             visits = visit_repo.list(profile_id, limit=20)
             notes = tuple(
@@ -46,7 +48,7 @@ class DatabaseWorkflowAdapter:
         if not identity or len(identity) > 200:
             raise ValueError("invalid_action_identity")
         key = f"panel:{profile_id}:{identity}"
-        with self._sessions() as session:  # type: ignore[attr-defined]
+        with self._sessions() as session:
             return _apply(session, profile_id, operation, fields, key)
 
 
@@ -79,8 +81,7 @@ def _apply(
         )
         return "Запись сохранена."
     if operation == "visit_prepare":
-        prepare_visit(session, profile_id, fields["code"])
-        return "Подготовка рассчитана без изменения визита."
+        return render_brief(prepare_visit(session, profile_id, fields["code"]))
     if operation in {"visit_done", "visit_cancel"}:
         method = visits.complete if operation.endswith("done") else visits.cancel
         method(profile_id, fields["code"])
