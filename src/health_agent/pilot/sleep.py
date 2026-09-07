@@ -19,6 +19,12 @@ from health_agent.pilot.contracts import (
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _MORNING_RE = re.compile(r"^/утро(?:\s+(\S+))?\s*$", re.IGNORECASE)
+_DIARY_RE = re.compile(r"^/сон(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
+_QUESTION_RE = re.compile(
+    r"(?:\?|^(?:кто|что|где|когда|зачем|почему|как|можно|может ли|стоит ли|"
+    r"нужно ли|нужен ли|нужна ли|нормально ли|опасно ли)(?:\s|$))",
+    re.IGNORECASE,
+)
 _DREAM_RE = re.compile(
     r"\b((?:мне\s+)?(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b.*)$",
     re.IGNORECASE,
@@ -67,9 +73,25 @@ class SleepCoach:
         if existing is not None:
             return str(existing.payload["text"])
 
-        explicit_diary = stripped.lower().startswith("/сон")
-        entry_text = stripped[4:].strip() if explicit_diary else stripped
-        morning_key = self._outstanding_morning(profile_id, now)
+        # On an incomplete retry, the first durable user text is authoritative.
+        user_turn = self.store.put(
+            profile_id,
+            "sleep",
+            "turn",
+            f"user:{source_key}",
+            {"role": "user", "text": stripped},
+            at=now,
+        )
+        stripped = str(user_turn.payload["text"])
+
+        diary_match = _DIARY_RE.fullmatch(stripped)
+        explicit_diary = diary_match is not None
+        entry_text = (diary_match.group(1) or "").strip() if diary_match else stripped
+        morning_key = (
+            self._outstanding_morning(profile_id, now)
+            if _looks_like_morning_answer(stripped)
+            else None
+        )
         is_diary = explicit_diary or morning_key is not None
         if explicit_diary and not entry_text:
             return "После /сон добавьте текст записи — пустую запись я не сохраняю."
@@ -85,16 +107,14 @@ class SleepCoach:
                 profile_id, "sleep", "diary", source_key, payload, at=now
             )
 
-        # The user's exact text is durable before any fallible provider call.
-        self.store.put(
-            profile_id,
-            "sleep",
-            "turn",
-            f"user:{source_key}",
-            {"role": "user", "text": stripped},
-            at=now,
+        durable_is_diary = bool(
+            self.store.list(profile_id, "sleep", "diary", limit=100)
+            and any(
+                row.source_key == source_key
+                for row in self.store.list(profile_id, "sleep", "diary", limit=100)
+            )
         )
-        prompt = self._prompt_payload(profile_id, stripped, is_diary)
+        prompt = self._prompt_payload(profile_id, stripped, durable_is_diary)
         try:
             reply = self.brain(_SYSTEM_PROMPT, prompt)
             reply = _phone_length(reply.strip())
@@ -136,6 +156,16 @@ class SleepCoach:
     def _set_schedule(
         self, profile_id: UUID, value: str | None, source_key: str, now: datetime
     ) -> str:
+        previous = next(
+            (
+                row
+                for row in self.store.list(profile_id, "sleep", "schedule", limit=100)
+                if row.source_key == source_key
+            ),
+            None,
+        )
+        if previous is not None:
+            return _schedule_confirmation(previous.payload)
         if value is None:
             enabled, morning_at = self._schedule(profile_id)
             return (
@@ -145,21 +175,27 @@ class SleepCoach:
             )
         if value.lower() == "выкл":
             payload = {"enabled": False, "time": "09:00", "timezone": "Europe/Moscow"}
-            self.store.put(profile_id, "sleep", "schedule", source_key, payload, at=now)
-            return "Утренние вопросы выключены. Дневник и /итоги остаются доступны."
+            record = self.store.put(
+                profile_id, "sleep", "schedule", source_key, payload, at=now
+            )
+            return _schedule_confirmation(record.payload)
         try:
             parsed = time.fromisoformat(value)
         except ValueError:
             return "Укажите время как /утро HH:MM или выключите: /утро выкл."
         if parsed.second or parsed.microsecond:
             return "Укажите время с точностью до минут, например /утро 09:00."
+        if not time(6) <= parsed < time(12):
+            return "Утренний вопрос можно назначить с 06:00 до 11:59 по Москве."
         payload = {
             "enabled": True,
             "time": parsed.strftime("%H:%M"),
             "timezone": "Europe/Moscow",
         }
-        self.store.put(profile_id, "sleep", "schedule", source_key, payload, at=now)
-        return f"Буду задавать утренний вопрос в {parsed.strftime('%H:%M')} по Москве."
+        record = self.store.put(
+            profile_id, "sleep", "schedule", source_key, payload, at=now
+        )
+        return _schedule_confirmation(record.payload)
 
     def _schedule(self, profile_id: UUID) -> tuple[bool, time]:
         rows = self.store.list(profile_id, "sleep", "schedule", limit=1)
@@ -195,12 +231,15 @@ class SleepCoach:
         )
         payload = self._prompt_payload(profile_id, "/итоги", False)
         payload["task"] = "weekly_reflection"
+        frame = _weekly_frame(entries, now.astimezone(_MOSCOW))
+        payload["factual_frame"] = frame
         try:
-            reply = _phone_length(self.brain(_SYSTEM_PROMPT, payload).strip())
-            if not reply:
+            reflection = self.brain(_SYSTEM_PROMPT, payload).strip()
+            if not reflection:
                 raise ValueError("empty brain response")
+            reply = _phone_length(f"{frame}\n{reflection}")
         except Exception:  # noqa: BLE001 - provider boundary must degrade safely
-            reply = f"За последние 7 дней сохранено записей: {len(entries)}. Для содержательного вывода нужен доступ к помощнику; сами записи сохранены."
+            reply = f"{frame}\nДля содержательного разбора нужен доступ к помощнику; сами записи сохранены."
         self.store.put(
             profile_id, "sleep", "turn", f"assistant:{source_key}",
             {"role": "assistant", "text": reply}, at=now,
@@ -231,7 +270,11 @@ class SleepCoach:
     def _outstanding_morning(self, profile_id: UUID, now: datetime) -> str | None:
         local_date = now.astimezone(_MOSCOW).date().isoformat()
         key = f"morning:{local_date}"
-        if not self._notice_delivered(profile_id, key):
+        notice = self._delivered_notice(profile_id, key)
+        if notice is None:
+            return None
+        delivered_at = _delivery_at(notice)
+        if now < delivered_at:
             return None
         for entry in self.store.list(profile_id, "sleep", "diary", limit=100):
             if entry.payload.get("morning_prompt_key") == key:
@@ -239,9 +282,16 @@ class SleepCoach:
         return key
 
     def _notice_delivered(self, profile_id: UUID, key: str) -> bool:
-        return any(
-            row.source_key == key
-            for row in self.store.list(profile_id, "sleep", "notice", limit=100)
+        return self._delivered_notice(profile_id, key) is not None
+
+    def _delivered_notice(self, profile_id: UUID, key: str) -> Record | None:
+        return next(
+            (
+                row
+                for row in self.store.list(profile_id, "sleep", "notice", limit=100)
+                if row.source_key == key
+            ),
+            None,
         )
 
     def _recent_week_entries(self, profile_id: UUID, local_now: datetime) -> list[Record]:
@@ -283,6 +333,44 @@ def _aware(value: datetime) -> datetime:
 def _dream(text: str) -> str | None:
     match = _DREAM_RE.search(text)
     return match.group(1) if match else None
+
+
+def _looks_like_morning_answer(text: str) -> bool:
+    """Conservatively distinguish a subjective check-in from a free question."""
+    return not text.startswith("/") and _QUESTION_RE.search(text.strip()) is None
+
+
+def _delivery_at(notice: Record) -> datetime:
+    raw = notice.payload.get("delivery_at")
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw)
+            return _aware(parsed)
+        except ValueError:
+            pass
+    return _aware(notice.at)
+
+
+def _weekly_frame(entries: list[Record], local_now: datetime) -> str:
+    del local_now  # Entries have already been restricted to the requested rolling week.
+    dates = [row.at.astimezone(_MOSCOW).date() for row in entries]
+    start = min(dates).strftime("%d.%m")
+    end = max(dates).strftime("%d.%m")
+    count = len(entries)
+    if count % 10 == 1 and count % 100 != 11:
+        noun = "запись"
+    elif count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        noun = "записи"
+    else:
+        noun = "записей"
+    return f"За {start}–{end}: {count} {noun}."
+
+
+def _schedule_confirmation(payload: dict[str, Any]) -> str:
+    if not bool(payload.get("enabled", True)):
+        return "Утренние вопросы выключены. Дневник и /итоги остаются доступны."
+    scheduled = str(payload.get("time", "09:00"))
+    return f"Буду задавать утренний вопрос в {scheduled} по Москве."
 
 
 def _phone_length(text: str) -> str:

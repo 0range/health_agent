@@ -118,9 +118,44 @@ def test_delivered_morning_reply_becomes_diary_but_question_does_not() -> None:
     assert diary[0].payload["dream"] == "снился поезд"
     assert diary[0].payload["morning_prompt_key"] == "morning:2026-09-07"
 
-    tomorrow = datetime(2026, 9, 8, 6, 30, tzinfo=UTC)
-    coach.handle(profile, "Может ли магний влиять на сон?", source_key="question", now=tomorrow)
+    coach.handle(profile, "Может ли магний влиять на сон?", source_key="question", now=NOW)
     assert len(store.list(profile, "sleep", "diary")) == 1
+
+
+def test_question_does_not_consume_prompt_and_pre_delivery_message_is_not_reply() -> None:
+    store, profile = MemoryStore(), uuid4()
+    coach = SleepCoach(store, FakeBrain())
+    delivered = datetime(2026, 9, 7, 6, 20, tzinfo=UTC)
+    store.put(
+        profile,
+        "sleep",
+        "notice",
+        "morning:2026-09-07",
+        {"text": "Как спалось?", "delivery_at": delivered.isoformat()},
+        at=delivered,
+    )
+
+    coach.handle(
+        profile,
+        "Стоит ли пить мелатонин?",
+        source_key="medical",
+        now=datetime(2026, 9, 7, 6, 25, tzinfo=UTC),
+    )
+    coach.handle(
+        profile,
+        "Спал плохо",
+        source_key="delayed",
+        now=datetime(2026, 9, 7, 6, 10, tzinfo=UTC),
+    )
+    assert store.list(profile, "sleep", "diary") == []
+
+    coach.handle(
+        profile,
+        "Спал плохо",
+        source_key="answer",
+        now=datetime(2026, 9, 7, 6, 30, tzinfo=UTC),
+    )
+    assert store.list(profile, "sleep", "diary")[0].source_key == "answer"
 
 
 def test_read_only_diary_profile_isolation_and_missing_voice_transcription() -> None:
@@ -149,6 +184,8 @@ def test_weekly_notice_needs_three_entries_and_on_demand_summary_is_truthful() -
     assert coach.due(profile, sunday) == []
     store.put(profile, "sleep", "diary", "d2", {"text": "сон 2"}, at=sunday)
     assert coach.due(profile, sunday)[0].key == "weekly:2026-09-13"
+    summary = coach.handle(profile, "/итоги", source_key="with-data", now=sunday)
+    assert summary.startswith("За 07.09–13.09: 3 записи.")
 
     empty_profile = uuid4()
     summary = coach.handle(empty_profile, "/итоги", source_key="summary", now=NOW)
@@ -167,3 +204,56 @@ def test_health_context_and_goals_are_context_not_claims_and_fallback_saves() ->
     assert "сохран" in reply.lower()
     assert "09:00" in reply
     assert store.list(profile, "sleep", "diary")
+
+
+def test_exact_sleep_command_invalid_afternoon_schedule_and_control_replay() -> None:
+    store, brain, profile = MemoryStore(), FakeBrain(), uuid4()
+    coach = SleepCoach(store, brain)
+
+    coach.handle(profile, "/сонник — это про сны?", source_key="not-command", now=NOW)
+    assert store.list(profile, "sleep", "diary") == []
+    assert "утрен" in coach.handle(profile, "/утро 12:00", source_key="late", now=NOW).lower()
+    assert store.list(profile, "sleep", "schedule") == []
+
+    first = coach.handle(profile, "/утро 10:30", source_key="same", now=NOW)
+    replay = coach.handle(profile, "/утро выкл", source_key="same", now=NOW)
+    assert replay == first
+    assert coach.due(profile, datetime(2026, 9, 8, 7, 31, tzinfo=UTC))
+
+
+def test_retry_rebuilds_request_from_durable_user_turn() -> None:
+    store, brain, profile = MemoryStore(), FakeBrain(), uuid4()
+    coach = SleepCoach(store, brain)
+    store.put(
+        profile,
+        "sleep",
+        "turn",
+        "user:retry",
+        {"role": "user", "text": "/сон исходный текст"},
+        at=NOW,
+    )
+    store.put(
+        profile,
+        "sleep",
+        "diary",
+        "retry",
+        {"text": "исходный текст"},
+        at=NOW,
+    )
+
+    coach.handle(profile, "/сон изменённый текст", source_key="retry", now=NOW)
+    assert brain.calls[-1][1]["request"] == "/сон исходный текст"
+    assert store.list(profile, "sleep", "diary")[0].payload["text"] == "исходный текст"
+
+
+def test_prompt_safety_labels_and_phone_limit() -> None:
+    store, profile = MemoryStore(), uuid4()
+    brain = FakeBrain("x" * 1500)
+    reply = SleepCoach(store, brain).handle(
+        profile, "/сон Проснулся с головной болью", source_key="safe", now=NOW
+    )
+    system, payload, _ = brain.calls[-1]
+    assert len(reply) == 1200
+    assert "не диагнозы" in system
+    assert "diary_user_reports" in payload
+    assert payload["diary_user_reports"][0]["text"] == "Проснулся с головной болью"
