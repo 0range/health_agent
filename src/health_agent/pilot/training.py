@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -75,11 +75,24 @@ class TrainingCoach:
         key = f"training-weekly-{week.year}-W{week.week:02d}"
         if self._by_source(profile_id, "notice", key) is not None:
             return []
+        preferences = self._weekly_preferences(profile_id)
+        goals = [
+            r.payload
+            for r in self._store.list(profile_id, "shared", "goal")
+            if _training_goal(r)
+        ]
         accepted = self._store.list(profile_id, _DOMAIN, "accepted_plan", limit=1)
         activities = self._import_activities(profile_id, now - timedelta(days=7), now)
-        if not accepted and not activities:
+        if not preferences and not goals and not accepted and not activities:
             return []
-        text = self._cached_reflection(profile_id, key, now, accepted, activities)
+        draft = self._propose(profile_id, _draft_key(local_now), now)
+        parts = []
+        if accepted or activities:
+            parts.append(
+                self._cached_reflection(profile_id, key, now, accepted, activities)
+            )
+        parts.append("Ориентир на следующую неделю, не обязательство\n" + draft)
+        text = "\n\n".join(parts)[:1800]
         return [Notice(key, text)]
 
     def _annual_goals(self, profile_id: UUID) -> str:
@@ -117,6 +130,9 @@ class TrainingCoach:
         return "\n".join(lines)
 
     def _propose(self, profile_id: UUID, source_key: str, now: datetime) -> str:
+        cached = self._by_source(profile_id, "proposal", source_key)
+        if cached is not None:
+            return str(cached.payload["text"])
         activities = self._import_activities(profile_id, now - timedelta(days=28), now)
         goals = [
             r.payload
@@ -124,29 +140,44 @@ class TrainingCoach:
             if _training_goal(r)
         ]
         sparse = len(activities) < 2
+        preferences = self._weekly_preferences(profile_id)
+        start, end = _next_week(now)
         payload = {
             "task": "weekly_plan",
             "annual_goals": goals,
+            "weekly_preferences": preferences,
             "recent_activities": activities,
             "recent_training_messages": self._conversation_payloads(profile_id),
+            "next_week": {"monday": start.isoformat(), "sunday": end.isoformat()},
             "history_is_insufficient": sparse,
             "requirements": (
-                "Write a conservative, high-level seven-day draft in Russian. Do not invent races, "
-                "dates, pace, fitness, or completed work. If history is insufficient, avoid prescribed "
-                "intensity and finish with exactly one useful question."
+                "Write an orienting, adjustable seven-day draft in Russian for the supplied exact "
+                "dates. Adjust it to reported recovery and availability. Do not invent races, pace, "
+                "fitness, completed work, working weights, or required intensity. Keep beginner "
+                "strength conservative. If history is insufficient, avoid prescribed intensity and "
+                "finish with exactly one useful question."
             ),
         }
         try:
             answer = self._brain(_SYSTEM, payload)
         except Exception:  # noqa: BLE001 -- provider boundary; storage stays outside
-            answer = "Черновик недели: чередуйте лёгкую активность и отдых без заданного темпа. Какой объём тренировок для вас привычен сейчас?"
+            answer = _fallback_draft(preferences, start, end)
         if sparse and (answer.count("?") != 1 or not answer.rstrip().endswith("?")):
             answer = (
                 answer.replace("?", ".").rstrip()
                 + "\nКакой объём тренировок для вас привычен сейчас?"
             )
         self._store.put(
-            profile_id, _DOMAIN, "proposal", source_key, {"text": answer}, at=now
+            profile_id,
+            _DOMAIN,
+            "proposal",
+            source_key,
+            {
+                "text": answer,
+                "preferences": preferences,
+                "date_range": {"monday": start.isoformat(), "sunday": end.isoformat()},
+            },
+            at=now,
         )
         return answer
 
@@ -236,13 +267,29 @@ class TrainingCoach:
             {"role": "user", "text": text},
             at=now,
         )
+        normalized = text.strip().lower()
+        if normalized in {"покажи план", "покажи черновик", "покажи план на неделю"}:
+            latest = self._latest_payload(profile_id, "proposal")
+            return (
+                str(latest["text"])
+                if latest
+                else "Черновика пока нет. Скажите: «давай план на неделю»."
+            )
+        if "давай план на неделю" in normalized:
+            return self._propose(profile_id, source_key, now)
+        if _is_revision_request(normalized):
+            return self._revise(profile_id, text, source_key, now)
         payload = {
             "task": "dialogue",
             "message": text,
             "conversation": self._conversation_payloads(profile_id),
             "latest_proposal": self._latest_payload(profile_id, "proposal"),
             "latest_accepted_plan": self._latest_payload(profile_id, "accepted_plan"),
-            "requirements": "Reply in concise Russian; distinguish user reports, plans, and completed activity facts.",
+            "requirements": (
+                "Reply in concise Russian; distinguish user reports, plans, and completed activity "
+                "facts. Acknowledge availability constraints as reported constraints, not accepted "
+                "schedule changes."
+            ),
         }
         try:
             answer = self._brain(_SYSTEM, payload)
@@ -257,6 +304,58 @@ class TrainingCoach:
             at=now,
         )
         return answer
+
+    def _revise(
+        self, profile_id: UUID, text: str, source_key: str, now: datetime
+    ) -> str:
+        current = self._latest_payload(profile_id, "proposal")
+        if current is None:
+            return self._propose(profile_id, source_key, now)
+        preferences = self._weekly_preferences(profile_id)
+        start, end = _next_week(now)
+        payload = {
+            "task": "revise_weekly_plan",
+            "request": text,
+            "current_proposal": current,
+            "latest_proposal": current,
+            "latest_accepted_plan": self._latest_payload(profile_id, "accepted_plan"),
+            "conversation": self._conversation_payloads(profile_id),
+            "weekly_preferences": preferences,
+            "next_week": {"monday": start.isoformat(), "sunday": end.isoformat()},
+            "requirements": (
+                "Revise the draft in concise Russian while preserving explicit dates and known "
+                "constraints. Do not accept the plan or mutate an accepted plan."
+            ),
+        }
+        try:
+            answer = self._brain(_SYSTEM, payload)
+        except Exception:  # noqa: BLE001 -- provider boundary; storage stays outside
+            answer = str(current["text"])
+        self._store.put(
+            profile_id,
+            _DOMAIN,
+            "proposal",
+            source_key,
+            {
+                "text": answer,
+                "preferences": preferences,
+                "date_range": {"monday": start.isoformat(), "sunday": end.isoformat()},
+                "revises": current,
+            },
+            at=now,
+        )
+        return answer
+
+    def _weekly_preferences(self, profile_id: UUID) -> dict[str, Any] | None:
+        record = self._by_source(
+            profile_id, "settings", "weekly-preferences", domain=_DOMAIN
+        )
+        if record is None or record.payload.get("source") != "user":
+            return None
+        sessions = record.payload.get("sessions")
+        if not isinstance(sessions, list):
+            return None
+        return record.payload
 
     def _conversation_payloads(self, profile_id: UUID) -> list[dict[str, Any]]:
         records = self._store.list(profile_id, _DOMAIN, "conversation", limit=12)
@@ -322,6 +421,40 @@ def _training_goal(record: Record) -> bool:
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _next_week(now: datetime) -> tuple[date, date]:
+    local_date = _aware(now).astimezone(_MOSCOW).date()
+    monday = local_date + timedelta(days=7 - local_date.weekday())
+    return monday, monday + timedelta(days=6)
+
+
+def _draft_key(local_now: datetime) -> str:
+    monday, _ = _next_week(local_now)
+    week = monday.isocalendar()
+    return f"training-draft-{week.year}-W{week.week:02d}"
+
+
+def _is_revision_request(text: str) -> bool:
+    change = any(word in text for word in ("перенеси", "замени", "поменяй", "скорректируй"))
+    target = any(word in text for word in ("план", "заняти", "трениров", "сесси"))
+    return change and target
+
+
+def _fallback_draft(
+    preferences: dict[str, Any] | None, start: date, end: date
+) -> str:
+    slots: list[str] = []
+    if preferences:
+        for item in preferences.get("sessions", []):
+            if isinstance(item, dict) and isinstance(item.get("count"), int):
+                slots.append(f"{item.get('discipline', 'тренировка')}: {item['count']} желаемых слота")
+    desired = "; ".join(slots) if slots else "лёгкая активность и отдых по самочувствию"
+    return (
+        f"Черновик на {start.isoformat()}—{end.isoformat()}: {desired}. "
+        "Распределите по доступности и восстановлению, без заданного темпа или веса. "
+        "Какой объём тренировок для вас привычен сейчас?"
+    )
 
 
 _SYSTEM = (

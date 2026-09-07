@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -66,7 +67,7 @@ class MemoryStore:
 
 class Brain:
     def __init__(self) -> None:
-        self.calls = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def __call__(self, system, payload, *, image_path=None):
         self.calls.append((system, payload))
@@ -76,6 +77,8 @@ class Brain:
             )
         if payload.get("task") == "reflection":
             return "Факт: выполнена одна пробежка. Данных недостаточно, чтобы считать остальные занятия пропущенными."
+        if payload.get("task") == "revise_weekly_plan":
+            return "Обновлённый черновик: плавание перенесено на четверг."
         return "Помню контекст и отвечаю по тренировкам."
 
 
@@ -247,10 +250,12 @@ def test_plan_uses_bounded_dialogue_and_dialogue_sees_plan_without_accepting_it(
 @pytest.mark.parametrize(
     "failure",
     [
-        openai.APITimeoutError(request=httpx.Request("POST", "https://test.invalid")),
+        openai.APITimeoutError(
+            request=httpx.Request("POST", "https://test.invalid")  # type: ignore[arg-type]
+        ),
         openai.RateLimitError(
             "limited",
-            response=httpx.Response(
+            response=httpx.Response(  # type: ignore[arg-type]
                 429, request=httpx.Request("POST", "https://test.invalid")
             ),
             body=None,
@@ -284,3 +289,143 @@ def test_date_only_interactive_activity_uses_canonical_moscow_day_precision():
     activity = store.list(profile, "training", "activity")[0]
     assert activity.at.isoformat() == "2026-09-06T00:00:00+03:00"
     assert activity.payload["timestamp_precision"] == "day"
+
+
+def _preferences(store, profile, now, *, discipline="плавание", count=2):
+    store.put(
+        profile,
+        "training",
+        "settings",
+        "weekly-preferences",
+        {
+            "sessions": [{"discipline": discipline, "count": count}],
+            "strength_beginner": True,
+            "source": "user",
+        },
+        at=now,
+    )
+
+
+def test_sunday_preferences_prepare_dated_cached_draft_without_acceptance():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    _preferences(store, profile, now)
+    coach = TrainingCoach(store, brain)
+
+    first = coach.due(profile, now)
+    calls = len(brain.calls)
+    second = coach.due(profile, now)
+
+    assert first == second and len(first) == 1
+    assert len(brain.calls) == calls == 1
+    assert "Ориентир на следующую неделю, не обязательство" in first[0].text
+    assert not store.list(profile, "training", "accepted_plan")
+    proposal = store.list(profile, "training", "proposal")[0]
+    assert proposal.source_key == "training-draft-2026-W38"
+    assert proposal.payload["date_range"] == {
+        "monday": "2026-09-14",
+        "sunday": "2026-09-20",
+    }
+    prompt = brain.calls[0][1]
+    assert prompt["weekly_preferences"]["sessions"][0]["discipline"] == "плавание"
+    assert prompt["next_week"] == proposal.payload["date_range"]
+
+
+def test_monday_manual_draft_uses_following_monday_through_sunday():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    monday = datetime(2026, 9, 14, 6, tzinfo=UTC)
+    _preferences(store, profile, monday)
+    TrainingCoach(store, brain).handle(profile, "/план", source_key="p", now=monday)
+    assert brain.calls[-1][1]["next_week"] == {
+        "monday": "2026-09-21",
+        "sunday": "2026-09-27",
+    }
+
+
+def test_sunday_combines_actual_reflection_and_draft_in_one_notice_then_delivery_stops():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    _preferences(store, profile, now)
+    store.put(
+        profile,
+        "training",
+        "activity",
+        "activity:one",
+        {"sport": "run"},
+        at=now - timedelta(days=1),
+    )
+    coach = TrainingCoach(store, brain)
+    notices = coach.due(profile, now)
+    assert len(notices) == 1
+    assert "Факт: выполнена одна пробежка" in notices[0].text
+    assert "Ориентир на следующую неделю" in notices[0].text
+    assert len(notices[0].text) <= 1800
+    store.put(profile, "training", "notice", notices[0].key, {}, at=now)
+    assert coach.due(profile, now) == []
+
+
+def test_weekly_draft_is_profile_scoped_and_monday_is_silent():
+    store, brain, first, second = MemoryStore(), Brain(), uuid4(), uuid4()
+    sunday = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    _preferences(store, first, sunday, discipline="велосипед", count=3)
+    coach = TrainingCoach(store, brain)
+    assert coach.due(first, sunday)
+    assert coach.due(second, sunday) == []
+    assert coach.due(first, sunday + timedelta(days=1)) == []
+
+
+def test_plain_text_show_discussion_and_explicit_revision_are_distinct_and_replay():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    _preferences(store, profile, now)
+    coach = TrainingCoach(store, brain)
+    original = coach.handle(
+        profile, "давай план на неделю", source_key="draft", now=now
+    )
+    assert coach.handle(profile, "покажи план", source_key="show", now=now) == original
+
+    coach.handle(
+        profile, "почему бег во вторник?", source_key="question", now=now
+    )
+    assert brain.calls[-1][1]["task"] == "dialogue"
+    assert len(store.list(profile, "training", "proposal")) == 1
+
+    revised = coach.handle(
+        profile,
+        "перенеси занятие в этом плане на четверг",
+        source_key="revision",
+        now=now + timedelta(minutes=2),
+    )
+    assert "четверг" in revised
+    assert brain.calls[-1][1]["current_proposal"]["text"] == original
+    assert len(store.list(profile, "training", "proposal")) == 2
+    assert not store.list(profile, "training", "accepted_plan")
+    calls = len(brain.calls)
+    assert coach.handle(
+        profile,
+        "перенеси занятие в этом плане на четверг",
+        source_key="revision",
+        now=now + timedelta(minutes=2),
+    ) == revised
+    assert len(brain.calls) == calls
+
+
+def test_provider_failure_uses_desired_slots_and_reuses_weekly_draft():
+    store, profile = MemoryStore(), uuid4()
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    _preferences(store, profile, now, discipline="силовая", count=2)
+    calls = 0
+
+    def failing_brain(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise openai.APITimeoutError(
+            request=httpx.Request("POST", "https://test.invalid")
+        )
+
+    coach = TrainingCoach(store, failing_brain)
+    notice = coach.due(profile, now)[0]
+    assert "силовая: 2 желаемых слота" in notice.text
+    assert "выполн" not in notice.text.lower()
+    assert coach.due(profile, now)[0].text == notice.text
+    assert calls == 1
