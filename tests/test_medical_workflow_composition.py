@@ -20,7 +20,7 @@ from health_agent.telegram.types import MessageContext, VerifiedBotCredential
 
 def test_single_schema_head_and_visit_cli_help():
     assert ScriptDirectory.from_config(Config("alembic.ini")).get_heads() == [
-        "0015_pilot_records"
+        "0016_extraction_backfill_budget"
     ]
     result = CliRunner().invoke(app, ["--help"])
     assert result.exit_code == 0
