@@ -1,17 +1,23 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
+from health_agent.config import Settings
 from health_agent.models import DEFAULT_PROFILE_ID
+from health_agent.pilot.brain import PilotBrain
 from health_agent.pilot.contracts import Notice
+from health_agent.pilot.food import FoodCoach
 from health_agent.pilot.goals import goal_action
 from health_agent.pilot.runtime import (
+    HELP,
     PilotActions,
     PilotInbox,
     PilotQuestions,
     dispatch_notices,
+    maybe_coros_sync,
 )
 from health_agent.pilot.storage import PilotStore
 from health_agent.questions.replies import PrivateReplyStore
@@ -39,6 +45,48 @@ class Gateway:
 
     def download_chunks(self, path):
         yield self.data
+
+
+class SDKClient:
+    """Deterministic SDK boundary double; the real brain owns model metadata."""
+
+    def __init__(self):
+        self.calls = []
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        content = json.dumps(
+            {
+                "foods": ["рис", "овощи"],
+                "portion_estimate": "одна тарелка",
+                "kcal": None,
+                "protein_g": None,
+                "fat_g": None,
+                "carbs_g": None,
+                "saturated_fat_g": None,
+                "fiber_g": None,
+                "cholesterol_mg": None,
+                "confidence": 0.5,
+                "unknowns": ["масса продуктов"],
+                "feedback": "В записи есть рис и овощи.",
+            },
+            ensure_ascii=False,
+        )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        role="assistant",
+                        refusal=None,
+                        tool_calls=None,
+                        function_call=None,
+                        content=content,
+                    ),
+                )
+            ]
+        )
 
 
 class Coach:
@@ -122,6 +170,103 @@ def test_telegram_postgres_replay_caption_and_identity(tmp_path, clean_database)
     assert len(PilotStore(clean_database).list(DEFAULT_PROFILE_ID, "food", "meal")) == 1
     service.process_update(update(3, "Чужие данные", user=202))
     assert len(coach.calls) == 1
+
+
+def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
+    tmp_path, clean_database
+):
+    store = PilotStore(clean_database)
+    client = SDKClient()
+    settings = Settings(
+        yandex_folder_id="test",
+        yandex_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
+    )
+    brain = PilotBrain(
+        settings,
+        DEFAULT_PROFILE_ID,
+        client=client,
+        store=store,
+        domain="food",
+    )
+    coach = FoodCoach(store, brain)
+    actions = PilotActions(coach, store, "food")
+    replies = PrivateReplyStore(tmp_path / "real-replies")
+    state = SqliteTelegramState(tmp_path / "real-state.sqlite3", clock=lambda: NOW)
+    state.register_bot(111, "food_test")
+    state.bind_identity(111, TelegramIdentity(101, DEFAULT_PROFILE_ID, 101))
+    gateway = Gateway()
+    messenger = TelegramMessenger(111, gateway, state)
+    service = TelegramUpdateService(
+        111,
+        gateway,
+        state,
+        messenger,
+        PilotQuestions(actions, replies),
+        SimpleNamespace(status=lambda _: "status", sync=lambda _: "sync"),
+        PilotInbox(coach, store, "food", tmp_path, brain),
+        staging_root=tmp_path / "real-staging",
+        clock=lambda: NOW,
+        text_actions=PreparedTelegramTextActions(actions, replies),
+        help_text="Помощник по еде",
+    )
+
+    assert service.process_update(update(20, "Обед: рис и овощи", photo=True)).terminal
+
+    assert gateway.sent[-1][1] == "В записи отмечены: овощи, крупы или хлеб."
+    assert len(client.calls) == 1
+    attachment = store.list(DEFAULT_PROFILE_ID, "food", "attachment")[0]
+    meal = store.list(DEFAULT_PROFILE_ID, "food", "meal")[0]
+    model_run = store.list(DEFAULT_PROFILE_ID, "food", "model_run")[0]
+    assert attachment.payload["caption"] == "Обед: рис и овощи"
+    assert attachment.payload["reply"] == gateway.sent[-1][1]
+    assert meal.payload["analysis"]["foods"] == ["рис", "овощи"]
+    assert model_run.payload["status"] == "completed"
+    assert model_run.payload["model"] == client.calls[0]["model"]
+    assert model_run.payload["output"]
+
+
+def test_sleep_help_preserves_existing_commands_and_adds_sleep_commands():
+    assert "/review" in HELP["sleep"]
+    assert "/visits" in HELP["sleep"]
+    assert "/sync" in HELP["sleep"]
+    assert "/дневник" in HELP["sleep"]
+    assert "/утро" in HELP["sleep"]
+
+
+def test_daily_coros_sync_is_bounded_and_skips_completed_day(
+    monkeypatch, tmp_path, clean_database
+):
+    from health_agent.pilot import coros_auth, coros_sync
+
+    store = PilotStore(clean_database)
+    calls = []
+
+    class Auth:
+        def __init__(self, root):
+            self.root = root
+
+        def status(self):
+            return True
+
+    def sync(store_arg, auth, profile, root, since, until):
+        calls.append((auth.root, root, since, until))
+        store_arg.put(
+            profile,
+            "training",
+            "sync_run",
+            "daily-test",
+            {"status": "success", "until": until.isoformat()},
+            at=NOW,
+        )
+        return {"stored": 0}
+
+    monkeypatch.setattr(coros_auth, "CorosOAuth", Auth)
+    monkeypatch.setattr(coros_sync, "run_coros_sync", sync)
+    auth_root = tmp_path / "coros"
+
+    assert maybe_coros_sync(store, DEFAULT_PROFILE_ID, auth_root, NOW)
+    assert not maybe_coros_sync(store, DEFAULT_PROFILE_ID, auth_root, NOW)
+    assert calls == [(auth_root, auth_root, NOW.date() - timedelta(days=6), NOW.date())]
 
 
 def test_urgent_input_preserved_without_coach(tmp_path, clean_database):

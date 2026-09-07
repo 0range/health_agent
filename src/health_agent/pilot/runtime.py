@@ -6,10 +6,11 @@ import tempfile
 import time
 from collections.abc import Iterable
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from health_agent.automation.storage import GlobalRunLock, private_directory
 from health_agent.config import Settings
@@ -36,7 +37,11 @@ from health_agent.telegram.actions import (
 from health_agent.telegram.api import TelegramAPIError, TelegramBotAPI
 from health_agent.telegram.messenger import TelegramMessenger
 from health_agent.telegram.review import TelegramReviewActions
-from health_agent.telegram.service import TelegramLongPoller, TelegramUpdateService
+from health_agent.telegram.service import (
+    HELP_TEXT,
+    TelegramLongPoller,
+    TelegramUpdateService,
+)
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 from health_agent.telegram.types import (
     AttachmentProvenance,
@@ -48,10 +53,13 @@ from health_agent.vault import FileVault
 from health_agent.visits.telegram import DatabaseVisitCommands
 
 HELP = {
-    "sleep": "Помогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку. Можно голосом.\n/дневник — записи\n/итоги — разбор недели\n/утро 09:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
+    "sleep": HELP_TEXT
+    + "\n\nПомогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку. Можно голосом.\n/дневник — записи\n/итоги — разбор недели\n/утро 09:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
     "food": "Присылай фото еды с подписью или /ел 12:00 обед. Сохраню приём, оценю тарелку и напомню о следующем.\n/время 12:30 — исправить время\n/позже 30 — отложить\n/пропустить — пропустить напоминание\n/сегодня · /неделя — дневник\n/напоминания выкл — пауза\n/цели — цели",
     "training": "Здесь годовые ориентиры, план недели и разбор тренировок.\n/год — ориентиры года\n/план — предложить неделю\n/сохранить план — принять предложение\n/итоги — план и факт\n/цели — цели\nПланы остаются здесь, во внешние системы ничего не записываю.",
 }
+
+_MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 @contextmanager
@@ -243,6 +251,45 @@ def telegram_root(settings: Settings, domain: str) -> Path:
     )
 
 
+def maybe_coros_sync(
+    store: PilotStore, profile_id: UUID, auth_root: Path, now: datetime
+) -> bool:
+    """Archive a small recent COROS window once per local day when authorized."""
+    from health_agent.pilot.coros_auth import CorosOAuth
+    from health_agent.pilot.coros_sync import run_coros_sync
+
+    today = now.astimezone(_MOSCOW).date()
+
+    def already_synced() -> bool:
+        for run in store.list(profile_id, "training", "sync_run"):
+            if run.payload.get("status") != "success":
+                continue
+            try:
+                if datetime.fromisoformat(str(run.payload["until"])).date() >= today:
+                    return True
+            except (KeyError, TypeError, ValueError):
+                continue
+        return False
+
+    if already_synced():
+        return False
+    auth = CorosOAuth(auth_root)
+    if not auth.status():
+        return False
+    with _pilot_lock(auth.root / "sync.lock"):
+        if already_synced():
+            return False
+        run_coros_sync(
+            store,
+            auth,
+            profile_id,
+            auth.root,
+            today - timedelta(days=6),
+            today,
+        )
+    return True
+
+
 def build_coach(
     settings: Settings, store: PilotStore, profile_id: UUID, domain: str
 ) -> tuple[Coach, PilotBrain]:
@@ -267,8 +314,13 @@ def build_coach(
         from health_agent.pilot.training import TrainingCoach
 
         auth = CorosOAuth(Path("data/pilot/training/coros") / str(profile_id))
-        source = CorosReadClient(CorosHTTPTransport(auth)) if auth.status() else None
-        return TrainingCoach(store, brain, activity_source=source), brain
+
+        def source(profile: UUID, since: datetime, until: datetime):
+            with _pilot_lock(auth.root / "sync.lock"):
+                return CorosReadClient(CorosHTTPTransport(auth))(profile, since, until)
+
+        activity_source = source if auth.status() else None
+        return TrainingCoach(store, brain, activity_source=activity_source), brain
     raise ValueError("unknown_pilot_domain")
 
 
@@ -338,6 +390,13 @@ def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
                 try:
                     report = poller.poll_once()
                     now = datetime.now(UTC)
+                    if domain == "training":
+                        maybe_coros_sync(
+                            store,
+                            profile_id,
+                            Path("data/pilot/training/coros") / str(profile_id),
+                            now,
+                        )
                     dispatch_notices(coach, store, messenger, profile_id, domain, now)
                     if report.blocked_until is not None:
                         time.sleep(
