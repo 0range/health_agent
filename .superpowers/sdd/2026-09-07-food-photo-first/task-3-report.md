@@ -10,6 +10,20 @@
 
 ## Verification
 
+Strict RED-before-production-code was not performed; tests and implementation were
+initially written in the same edit. The first focused run after that edit did fail and
+provided an intermediate RED signal:
+
+```text
+$ .venv/bin/pytest -q tests/pilot/test_training.py
+.F....FFF......                                                          [100%]
+4 failed, 11 passed in 0.38s
+```
+
+Those failures identified compatibility gaps for accepted-plan Sunday reflection,
+legacy revision prompt fields, and cached provider-failure reflection. After correcting
+them, the final GREEN verification was:
+
 ```text
 $ .venv/bin/pytest -q tests/pilot/test_training.py
 ................                                                         [100%]
