@@ -79,7 +79,9 @@ class PilotBrain:
             if urgent is not None:
                 return urgent
         if self.store is not None:
-            payload = {**payload, **self._profile_context()}
+            payload = {**payload, **self._profile_context(
+                focused_sleep=self.domain == "sleep" and payload.get("focused_sleep") is True
+            )}
         encoded = json.dumps(payload, ensure_ascii=False, default=str)
         if len(encoded) > 90_000:
             raise ValueError("pilot_context_too_large")
@@ -162,7 +164,7 @@ class PilotBrain:
             )
         return output
 
-    def _profile_context(self) -> dict[str, Any]:
+    def _profile_context(self, *, focused_sleep: bool = False) -> dict[str, Any]:
         assert self.store is not None
         result: dict[str, Any] = {
             "shared_goals_not_evidence": [
@@ -174,6 +176,8 @@ class PilotBrain:
         result["source_priorities"] = next(
             (r.payload for r in policies if r.source_key == "source-priorities"), {}
         )
+        if focused_sleep:
+            return result
         weights = self.store.list(self.profile_id, "shared", "weight", limit=30)
         result["apple_weight_history"] = [
             {

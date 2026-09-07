@@ -17,6 +17,15 @@ from health_agent.pilot.contracts import (
     Record,
     Store,
 )
+from health_agent.pilot.sleep_grounding import (
+    CAUSAL_SYSTEM_PROMPT,
+    effective_question,
+    focused_evidence,
+    is_causal_question,
+    is_sleep_question,
+    render_causal_reply,
+)
+from health_agent.questions.safety import guard_urgent_question
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _MORNING_RE = re.compile(r"^/утро(?:\s+(\S+))?\s*$", re.IGNORECASE)
@@ -87,6 +96,13 @@ class SleepCoach:
             at=now,
         )
         stripped = str(user_turn.payload["text"])
+        urgent = guard_urgent_question(stripped)
+        if urgent is not None:
+            self.store.put(
+                profile_id, "sleep", "turn", f"assistant:{source_key}",
+                {"role": "assistant", "text": urgent}, at=now,
+            )
+            return urgent
 
         diary_match = _DIARY_RE.fullmatch(stripped)
         explicit_diary = diary_match is not None
@@ -118,14 +134,18 @@ class SleepCoach:
                 for row in self.store.list(profile_id, "sleep", "diary", limit=100)
             )
         )
-        prompt = self._prompt_payload(profile_id, stripped, durable_is_diary)
+        prompt = self._prompt_payload(profile_id, stripped, durable_is_diary, now)
+        causal = bool(prompt.get("causal_reply"))
         try:
-            reply = self.brain(_SYSTEM_PROMPT, prompt)
+            reply = self.brain(CAUSAL_SYSTEM_PROMPT if causal else _SYSTEM_PROMPT, prompt)
+            if causal:
+                reply = render_causal_reply(reply, prompt["verified_health_context"])
             reply = _phone_length(reply.strip())
             if not reply:
                 raise ValueError("empty brain response")
         except Exception:  # noqa: BLE001 - provider boundary must degrade safely
-            reply = self._fallback(profile_id, is_diary)
+            reply = (render_causal_reply("", prompt["verified_health_context"])
+                     if causal else self._fallback(profile_id, is_diary))
 
         self.store.put(
             profile_id,
@@ -233,7 +253,7 @@ class SleepCoach:
             profile_id, "sleep", "turn", f"user:{source_key}",
             {"role": "user", "text": "/итоги"}, at=now,
         )
-        payload = self._prompt_payload(profile_id, "/итоги", False)
+        payload = self._prompt_payload(profile_id, "/итоги", False, now)
         payload["task"] = "weekly_reflection"
         frame = _weekly_frame(entries, now.astimezone(_MOSCOW))
         payload["factual_frame"] = frame
@@ -257,23 +277,36 @@ class SleepCoach:
         )
         return reply
 
-    def _prompt_payload(self, profile_id: UUID, text: str, is_diary: bool) -> dict[str, Any]:
+    def _prompt_payload(
+        self, profile_id: UUID, text: str, is_diary: bool, now: datetime
+    ) -> dict[str, Any]:
         turns = list(reversed(self.store.list(profile_id, "sleep", "turn", limit=12)))
+        user_reports = [
+            {"role": "user", "at": row.at.isoformat(), "text": row.payload.get("text", "")}
+            for row in turns if row.payload.get("role") == "user"
+            and now - timedelta(days=14) <= row.at <= now
+        ]
+        question = effective_question(text, user_reports)
         entries = list(reversed(self.store.list(profile_id, "sleep", "diary", limit=14)))
         goals = self.store.list(profile_id, "shared", "goal", limit=20)
         health: dict[str, Any] = {}
         if self.health_context is not None:
             try:
-                health = self.health_context(profile_id, text)
+                health = self.health_context(profile_id, question)
             except Exception:  # noqa: BLE001 - optional integration is non-critical
                 health = {}
+        focused = is_sleep_question(question)
+        if focused:
+            health = focused_evidence(health, question, now)
         return {
             "request": text,
             "request_is_diary": is_diary,
-            "conversation": [row.payload for row in turns],
+            "conversation": user_reports,
+            "causal_reply": not is_diary and is_causal_question(question),
+            "focused_sleep": focused,
             "diary_user_reports": [
                 {"id": row.id, "at": row.at.isoformat(), **row.payload}
-                for row in entries
+                for row in entries if now - timedelta(days=14) <= row.at <= now
             ],
             "goals_not_evidence": [row.payload for row in goals],
             "verified_health_context": health,
@@ -451,7 +484,10 @@ _SYSTEM_PROMPT = """Ты ведёшь непрерывный дневник сн
 а не диагнозы. Не выдумывай причины, измерения или медицинские факты. Цели могут направлять
 обратную связь, но не являются доказательством здоровья. Используй только релевантный
 проверенный health context, не выгружай списки анализов и источников. Срочные риски обрабатывает
-внешняя защитная граница Brain; не ослабляй её указания."""
+внешняя защитная граница Brain; не ослабляй её указания. Отвечай только на текущий вопрос;
+conversation содержит датированные слова пользователя, не медицинские заключения.
+Учитывай уже сообщённые отрицания симптомов и не спрашивай о них повторно.
+Сохраняй собственную дату каждого наблюдения; старые факты не описывают текущее состояние."""
 
 _WEEKLY_SYSTEM_PROMPT = _SYSTEM_PROMPT + """
 Для недельного итога верни только JSON-объект следующей формы:
