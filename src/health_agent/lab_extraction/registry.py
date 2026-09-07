@@ -118,8 +118,32 @@ _ANALYTES = (
     ),
     ("progesterone", "Progesterone|Прогестерон", "nmol/L|ng/mL"),
     ("cortisol", "Cortisol|Кортизол", "nmol/L|ug/dL"),
-    ("insulin", "Insulin|Инсулин", "uIU/mL|pmol/L"),
+    ("insulin", "Insulin|Инсулин", "uIU/mL|pmol/L|uU/mL"),
     ("psa", "PSA|ПСА|Простатический специфический антиген", "ng/mL"),
+    # Canonical identities for explicit source-reviewed corrections only.
+    # Display labels live in lab_dashboard; do not broaden PDF source aliases.
+    ("indirect_bilirubin", "", "umol/L|mg/dL"),
+    ("thrombocrit", "", "%"),
+    ("myelocytes", "", "%"),
+    ("metamyelocytes", "", "%"),
+    ("band_neutrophils", "", "%"),
+    ("segmented_neutrophils", "", "%"),
+    ("reticulocytes", "", "%"),
+    ("immature_reticulocyte_fraction", "", "%"),
+    ("low_fluorescence_reticulocyte_fraction", "", "%"),
+    ("medium_fluorescence_reticulocyte_fraction", "", "%"),
+    ("high_fluorescence_reticulocyte_fraction", "", "%"),
+    ("monomeric_prolactin_recovery", "", "%"),
+    ("salivary_free_testosterone", "", "ng/mL"),
+    ("salivary_cortisone", "", "ng/mL"),
+    ("salivary_17oh_progesterone", "", "ng/mL"),
+    ("salivary_free_progesterone", "", "ng/mL"),
+    ("salivary_androstenedione", "", "ng/mL"),
+    ("salivary_dehydroepiandrosterone", "", "ng/mL"),
+    ("salivary_free_estradiol", "", "pg/mL"),
+    ("urine_squamous_epithelial_cells", "", "cells/uL"),
+    ("urine_white_blood_cells", "", "cells/uL"),
+    ("urine_red_blood_cells", "", "cells/uL"),
 )
 
 _UNIT_ALIASES = {
@@ -160,6 +184,7 @@ _NAMES = {
     name_key(alias): name
     for name, aliases, _ in _ANALYTES
     for alias in (name, *aliases.split("|"))
+    if alias
 }
 _UNITS = {
     unit_key(alias): canonical

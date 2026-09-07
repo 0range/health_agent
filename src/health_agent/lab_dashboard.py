@@ -65,6 +65,31 @@ _LABELS = {
     name: next((a for a in aliases.split("|") if any("А" <= c <= "я" for c in a)), name)
     for name, aliases, _ in _ANALYTES
 } | {series.canonical_name: series.label for series in DEFAULT_SERIES}
+_REVIEWED_ANALYTE_LABELS = {
+    "indirect_bilirubin": "Билирубин непрямой",
+    "thrombocrit": "Тромбокрит",
+    "myelocytes": "Миелоциты",
+    "metamyelocytes": "Метамиелоциты",
+    "band_neutrophils": "Нейтрофилы палочкоядерные",
+    "segmented_neutrophils": "Нейтрофилы сегментоядерные",
+    "reticulocytes": "Ретикулоциты",
+    "immature_reticulocyte_fraction": "Незрелые ретикулоциты",
+    "low_fluorescence_reticulocyte_fraction": "Ретикулоциты с низкой флуоресценцией",
+    "medium_fluorescence_reticulocyte_fraction": "Ретикулоциты со средней флуоресценцией",
+    "high_fluorescence_reticulocyte_fraction": "Ретикулоциты с высокой флуоресценцией",
+    "monomeric_prolactin_recovery": "Восстановление мономерного пролактина после ПЭГ",
+    "salivary_free_testosterone": "Тестостерон свободный (слюна)",
+    "salivary_cortisone": "Кортизон (слюна)",
+    "salivary_17oh_progesterone": "17-ОН-прогестерон (слюна)",
+    "salivary_free_progesterone": "Прогестерон свободный (слюна)",
+    "salivary_androstenedione": "Андростендион (слюна)",
+    "salivary_dehydroepiandrosterone": "Дегидроэпиандростерон (слюна)",
+    "salivary_free_estradiol": "Эстрадиол свободный (слюна)",
+    "urine_squamous_epithelial_cells": "Плоский эпителий (моча)",
+    "urine_white_blood_cells": "Лейкоциты (моча)",
+    "urine_red_blood_cells": "Эритроциты (моча)",
+}
+_LABELS.update(_REVIEWED_ANALYTE_LABELS)
 _MAX_SERIES = 80
 _OWNER = "health-agent:lab-history:v1"
 _PRE_REGISTRY_EXPANSION_UNITS = frozenset(
@@ -94,12 +119,17 @@ def _history_cte(
     legacy: bool = False,
     pre_registry_expansion: bool = False,
     pre_partial_recovery: bool = False,
+    pre_reviewed_analytes: bool = False,
 ) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
     entries = []
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
+            if (pre_reviewed_analytes or pre_partial_recovery) and (
+                name in _REVIEWED_ANALYTE_LABELS or unit in {"uU/mL", "cells/uL"}
+            ):
+                continue
             if pre_partial_recovery and (
                 name == "monomeric_prolactin" or unit == "mU/L"
             ):
@@ -168,6 +198,7 @@ def lab_card_specs(
     _russian_comparison: bool = True,
     _pre_registry_expansion: bool = False,
     _pre_partial_recovery: bool = False,
+    _pre_reviewed_analytes: bool = False,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     russian_comparison = _russian_comparison and not _legacy
@@ -185,6 +216,7 @@ def lab_card_specs(
             legacy=_legacy,
             pre_registry_expansion=_pre_registry_expansion,
             pre_partial_recovery=_pre_partial_recovery,
+            pre_reviewed_analytes=_pre_reviewed_analytes,
         )
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
@@ -216,6 +248,7 @@ LIMIT 1000""".format(
                 legacy=_legacy,
                 pre_registry_expansion=_pre_registry_expansion,
                 pre_partial_recovery=_pre_partial_recovery,
+                pre_reviewed_analytes=_pre_reviewed_analytes,
             )
             + (
                 """SELECT result_date AS date,
@@ -255,8 +288,12 @@ def _owned_query_versions(
 ) -> tuple[tuple[LabCardSpec, ...], ...]:
     """Exact known generators only, including the pre-recovery registry/status."""
     return tuple(
-        lab_card_specs(profile_id, series, _pre_partial_recovery=pre_partial, **flags)
-        for pre_partial in (False, True)
+        lab_card_specs(profile_id, series, **version, **flags)
+        for version in (
+            {},
+            {"_pre_reviewed_analytes": True},
+            {"_pre_partial_recovery": True},
+        )
         for flags in (
             {},
             {"_legacy": True},
