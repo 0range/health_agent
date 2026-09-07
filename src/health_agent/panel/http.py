@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.exc import SQLAlchemyError
 
 from health_agent.panel.models import (
+    BotStatus,
     ConnectorCard,
     DataCoverage,
     HealthcheckSnapshot,
@@ -856,16 +857,18 @@ def _render_healthcheck(snapshot: HealthcheckSnapshot) -> str:
         profiles_html = '<p class="muted">Профилей пока нет.</p>'
     else:
         profiles_html = "".join(
-            _render_healthcheck_profile(item.panel, item.coverage)
+            _render_healthcheck_profile(item.panel, item.coverage, item.bots)
             for item in snapshot.profiles
         )
     content = f"""<a class="back" href="/">← Все профили</a><p class="eyebrow">Локальная диагностика</p>
 <h1>Проверка состояния</h1><p class="lede">Только сохранённое локальное состояние; внешние сервисы не опрашиваются.</p>
-<p class="muted">Проверено: {escape(_human_time(snapshot.checked_at))}</p>{profiles_html}"""
+<p class="muted">Проверено (Москва): {escape(_moscow_time(snapshot.checked_at))}</p>{profiles_html}"""
     return _page("Health Agent — проверка состояния", content)
 
 
-def _render_healthcheck_profile(panel: ProfilePanel, coverage: DataCoverage) -> str:
+def _render_healthcheck_profile(
+    panel: ProfilePanel, coverage: DataCoverage, bots: tuple[BotStatus, ...]
+) -> str:
     cards = "".join(
         _render_card(card, panel.profile.id, index)
         for index, card in enumerate(
@@ -893,8 +896,28 @@ def _render_healthcheck_profile(panel: ProfilePanel, coverage: DataCoverage) -> 
         )
     else:
         data = _render_coverage(coverage)
+    bot_cards = "".join(_render_bot_status(bot) for bot in bots)
     return f"""<section><h2>Профиль: {escape(panel.profile.name)}</h2>
-<div class="cards">{cards}{data}</div></section>"""
+<div class="cards">{bot_cards}{cards}{data}</div></section>"""
+
+
+def _render_bot_status(bot: BotStatus) -> str:
+    labels = {
+        "fresh": ("connected", "Опрос свежий"),
+        "stale": ("action_required", "Опрос устарел"),
+        "future": ("action_required", "Некорректное время"),
+        "not_bound": ("action_required", "Не привязан"),
+        "unknown": ("action_required", "Нет отметки опроса"),
+        "unavailable": ("action_required", "Недоступно"),
+    }
+    state, label = labels.get(bot.status, ("action_required", "Недоступно"))
+    configured = "да" if bot.configured else "нет"
+    bound = "да" if bot.bound else "нет"
+    poll = "нет данных" if bot.last_poll_at is None else _moscow_time(bot.last_poll_at)
+    return f"""<article class="card" data-state="{state}"><div class="card-head">
+<h3>Telegram — {escape(bot.label)}</h3><span class="status-pill">{escape(label)}</span></div>
+<p>Настроен: {configured} · Привязан к профилю: {bound}</p>
+<p class="muted">Последний опрос (Москва): {escape(poll)}</p></article>"""
 
 
 def _render_coverage(coverage: DataCoverage) -> str:
@@ -906,14 +929,41 @@ def _render_coverage(coverage: DataCoverage) -> str:
         if coverage.latest_received_at is None
         else _human_time(coverage.latest_received_at)
     )
+    queue = (
+        "Локальная очередь временно недоступна."
+        if coverage.extraction_status == "unknown"
+        and coverage.extraction_queued_count is None
+        else f"Очередь страниц: {coverage.extraction_queued_count or 0} · В работе: {coverage.extraction_running_count or 0} · Ожидают облако: {coverage.extraction_waiting_cloud_count or 0} · Обрабатываются облаком: {coverage.extraction_cloud_in_flight_count or 0} · Требуют внимания: {coverage.extraction_needs_attention_count or 0}"
+    )
+    if coverage.pilot_status == "unknown" and coverage.coros_activity_count is None:
+        pilot = "<p>Источники COROS и Apple временно недоступны.</p>"
+    else:
+        coros_sync = (
+            "нет данных"
+            if coverage.coros_last_sync_at is None
+            else _moscow_time(coverage.coros_last_sync_at)
+        )
+        apple_import = (
+            "нет данных"
+            if coverage.apple_imported_at is None
+            else _moscow_time(coverage.apple_imported_at)
+        )
+        pilot = f"""<p>COROS: {coverage.coros_activity_count or 0} тренировок, диапазон {escape(day(coverage.coros_first_date))} — {escape(day(coverage.coros_latest_date))}; последняя синхронизация (Москва): {escape(coros_sync)}.</p>
+<p>Apple Health — разовый импорт: вес {coverage.apple_weight_count or 0}, диапазон {escape(day(coverage.apple_weight_first_date))} — {escape(day(coverage.apple_weight_latest_date))}; кандидаты тренировок {coverage.apple_workout_candidate_count or 0} (не добавлены к COROS); импорт (Москва): {escape(apple_import)}.</p>"""
     return f"""<article class="card" data-state="connected"><div class="card-head"><h3>Покрытие данных</h3>
 <span class="status-pill">Доступно</span></div>
 <p>Последняя дата данных WHOOP: {escape(day(coverage.latest_whoop_date))}</p>
 <p>Последняя дата сдачи анализа: {escape(day(coverage.latest_lab_collected_date))}</p>
 <p>Последняя дата выдачи анализа: {escape(day(coverage.latest_lab_issued_date))}</p>
 <p class="muted">Последний файл получен: {escape(received)}</p>
+<p>{escape(queue)}</p>
 <p>Ожидают извлечения: {coverage.pending_extraction_count or 0} · Требуют проверки: {coverage.needs_review_count or 0} · Проверены: {coverage.verified_count or 0}</p>
+{pilot}
 </article>"""
+
+
+def _moscow_time(value: datetime) -> str:
+    return _human_time(value.astimezone(ZoneInfo("Europe/Moscow")))
 
 
 def _human_time(value: datetime) -> str:

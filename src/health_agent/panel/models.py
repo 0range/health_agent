@@ -92,6 +92,36 @@ class DataCoverage:
     pending_extraction_count: int | None = None
     needs_review_count: int | None = None
     verified_count: int | None = None
+    extraction_status: str = "unknown"
+    pilot_status: str = "unknown"
+    extraction_queued_count: int | None = None
+    extraction_running_count: int | None = None
+    extraction_waiting_cloud_count: int | None = None
+    extraction_cloud_in_flight_count: int | None = None
+    extraction_needs_attention_count: int | None = None
+    coros_activity_count: int | None = None
+    coros_first_date: date | None = None
+    coros_latest_date: date | None = None
+    coros_last_sync_at: datetime | None = None
+    apple_weight_count: int | None = None
+    apple_weight_first_date: date | None = None
+    apple_weight_latest_date: date | None = None
+    apple_workout_candidate_count: int | None = None
+    apple_workout_first_date: date | None = None
+    apple_workout_latest_date: date | None = None
+    apple_imported_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BotStatus:
+    """Safe local state for one Telegram bot process."""
+
+    domain: str
+    label: str
+    status: str
+    configured: bool
+    bound: bool
+    last_poll_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +130,7 @@ class HealthcheckProfile:
 
     panel: ProfilePanel
     coverage: DataCoverage
+    bots: tuple[BotStatus, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

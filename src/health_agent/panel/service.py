@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -36,6 +37,7 @@ from health_agent.google_sheets.stores import (
 )
 from health_agent.models import Profile
 from health_agent.panel.models import (
+    BotStatus,
     ConnectorCard,
     DataCoverage,
     HealthcheckProfile,
@@ -99,6 +101,10 @@ class ConnectorStatusReader(Protocol):
 
 class DataCoverageReader(Protocol):
     def coverage(self, profile_id: UUID) -> DataCoverage: ...
+
+
+class BotHealthReader(Protocol):
+    def statuses(self, profile_id: UUID) -> tuple[BotStatus, ...]: ...
 
 
 class DriveConfigurationPort(ConnectorStatusReader, Protocol):
@@ -468,6 +474,7 @@ class PanelService:
         destinations: tuple[PanelDestination, ...] = (),
         destination_factory: DestinationFactory | None = None,
         healthcheck_reader: DataCoverageReader | None = None,
+        bot_health_reader: BotHealthReader | None = None,
         workflows: WorkflowPort | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -477,6 +484,7 @@ class PanelService:
         self._destinations = destinations
         self._destination_factory = destination_factory
         self._healthcheck_reader = healthcheck_reader
+        self._bot_health_reader = bot_health_reader
         self._clock = clock
         self._workflows = workflows
 
@@ -487,12 +495,18 @@ class PanelService:
         return self._profiles.create(_profile_name(name))
 
     def profile(self, profile_id: UUID) -> ProfilePanel:
+        return self._profile(profile_id, include_legacy_telegram=True)
+
+    def _profile(
+        self, profile_id: UUID, *, include_legacy_telegram: bool
+    ) -> ProfilePanel:
         profile = self._profiles.get(profile_id)
         if profile is None:
             raise ProfileNotFoundError(str(profile_id))
         cards = tuple(
             card
             for reader in self._readers
+            if include_legacy_telegram or reader.connector != "telegram"
             for card in self._safe_cards(reader, profile_id)
         )
         drive_cards: tuple[ConnectorCard, ...]
@@ -551,14 +565,24 @@ class PanelService:
         profiles = self.list_profiles()
         results: list[HealthcheckProfile] = []
         for profile in profiles:
-            panel = self.profile(profile.id)
+            # The legacy Telegram adapter initializes missing private state. The
+            # healthcheck instead uses the strictly read-only per-bot reader.
+            panel = self._profile(profile.id, include_legacy_telegram=False)
             coverage = DataCoverage(status="unknown")
             if self._healthcheck_reader is not None:
                 try:
                     coverage = self._healthcheck_reader.coverage(profile.id)
                 except Exception:  # noqa: BLE001,S110 - never expose local details.
                     pass
-            results.append(HealthcheckProfile(panel=panel, coverage=coverage))
+            bots: tuple[BotStatus, ...] = ()
+            if self._bot_health_reader is not None:
+                try:
+                    bots = self._bot_health_reader.statuses(profile.id)
+                except Exception:  # noqa: BLE001,S110 - local details stay private.
+                    pass
+            results.append(
+                HealthcheckProfile(panel=panel, coverage=coverage, bots=bots)
+            )
         return HealthcheckSnapshot(checked_at=self._clock(), profiles=tuple(results))
 
     @staticmethod
@@ -582,10 +606,12 @@ class PanelService:
 def build_panel_service(settings: Settings) -> PanelService:
     """Build production adapters without invoking OAuth, sync, or remote APIs."""
     engine = build_engine(settings)
+    clock = lambda: datetime.now(UTC)
     from health_agent.google_calendar.composition import (
         CalendarStatusReader,
         build_publication_service,
     )
+
     publication = build_publication_service(settings, engine)
     sessions = lambda: session_scope(engine)
     gmail_profiles = LocalGmailProfileStore(settings.gmail_root)
@@ -656,6 +682,13 @@ def build_panel_service(settings: Settings) -> PanelService:
         return (*direct, *sheets)
 
     from health_agent.panel.healthcheck import HealthcheckReader
+    from health_agent.panel.pilot_health import TelegramBotHealthReader
+
+    pilot_roots = {
+        "main": settings.telegram_root,
+        "food": Path("data/pilot/food/telegram"),
+        "training": Path("data/pilot/training/telegram"),
+    }
 
     return PanelService(
         SqlAlchemyProfileRepository(sessions),
@@ -673,8 +706,22 @@ def build_panel_service(settings: Settings) -> PanelService:
         drive=DriveConfiguration(drive_profiles, drive_tokens, drive_state),
         destinations=(PanelDestination("metabase", "Дашборды", settings.metabase_url),),
         destination_factory=sheets_destination,
-        healthcheck_reader=HealthcheckReader(sessions),
+        healthcheck_reader=HealthcheckReader(sessions, clock=clock),
+        bot_health_reader=TelegramBotHealthReader(
+            {
+                "main": settings.telegram_state_file,
+                "food": pilot_roots["food"] / "state.sqlite3",
+                "training": pilot_roots["training"] / "state.sqlite3",
+            },
+            {
+                "main": settings.effective_telegram_token_file,
+                "food": pilot_roots["food"] / "bot-token",
+                "training": pilot_roots["training"] / "bot-token",
+            },
+            clock=clock,
+        ),
         workflows=DatabaseWorkflowAdapter(sessions, publication),
+        clock=clock,
     )
 
 

@@ -20,6 +20,7 @@ from health_agent.models import (
 from health_agent.panel.healthcheck import HealthcheckReader
 from health_agent.panel.http import PanelApplication
 from health_agent.panel.models import (
+    BotStatus,
     ConnectorCard,
     DataCoverage,
     HealthcheckProfile,
@@ -28,6 +29,7 @@ from health_agent.panel.models import (
     ProfileSummary,
 )
 from health_agent.panel.service import PanelService, SqlAlchemyProfileRepository
+from health_agent.pilot.storage import PilotRecord
 from health_agent.whoop.models import WhoopConnection, WhoopCycle, WhoopRawRecord
 
 FIRST = UUID("10000000-0000-0000-0000-000000000001")
@@ -72,7 +74,17 @@ class SyntheticHealthService:
                         pending_extraction_count=2,
                         needs_review_count=3,
                         verified_count=7,
+                        extraction_queued_count=2,
+                        extraction_needs_attention_count=1,
+                        coros_activity_count=4,
+                        coros_first_date=date(2026, 8, 1),
+                        coros_latest_date=date(2026, 9, 4),
+                        apple_weight_count=3,
+                        apple_weight_first_date=date(2026, 7, 1),
+                        apple_weight_latest_date=date(2026, 8, 1),
+                        apple_workout_candidate_count=2,
                     ),
+                    (BotStatus("main", "Основной", "fresh", False, True, CHECKED),),
                 ),
                 HealthcheckProfile(second, DataCoverage("empty")),
             ),
@@ -99,6 +111,10 @@ def test_healthcheck_renders_isolated_two_profile_coverage_and_escapes_html() ->
     assert "Ожидают извлечения: 2" in html
     assert "Требуют проверки: 3" in html
     assert "Проверены: 7" in html
+    assert "Основной" in html and "Опрос свежий" in html
+    assert "COROS: 4" in html
+    assert "Apple Health — разовый импорт" in html
+    assert "Очередь страниц: 2" in html and "Требуют внимания: 1" in html
     second = html.split("Профиль B", 1)[1]
     assert "2026-09-03" not in second
     assert "WHOOP не подключён" in second
@@ -189,6 +205,56 @@ def test_reader_aggregates_real_rows_and_isolates_two_profiles(
             statuses=(ReviewStatus.NEEDS_REVIEW, ReviewStatus.VERIFIED),
             queued=True,
         )
+        database.add_all(
+            (
+                PilotRecord(
+                    profile_id=FIRST,
+                    domain="training",
+                    kind="activity",
+                    source_key="coros:1",
+                    at=datetime(2026, 9, 5, tzinfo=UTC),
+                    payload={"date": "2026-09-02"},
+                ),
+                PilotRecord(
+                    profile_id=FIRST,
+                    domain="training",
+                    kind="activity",
+                    source_key="coros:2",
+                    at=datetime(2026, 9, 5, tzinfo=UTC),
+                    payload={"started_at": "2026-09-04T09:00:00+03:00"},
+                ),
+                PilotRecord(
+                    profile_id=FIRST,
+                    domain="shared",
+                    kind="weight",
+                    source_key="apple:1",
+                    at=datetime(2026, 8, 1, tzinfo=UTC),
+                    payload={
+                        "source": "apple_health",
+                        "recorded_at": "2026-07-30T08:00:00+03:00",
+                    },
+                ),
+                PilotRecord(
+                    profile_id=FIRST,
+                    domain="training",
+                    kind="apple_workout",
+                    source_key="apple:w",
+                    at=datetime(2026, 8, 2, tzinfo=UTC),
+                    payload={
+                        "source": "apple_health",
+                        "started_at": "2026-08-01T08:00:00+03:00",
+                    },
+                ),
+                PilotRecord(
+                    profile_id=SECOND,
+                    domain="training",
+                    kind="activity",
+                    source_key="coros:other",
+                    at=datetime(2026, 9, 5, tzinfo=UTC),
+                    payload={"date": "2026-01-01"},
+                ),
+            )
+        )
         # A classified lab report has useful source dates even before extraction.
         _add_document(
             database,
@@ -229,10 +295,31 @@ def test_reader_aggregates_real_rows_and_isolates_two_profiles(
     assert first.latest_lab_collected_date == date(2026, 9, 1)
     assert first.latest_lab_issued_date == date(2026, 9, 2)
     assert first.latest_received_at == datetime(2026, 9, 5, tzinfo=UTC)
-    assert (first.pending_extraction_count, first.needs_review_count, first.verified_count) == (1, 1, 1)
+    assert (
+        first.pending_extraction_count,
+        first.needs_review_count,
+        first.verified_count,
+    ) == (1, 1, 1)
+    assert first.extraction_queued_count == 1
+    assert first.extraction_needs_attention_count == 0
+    assert (
+        first.coros_activity_count,
+        first.coros_first_date,
+        first.coros_latest_date,
+    ) == (2, date(2026, 9, 2), date(2026, 9, 4))
+    assert (
+        first.apple_weight_count,
+        first.apple_weight_first_date,
+        first.apple_weight_latest_date,
+    ) == (1, date(2026, 7, 30), date(2026, 7, 30))
+    assert first.apple_workout_candidate_count == 1
     assert other.latest_whoop_date == date(2026, 7, 2)
     assert other.latest_lab_collected_date == date(2026, 6, 10)
-    assert (other.pending_extraction_count, other.needs_review_count, other.verified_count) == (0, 1, 0)
+    assert (
+        other.pending_extraction_count,
+        other.needs_review_count,
+        other.verified_count,
+    ) == (0, 1, 0)
 
 
 def test_production_route_executes_read_only_local_sql(clean_database) -> None:
