@@ -15,6 +15,7 @@ from health_agent.lab_extraction.types import (
     MAX_PAGE_CHARACTERS,
     Candidate,
     LocalResult,
+    PartialExtraction,
 )
 
 _FIELDS = {
@@ -120,6 +121,27 @@ def restore_source_name_whitespace(payload: Any, text: str) -> Any:
             updated["source_name"] = _source_string(matches[0].group(), 120)
         restored.append(updated)
     return {"candidates": restored}
+
+
+def validate_partial_candidates(payload: Any, text: str) -> PartialExtraction:
+    if (
+        len(text) > MAX_PAGE_CHARACTERS
+        or not isinstance(payload, dict)
+        or set(payload) != {"candidates"}
+    ):
+        raise ValueError("invalid_candidate_schema")
+    rows = payload["candidates"]
+    if not isinstance(rows, list) or len(rows) > MAX_CANDIDATES:
+        raise ValueError("invalid_candidate_count")
+    accepted: list[Candidate] = []
+    rejected = 0
+    for row in rows:
+        try:
+            restored = restore_source_name_whitespace({"candidates": [row]}, text)
+            accepted.extend(validate_candidates(restored, text))
+        except (TypeError, ValueError):
+            rejected += 1
+    return PartialExtraction(tuple(accepted), rejected)
 
 
 def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:

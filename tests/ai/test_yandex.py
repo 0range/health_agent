@@ -72,6 +72,48 @@ def client_for(completions):
     return SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
 
+def test_yandex_partial_one_call_and_strict_still_rejects():
+    text = "Glucose 5.1 mmol/L"
+    good = json.loads(_candidate_json(text))["candidates"][0]
+    completions = RecordingCompletions(
+        chat_response(
+            json.dumps({"candidates": [good, {**good, "source_value": "99"}]})
+        )
+    )
+    adapter = YandexLabExtractor(
+        settings(yandex_allowed_profile_ids=(UUID(int=1),)),
+        client=client_for(completions),
+    )
+    result = adapter.extract_partial(UUID(int=1), text)
+    assert len(result.candidates) == result.rejected_count == 1
+    assert len(completions.calls) == 1
+    with pytest.raises(ExtractionError, match="cloud_invalid_output"):
+        adapter.extract(UUID(int=1), text)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"finish_reason": "length"},
+        {"finish_reason": "unknown"},
+        {"refusal": "no"},
+        {"tool_calls": [{}]},
+        {"role": "user"},
+    ],
+)
+def test_yandex_partial_invalid_envelope(kwargs):
+    completions = RecordingCompletions(
+        chat_response(_candidate_json("Glucose 5.1 mmol/L"), **kwargs)
+    )
+    adapter = YandexLabExtractor(
+        settings(yandex_allowed_profile_ids=(UUID(int=1),)),
+        client=client_for(completions),
+    )
+    with pytest.raises(ExtractionError):
+        adapter.extract_partial(UUID(int=1), "Glucose 5.1 mmol/L")
+    assert len(completions.calls) == 1
+
+
 def _candidate_json(excerpt, *, value="5.1", flag=None, reference=None):
     return json.dumps(
         {
@@ -228,19 +270,14 @@ def test_question_model_override_is_independent_from_lab_model():
         )
         == ()
     )
-    YandexResponsesResponder(
-        configured, client=client_for(question_calls)
-    ).respond(
+    YandexResponsesResponder(configured, client=client_for(question_calls)).respond(
         profile_id=profile_id,
         question="Synthetic?",
         context=_question_context(profile_id),
     )
 
     assert lab_calls.calls[0]["model"] == "gpt://synthetic-folder/lab-model"
-    assert (
-        question_calls.calls[0]["model"]
-        == "gpt://synthetic-folder/question-model"
-    )
+    assert question_calls.calls[0]["model"] == "gpt://synthetic-folder/question-model"
 
 
 def test_question_model_falls_back_to_lab_model():

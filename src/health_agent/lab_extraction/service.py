@@ -22,6 +22,7 @@ from health_agent.lab_extraction.types import (
     Candidate,
     DocumentSnapshot,
     ExtractionError,
+    PartialExtraction,
 )
 from health_agent.lab_extraction.validation import parse_local
 
@@ -161,16 +162,27 @@ class LabExtractionService:
                     if not reserved:
                         continue
                     requests += 1
-                    candidates = self.cloud.extract(profile_id, source_text)
+                    partial_extract = getattr(self.cloud, "extract_partial", None)
+                    partial = (
+                        partial_extract(profile_id, source_text)
+                        if callable(partial_extract)
+                        else PartialExtraction(
+                            self.cloud.extract(profile_id, source_text), 0
+                        )
+                    )
                     inserted += self.queue.publish(
                         claim,
                         source_text,
-                        candidates,
+                        partial.candidates,
                         cloud=True,
+                        rejected_count=partial.rejected_count,
                         cloud_method=(
-                            "yandex_structured_name_ws_v2"
-                            if self.settings.ai_provider == "yandex"
-                            else "openai_structured_name_ws_v2"
+                            self.settings.ai_provider
+                            + (
+                                "_structured_partial_v3"
+                                if callable(partial_extract)
+                                else "_structured_name_ws_v2"
+                            )
                         ),
                     )
                 except ExtractionError as error:

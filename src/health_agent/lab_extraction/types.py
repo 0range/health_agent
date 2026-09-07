@@ -49,6 +49,8 @@ SAFE_CODES = frozenset(
         "cloud_unknown_acknowledged",
         "cloud_incomplete",
         "cloud_invalid_output",
+        "cloud_partial_output",
+        "cached_import_invalid_state",
         "cloud_refused",
         "unknown_retry_requires_acknowledgment",
     ]
@@ -89,6 +91,12 @@ class Candidate:
 class LocalResult:
     candidates: tuple[Candidate, ...]
     unresolved: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PartialExtraction:
+    candidates: tuple[Candidate, ...]
+    rejected_count: int
 
 
 @dataclass(frozen=True, slots=True)

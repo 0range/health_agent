@@ -18,10 +18,12 @@ from health_agent.lab_extraction.types import (
     MAX_CLOUD_CHARACTERS,
     Candidate,
     ExtractionError,
+    PartialExtraction,
 )
 from health_agent.lab_extraction.validation import (
     restore_source_name_whitespace,
     validate_candidates,
+    validate_partial_candidates,
 )
 from health_agent.questions.models import HealthQuestionContext
 from health_agent.questions.openai import (
@@ -195,6 +197,22 @@ class YandexResponsesResponder(_YandexAdapter):
 
 class YandexLabExtractor(_YandexAdapter):
     def extract(self, profile_id: UUID, text: str) -> tuple[Candidate, ...]:
+        output = _chat_content(self._request(profile_id, text))
+        try:
+            return validate_candidates(
+                restore_source_name_whitespace(json.loads(output), text), text
+            )
+        except (TypeError, ValueError):
+            raise ExtractionError("cloud_invalid_output") from None
+
+    def extract_partial(self, profile_id: UUID, text: str) -> PartialExtraction:
+        output = _chat_content(self._request(profile_id, text))
+        try:
+            return validate_partial_candidates(json.loads(output), text)
+        except (TypeError, ValueError):
+            raise ExtractionError("cloud_invalid_output") from None
+
+    def _request(self, profile_id: UUID, text: str) -> Any:
         self._require_consent(profile_id)
         if not text.strip() or len(text) > MAX_CLOUD_CHARACTERS:
             raise ExtractionError("cloud_input_limit")
@@ -225,10 +243,4 @@ class YandexLabExtractor(_YandexAdapter):
             raise
         except Exception:  # noqa: BLE001 -- transport details stay private
             raise ExtractionError("cloud_outcome_unknown") from None
-        output = _chat_content(response)
-        try:
-            return validate_candidates(
-                restore_source_name_whitespace(json.loads(output), text), text
-            )
-        except (TypeError, ValueError):
-            raise ExtractionError("cloud_invalid_output") from None
+        return response

@@ -111,6 +111,71 @@ def _value_key(name: str, value: str, unit: str | None) -> tuple[str, str, str]:
     return canonical_name(name), name_key(value).replace(",", "."), unit_key(unit or "")
 
 
+def _insert_candidates(
+    session: Session,
+    document_id: UUID,
+    page_number: int,
+    candidates: tuple[Candidate, ...],
+    *,
+    cloud: bool,
+    reason_code: str,
+) -> int:
+    existing = session.scalars(
+        select(LabObservation).where(
+            LabObservation.document_id == document_id,
+            LabObservation.page_number == page_number,
+        )
+    ).all()
+    keys = {
+        _value_key(row.source_name, row.source_value, row.source_unit)
+        for row in existing
+    }
+    lifetime = (
+        session.scalar(
+            select(func.coalesce(func.sum(LabExtractionJob.candidate_count), 0)).where(
+                LabExtractionJob.document_id == document_id,
+                LabExtractionJob.page_number == page_number,
+            )
+        )
+        or 0
+    )
+    # Geometry and original import rows may have no queue counter. Keep both
+    # fences without double-counting rows already represented by job totals.
+    lifetime = max(lifetime, len(existing))
+    inserted = 0
+    for candidate in candidates:
+        key = _value_key(
+            candidate.source_name, candidate.source_value, candidate.source_unit
+        )
+        if key in keys:
+            continue
+        keys.add(key)
+        if lifetime + inserted >= 40:
+            raise ExtractionError("candidate_limit")
+        row = LabObservation(
+            document_id=document_id,
+            page_number=page_number,
+            canonical_name=candidate.canonical_name,
+            source_name=candidate.source_name,
+            source_value=candidate.source_value,
+            source_unit=candidate.source_unit,
+            source_flag=candidate.source_flag,
+            parsed_value=candidate.parsed_value,
+            reference_low=candidate.reference_low,
+            reference_high=candidate.reference_high,
+            reference_text=candidate.reference_text,
+            evidence_excerpt=candidate.evidence_excerpt,
+            confidence=0.4
+            if candidate.canonical_name.startswith("unmapped_")
+            else (0.6 if cloud else 0.8),
+            status=ReviewStatus.NEEDS_REVIEW,
+        )
+        row.review_item = ReviewItem(reason_code=reason_code)
+        session.add(row)
+        inserted += 1
+    return inserted
+
+
 class ExtractionQueue:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -342,12 +407,15 @@ class ExtractionQueue:
         cloud: bool,
         unresolved: bool = False,
         cloud_method: str = "openai_structured",
+        rejected_count: int = 0,
     ) -> int:
         if cloud_method not in {
             "openai_structured",
             "yandex_structured",
             "openai_structured_name_ws_v2",
             "yandex_structured_name_ws_v2",
+            "openai_structured_partial_v3",
+            "yandex_structured_partial_v3",
         }:
             raise ExtractionError("cloud_request_rejected")
         with session_scope(self.engine) as session:
@@ -393,63 +461,25 @@ class ExtractionQueue:
             digest = hashlib.sha256(source_text.encode()).hexdigest()
             if cloud and job.source_text_sha256 != digest:
                 raise ExtractionError("page_evidence_changed")
-            keys = {
-                _value_key(row.source_name, row.source_value, row.source_unit)
-                for row in existing
-            }
-            inserted = 0
-            lifetime_candidates = (
-                session.scalar(
-                    select(
-                        func.coalesce(func.sum(LabExtractionJob.candidate_count), 0)
-                    ).where(
-                        LabExtractionJob.document_id == document.id,
-                        LabExtractionJob.page_number == claim.page_number,
-                    )
-                )
-                or 0
+            inserted = _insert_candidates(
+                session,
+                document.id,
+                claim.page_number,
+                candidates,
+                cloud=cloud,
+                reason_code="lab_extraction_v1_cloud"
+                if cloud
+                else "lab_extraction_v1_local",
             )
-            for candidate in candidates:
-                key = _value_key(
-                    candidate.source_name, candidate.source_value, candidate.source_unit
-                )
-                if key in keys:
-                    continue
-                keys.add(key)
-                if lifetime_candidates + inserted >= 40:
-                    raise ExtractionError("candidate_limit")
-                row = LabObservation(
-                    document_id=document.id,
-                    page_number=claim.page_number,
-                    canonical_name=candidate.canonical_name,
-                    source_name=candidate.source_name,
-                    source_value=candidate.source_value,
-                    source_unit=candidate.source_unit,
-                    source_flag=candidate.source_flag,
-                    parsed_value=candidate.parsed_value,
-                    reference_low=candidate.reference_low,
-                    reference_high=candidate.reference_high,
-                    reference_text=candidate.reference_text,
-                    evidence_excerpt=candidate.evidence_excerpt,
-                    confidence=0.4
-                    if candidate.canonical_name.startswith("unmapped_")
-                    else (0.6 if cloud else 0.8),
-                    status=ReviewStatus.NEEDS_REVIEW,
-                )
-                row.review_item = ReviewItem(
-                    reason_code="lab_extraction_v1_cloud"
-                    if cloud
-                    else "lab_extraction_v1_local"
-                )
-                session.add(row)
-                inserted += 1
             job.candidate_count += inserted
             job.source_text_sha256, job.extraction_method = (
                 digest,
                 cloud_method if cloud else "local_text",
             )
             job.local_completed = True
-            if cloud or not unresolved:
+            if cloud and rejected_count > 0:
+                _finish(job, "needs_attention", "cloud_partial_output")
+            elif cloud or not unresolved:
                 _finish(job, "completed")
             if inserted:
                 if document.safe_error_code is None or document.safe_error_code in {

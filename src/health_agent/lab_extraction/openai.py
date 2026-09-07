@@ -15,10 +15,12 @@ from health_agent.lab_extraction.types import (
     MAX_CLOUD_CHARACTERS,
     Candidate,
     ExtractionError,
+    PartialExtraction,
 )
 from health_agent.lab_extraction.validation import (
     restore_source_name_whitespace,
     validate_candidates,
+    validate_partial_candidates,
 )
 
 _SCHEMA = {
@@ -111,6 +113,16 @@ class OpenAILabExtractor:
         return self._client
 
     def extract(self, profile_id: UUID, text: str) -> tuple[Candidate, ...]:
+        return parse_lab_response(self._request(profile_id, text), text)
+
+    def extract_partial(self, profile_id: UUID, text: str) -> PartialExtraction:
+        output = _lab_response_content(self._request(profile_id, text))
+        try:
+            return validate_partial_candidates(json.loads(output), text)
+        except (TypeError, ValueError):
+            raise ExtractionError("cloud_invalid_output") from None
+
+    def _request(self, profile_id: UUID, text: str) -> Any:
         if not text.strip() or len(text) > MAX_CLOUD_CHARACTERS:
             raise ExtractionError("cloud_input_limit")
         arguments: dict[str, Any] = {
@@ -140,11 +152,21 @@ class OpenAILabExtractor:
             raise ExtractionError(_status_error_code(error)) from None
         except Exception:  # noqa: BLE001 -- response/transport details are private
             raise ExtractionError("cloud_outcome_unknown") from None
-        return parse_lab_response(response, text)
+        return response
 
 
 def parse_lab_response(response: Any, text: str) -> tuple[Candidate, ...]:
     """Validate a completed Responses envelope using the shared lab contract."""
+    output = _lab_response_content(response)
+    try:
+        return validate_candidates(
+            restore_source_name_whitespace(json.loads(output), text), text
+        )
+    except (TypeError, ValueError):
+        raise ExtractionError("cloud_invalid_output") from None
+
+
+def _lab_response_content(response: Any) -> str:
     if getattr(response, "status", None) != "completed":
         raise ExtractionError("cloud_incomplete")
     envelope = getattr(response, "output", None)
@@ -174,9 +196,4 @@ def parse_lab_response(response: Any, text: str) -> tuple[Candidate, ...]:
     output = "".join(segments)
     if len(output) > 80_000:
         raise ExtractionError("cloud_invalid_output")
-    try:
-        return validate_candidates(
-            restore_source_name_whitespace(json.loads(output), text), text
-        )
-    except (TypeError, ValueError):
-        raise ExtractionError("cloud_invalid_output") from None
+    return output

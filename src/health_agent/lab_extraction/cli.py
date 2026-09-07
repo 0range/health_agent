@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -9,10 +10,28 @@ import typer
 
 from health_agent.config import Settings
 from health_agent.db import build_engine
+from health_agent.lab_extraction.cached import import_cached as import_cached_capture
 from health_agent.lab_extraction.service import LabExtractionService
 from health_agent.lab_extraction.types import ExtractionError
 
 app = typer.Typer(help="Extract imported laboratory pages into explicit review only.")
+
+
+@app.command("import-cached")
+def import_cached(
+    profile_id: UUID, document_id: UUID, page_number: int, capture_path: Path
+) -> None:
+    """Locally recover review candidates from a saved failed response; never call AI."""
+    report = _call(
+        lambda: import_cached_capture(
+            build_engine(Settings()),
+            profile_id,
+            document_id,
+            page_number,
+            capture_path,
+        )
+    )
+    typer.echo(" ".join(f"{key}={value}" for key, value in asdict(report).items()))
 
 
 def build_service() -> LabExtractionService:
