@@ -67,16 +67,17 @@ def test_client_is_callable_as_training_activity_source():
 
 
 def test_live_text_envelope_is_strictly_parsed_without_losing_raw_facts():
-    raw = """Sport Records — 2026-08-08 to 2026-09-07 (1 records)
-===
-
-1. Outdoor Run — 2026-09-06
-   Location: Example Park
-   Start Coordinates: 00.000000, 00.000000
-   Time Window: startTimestamp=1788652800 | endTimestamp=1788654600
-   Duration: 30:00 | Distance: 5.00 km
-   Average Pace: 6:00 /km | Avg HR: 140 bpm | Calories: 300 kcal
-   LabelId: 123456789012345678 | SportType: 100"""
+    raw = (
+        "Sport Records — 2026-08-08 to 2026-09-07 (1 records)\r\n"
+        "========================\r\n\r\n"
+        "1. Outdoor Run — 2026-09-06\r\n"
+        "   Location: Example Park\r\n"
+        "   Start Coordinates: 00.000000, 00.000000\r\n"
+        "   Time Window: startTimestamp=1788652800 | endTimestamp=1788654600\r\n"
+        "   Duration: 30:00 | Distance: 5.00 km\r\n"
+        "   Average Pace: 6:00 /km | Avg HR: 140 bpm | Calories: 300 kcal\r\n"
+        "   LabelId: 123456789012345678 | SportType: 100"
+    )
 
     class LiveShape:
         def call_tool(self, name, arguments):

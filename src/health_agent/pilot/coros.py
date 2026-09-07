@@ -251,7 +251,7 @@ def _parse_sport_records(text: str) -> list[dict[str, Any]]:
     ):
         return []
     heading = re.match(
-        r"^Sport Records — (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}) \((\d+) records\)\n===\n",
+        r"^Sport Records — (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}) \((\d+) records\)\r?\n={3,}\r?\n",
         text,
     )
     if heading is None:
