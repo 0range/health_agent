@@ -6,9 +6,11 @@ import json
 import math
 import re
 from datetime import UTC, datetime, time, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
 
@@ -19,6 +21,22 @@ _NUTRIENTS = (
 )
 _QUIET_START = time(22, 0)
 _QUIET_END = time(7, 0)
+_USER_ZONE = ZoneInfo("Europe/Moscow")
+_DEFAULT_FEEDBACK = "Приём пищи сохранён; данных недостаточно для надёжной рекомендации."
+_UNSAFE_FEEDBACK = re.compile(
+    r"(?:у вас\s+(?:диабет|болезнь|диагноз)|это\s+(?:диабет|болезнь)|\bдиагноз\b|"
+    r"you have\s+(?:diabetes|a disease)|\bdiagnos(?:is|ed)\b|"
+    r"прекрат(?:ите|ить)\s+(?:лекарств|лечени)|stop\s+(?:medication|treatment)|"
+    r"(?:всем|всегда|никогда|универсальн).{0,30}(?:запрещ|нельзя|вред)|"
+    r"(?:everyone|always|never|universally).{0,30}(?:forbidden|harmful)|"
+    r"голода(?:йте|ть)|вызывайте рвоту|vomit|starv|обязательно|must\b)",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_PRECISION = re.compile(r"(?<!\d)\d+[.,]\d{2,}(?!\d)")
+_RECOMMENDATION = re.compile(
+    r"\b(?:добавьте|уменьшите|исключите|замените|выберите|попробуйте|"
+    r"add|reduce|avoid|replace|choose|try)\b", re.IGNORECASE,
+)
 
 
 class FoodCoach:
@@ -64,8 +82,10 @@ class FoodCoach:
             return []
         occurred = self._from_iso(meal.payload["occurred_at"])
         protocol = self._protocol(profile_id)
-        hours = self._positive_number(protocol.get("interval_hours")) or 3.5
+        configured = self._positive_number(protocol.get("interval_hours"))
+        hours = configured if configured is not None and 2.5 <= configured <= 4.5 else 3.5
         target = occurred + timedelta(hours=hours)
+        expires = occurred + timedelta(hours=4.5)
         control = self._latest_control(profile_id, meal.id)
         if control is not None:
             action = control.payload.get("action")
@@ -73,9 +93,10 @@ class FoodCoach:
                 return []
             if action == "snooze":
                 target = self._from_iso(control.payload["until"])
-        if now < target or self._quiet(now, protocol):
+        if target > expires or now < target or now > expires or self._quiet(now, protocol):
             return []
         key = f"meal:{meal.id}:at:{target.astimezone(UTC).isoformat()}"
+        # By contract the root writes a notice record only after successful delivery.
         if any(r.source_key == key for r in self._store.list(profile_id, "food", "notice")):
             return []
         return [Notice(key, "Плановый интервал после последнего приёма пищи прошёл. Хотите поесть сейчас?")]
@@ -121,6 +142,10 @@ class FoodCoach:
         return self._feedback(updated.payload)
 
     def _correct(self, profile_id: UUID, text: str, source_key: str, now: datetime) -> str:
+        previous = self._by_source(profile_id, "correction", source_key)
+        if previous is not None:
+            occurred = self._from_iso(previous.payload["occurred_at"])
+            return f"Время приёма пищи уже исправлено на {occurred.astimezone(_USER_ZONE):%H:%M}."
         meal = self._latest_meal(profile_id)
         if meal is None:
             return "Сначала сохраните приём пищи."
@@ -136,7 +161,7 @@ class FoodCoach:
         payload["occurred_at"] = correction.payload["occurred_at"]
         payload["time_corrected"] = True
         self._store.patch(profile_id, meal.id, payload)
-        return f"Время последнего приёма пищи исправлено на {occurred:%H:%M}."
+        return f"Время последнего приёма пищи исправлено на {occurred.astimezone(_USER_ZONE):%H:%M}."
 
     def _snooze(self, profile_id: UUID, text: str, source_key: str, now: datetime) -> str:
         match = re.search(r"/позже\s+(\d{1,3})", text.lower())
@@ -165,17 +190,28 @@ class FoodCoach:
                         {"reminders_enabled": enabled}, at=now)
 
     def _summary(self, profile_id: UUID, now: datetime, days: int) -> str:
-        start = now.date() - timedelta(days=days - 1)
+        local_now = now.astimezone(_USER_ZONE)
+        start = local_now.date() - timedelta(days=days - 1)
         meals = [m for m in self._store.list(profile_id, "food", "meal")
-                 if start <= self._from_iso(m.payload["occurred_at"]).date() <= now.date()]
+                 if start <= self._from_iso(m.payload["occurred_at"]).astimezone(_USER_ZONE).date()
+                 <= local_now.date()]
         if not meals:
             return "Сохранённых приёмов пищи нет; соблюдение плана неизвестно."
         known = sum(1 for m in meals if m.payload.get("analysis"))
         unknown = len(meals) - known
-        categories = ", ".join(str(m.payload.get("category", "meal")) for m in reversed(meals))
+        ordered = sorted(meals, key=lambda m: self._from_iso(m.payload["occurred_at"]))
+        categories = ", ".join(str(m.payload.get("category", "meal")) for m in ordered)
+        intervals = [
+            (self._from_iso(current.payload["occurred_at"])
+             - self._from_iso(previous.payload["occurred_at"])).total_seconds() / 3600
+            for previous, current in pairwise(ordered)
+        ]
+        adherent = sum(2.5 <= interval <= 4.5 for interval in intervals)
+        adherence = (f"Интервалы в плане: {adherent} из {len(intervals)}."
+                     if intervals else "Для оценки интервалов пока недостаточно записей.")
         return (f"Сохранено приёмов пищи: {len(meals)} ({categories}). "
                 f"Анализ доступен: {known}; неизвестно: {unknown}. "
-                "Соблюдение интервалов оценивается только по сохранённым данным.")
+                f"{adherence} Оценка основана только на сохранённых данных.")
 
     def _protocol(self, profile_id: UUID) -> dict[str, Any]:
         record = self._by_source(profile_id, "settings", "protocol")
@@ -206,9 +242,12 @@ class FoodCoach:
         match = _TIME.search(text)
         if match is None:
             return now, text, True
-        occurred = datetime.combine(
-            now.date(), time(int(match.group(1)), int(match.group(2))), tzinfo=now.tzinfo,
+        local_now = now.astimezone(_USER_ZONE)
+        local_occurred = datetime.combine(
+            local_now.date(), time(int(match.group(1)), int(match.group(2))),
+            tzinfo=_USER_ZONE,
         )
+        occurred = local_occurred.astimezone(UTC)
         age = now - occurred
         valid = timedelta(minutes=-15) <= age <= timedelta(hours=18)
         return occurred, (text[:match.start()] + text[match.end():]).strip(), valid
@@ -224,7 +263,7 @@ class FoodCoach:
         for category, words in labels.items():
             if any(word in lowered for word in words):
                 return category
-        hour = occurred.hour
+        hour = occurred.astimezone(_USER_ZONE).hour
         if hour < 11:
             return "breakfast"
         if hour < 15:
@@ -245,6 +284,16 @@ class FoodCoach:
         if not isinstance(value, dict):
             return None
         result = dict(value)
+        foods = result.get("foods")
+        result["foods"] = ([item.strip() for item in foods
+                            if isinstance(item, str) and item.strip()][:50]
+                           if isinstance(foods, list) else [])
+        portion = result.get("portion_estimate")
+        result["portion_estimate"] = portion.strip()[:200] if isinstance(portion, str) and portion.strip() else None
+        unknowns = result.get("unknowns")
+        result["unknowns"] = ([item.strip() for item in unknowns
+                               if isinstance(item, str) and item.strip()][:50]
+                              if isinstance(unknowns, list) else [])
         for key in _NUTRIENTS:
             number = result.get(key)
             if number is None:
@@ -253,17 +302,15 @@ class FoodCoach:
                   or not math.isfinite(float(number)) or number < 0
                   or round(float(number), 1) != float(number)):
                 result[key] = None
-                result.setdefault("unknowns", []).append(f"{key}: нет надёжной оценки")
+                result["unknowns"].append(f"{key}: нет надёжной оценки")
         confidence = result.get("confidence")
-        if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
+                or not math.isfinite(float(confidence)) or not 0 <= confidence <= 1):
             result["confidence"] = None
-        result.setdefault("foods", [])
-        result.setdefault("portion_estimate", None)
-        result.setdefault("unknowns", [])
         if photo and not result["portion_estimate"]:
             result["unknowns"].append("размер порции по фото неизвестен")
         feedback = result.get("feedback")
-        result["feedback"] = str(feedback).strip() if feedback else "Состав сохранён; деталей для наблюдения недостаточно."
+        result["feedback"] = FoodCoach._safe_feedback(feedback)
         return result
 
     @staticmethod
@@ -278,8 +325,21 @@ class FoodCoach:
             end = time.fromisoformat(str(quiet.get("end", "07:00")))
         except (TypeError, ValueError):
             start, end = _QUIET_START, _QUIET_END
-        current = now.timetz().replace(tzinfo=None)
+        current = now.astimezone(_USER_ZONE).timetz().replace(tzinfo=None)
         return current >= start or current < end if start > end else start <= current < end
+
+    @staticmethod
+    def _safe_feedback(value: Any) -> str:
+        if not isinstance(value, str):
+            return _DEFAULT_FEEDBACK
+        feedback = " ".join(value.split())
+        sentences = [part for part in re.split(r"[.!?]+", feedback) if part.strip()]
+        if (not feedback or len(feedback) > 280 or len(sentences) > 2
+                or _UNSAFE_FEEDBACK.search(feedback)
+                or _UNSUPPORTED_PRECISION.search(feedback)
+                or len(_RECOMMENDATION.findall(feedback)) > 1):
+            return _DEFAULT_FEEDBACK
+        return feedback
 
     @staticmethod
     def _positive_number(value: Any) -> float | None:

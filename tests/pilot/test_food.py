@@ -67,7 +67,7 @@ class Brain:
 @pytest.fixture
 def setup() -> tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]:
     store, brain = MemoryStore(), Brain()
-    return store, brain, FoodCoach(store, brain), uuid4(), datetime(2026, 9, 7, 12, tzinfo=UTC)
+    return store, brain, FoodCoach(store, brain), uuid4(), datetime(2026, 9, 7, 9, tzinfo=UTC)
 
 
 def test_meal_due_correction_and_delivery_suppression(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
@@ -138,3 +138,94 @@ def test_naive_and_implausible_times_request_clarification(setup: tuple[MemorySt
     with pytest.raises(ValueError, match="timezone-aware"):
         coach.handle(profile, "обед", source_key="bad", now=noon.replace(tzinfo=None))
     assert "уточ" in coach.handle(profile, "/ел 23:00 ужин", source_key="future", now=noon).lower()
+
+
+def test_utc_input_uses_moscow_wall_time_and_local_date(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    store, _, coach, profile, _ = setup
+    # 21:30 UTC is already the next local calendar day in Moscow.
+    now = datetime(2026, 9, 7, 21, 30, tzinfo=UTC)
+    coach.handle(profile, "/ел 00:15 завтрак", source_key="midnight", now=now)
+    meal = store.list(profile, "food", "meal")[0]
+    assert meal.payload["occurred_at"] == "2026-09-07T21:15:00+00:00"
+    assert coach.due(profile, datetime(2026, 9, 8, 1, 0, tzinfo=UTC)) == []  # 04:00 Moscow
+
+    reply = coach.handle(profile, "/время 00:20", source_key="local-correction", now=now)
+    assert "00:20" in reply
+    assert store.list(profile, "food", "meal")[0].payload["occurred_at"] == "2026-09-07T21:20:00+00:00"
+
+
+def test_reminder_expires_and_bad_interval_config_falls_back(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    store, _, coach, profile, _ = setup
+    noon_moscow = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    store.put(profile, "food", "settings", "protocol", {"interval_hours": 99})
+    coach.handle(profile, "/ел 12:00 обед", source_key="meal", now=noon_moscow)
+    assert coach.due(profile, noon_moscow + timedelta(hours=3, minutes=30))
+    assert coach.due(profile, noon_moscow + timedelta(hours=4, minutes=31)) == []
+
+    evening = datetime(2026, 9, 8, 18, tzinfo=UTC)  # 21:00 Moscow
+    coach.handle(profile, "/ел 21:00 обед", source_key="late-labelled-lunch", now=evening)
+    assert coach.due(profile, datetime(2026, 9, 9, 4, tzinfo=UTC)) == []  # no stale 07:00 alert
+
+
+def test_replayed_old_correction_does_not_reanchor_newer_meal(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    store, _, coach, profile, _ = setup
+    first = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "/ел 12:00 обед", source_key="first", now=first)
+    coach.handle(profile, "/время 12:10", source_key="correct-first", now=first + timedelta(minutes=10))
+    second = first + timedelta(hours=3)
+    coach.handle(profile, "/ел 15:00 полдник", source_key="second", now=second)
+    second_before = store.list(profile, "food", "meal")[0].payload["occurred_at"]
+    coach.handle(profile, "/время 12:10", source_key="correct-first", now=second)
+    assert store.list(profile, "food", "meal")[0].payload["occurred_at"] == second_before
+
+
+@pytest.mark.parametrize("unsafe", [
+    "У вас диабет. Срочно прекратите лекарства.",
+    "Этот продукт всем всегда запрещён.",
+    "Овощей 53.27 грамма; обязательно голодайте сутки.",
+    "Очень длинный совет. " * 50,
+])
+def test_unsafe_or_overprecise_feedback_gets_bounded_fallback(
+    setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime], unsafe: str,
+) -> None:
+    store, brain, coach, profile, noon = setup
+    value = json.loads(str(Brain().reply))
+    value["feedback"] = unsafe
+    brain.reply = json.dumps(value, ensure_ascii=False)
+    answer = coach.handle(profile, "обед", source_key="unsafe", now=noon)
+    assert len(answer) <= 280
+    assert unsafe not in answer
+    assert store.list(profile, "food", "meal")[0].payload["analysis"]["feedback"] == answer
+
+
+def test_all_structured_fields_are_normalized_without_crash(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    store, brain, coach, profile, noon = setup
+    brain.reply = json.dumps({
+        "foods": "рис", "portion_estimate": ["тарелка"], "kcal": -1,
+        "protein_g": float("inf"), "unknowns": "ничего", "confidence": "high",
+        "feedback": {"advice": "eat"},
+    })
+    coach.handle(profile, "рис", source_key="malformed", now=noon)
+    analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
+    assert analysis["foods"] == []
+    assert analysis["portion_estimate"] is None
+    assert isinstance(analysis["unknowns"], list)
+    assert analysis["kcal"] is None and analysis["protein_g"] is None
+    assert analysis["confidence"] is None
+
+
+def test_summary_reports_actual_interval_adherence(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    _, _, coach, profile, _ = setup
+    morning = datetime(2026, 9, 7, 6, tzinfo=UTC)
+    coach.handle(profile, "/ел 09:00 завтрак", source_key="breakfast", now=morning)
+    coach.handle(profile, "/ел 12:30 обед", source_key="lunch", now=morning + timedelta(hours=3, minutes=30))
+    summary = coach.handle(profile, "/сегодня", source_key="summary", now=morning + timedelta(hours=4))
+    assert "1 из 1" in summary
+
+
+def test_profiles_are_isolated(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
+    _, _, coach, profile, noon = setup
+    other = uuid4()
+    coach.handle(profile, "/ел 12:00 обед", source_key="same-source", now=noon)
+    assert coach.due(other, noon + timedelta(hours=3, minutes=30)) == []
+    assert "нет" in coach.handle(other, "/сегодня", source_key="other-summary", now=noon).lower()
