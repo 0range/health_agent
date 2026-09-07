@@ -17,7 +17,7 @@
 
 ## Task 1: Ground the actual sleep coach path
 
-**Files:** src/health_agent/pilot/sleep.py, new src/health_agent/pilot/sleep_grounding.py if needed to isolate policy; src/health_agent/pilot/runtime.py only the sleep context adapter; tests/pilot/test_sleep.py, tests/pilot/test_runtime.py and one focused grounding test file. questions/context.py only if a minimal shared intent recognition change is required; no unrelated general evidence redesign.
+**Files:** src/health_agent/pilot/sleep.py, new src/health_agent/pilot/sleep_grounding.py if needed to isolate policy; src/health_agent/pilot/runtime.py only the sleep context adapter; tests/pilot/test_sleep.py, tests/pilot/test_runtime.py and one focused grounding test file. Necessary adapter integration: brain.py must not re-inject unrelated food/weight data into an explicitly focused sleep payload; keep general/food/training context unchanged and test actual outgoing payload. questions/context.py only if a minimal shared intent recognition change is required; no unrelated general evidence redesign.
 
 **Interfaces:** retain SleepCoach.handle/health_context callable and durable Store protocol. New pure helpers may consume question, dated user turns/diary, bounded build_responder_input JSON, and now. Runtime must pass effective question context consistently. Implementer specifies pure helper signatures in report. Classify sleep/fatigue including Russian 'спать хочу', 'спал', 'устал', 'сонливость', mixed infection/weather questions and follow-ups using prior USER text (never previous assistant medical claims). Current question remains current; relevant user denials preserved.
 
