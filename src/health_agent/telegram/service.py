@@ -120,6 +120,7 @@ class TelegramUpdateService:
         owner_id: str | None = None,
         lease_seconds: float = 60,
         clock=lambda: datetime.now(UTC),
+        help_text: str = HELP_TEXT,
     ) -> None:
         if bot_id <= 0 or lease_seconds <= 0:
             raise ValueError("bot ID and claim lease must be positive")
@@ -135,6 +136,7 @@ class TelegramUpdateService:
         self.owner_id = owner_id or str(uuid4())
         self.lease_seconds = lease_seconds
         self.clock = clock
+        self.help_text = help_text
 
     def process_update(self, update: dict[str, object]) -> ProcessResult:
         update_id = _optional_int(update.get("update_id"))
@@ -174,9 +176,7 @@ class TelegramUpdateService:
         heartbeat = _ClaimHeartbeat(self.state, claim, self.lease_seconds)
         heartbeat.start()
 
-        sender_is_human = (
-            isinstance(sender, dict) and sender.get("is_bot") is False
-        )
+        sender_is_human = isinstance(sender, dict) and sender.get("is_bot") is False
         chat_type = str(chat.get("type") or "") if isinstance(chat, dict) else ""
         if identity is None:
             return self._finish(claim, heartbeat, "ignored_unknown_user")
@@ -305,7 +305,7 @@ class TelegramUpdateService:
     def _route_text(self, context: MessageContext, text: str) -> str:
         command = _command_name(text)
         if command in {"help", "start"}:
-            return HELP_TEXT
+            return self.help_text
         if command == "status":
             return self.commands.status(TelegramCommand(context, "status"))
         if command == "sync":
@@ -315,7 +315,7 @@ class TelegramUpdateService:
             if reply is not None:
                 return reply
         if command is not None:
-            return HELP_TEXT
+            return self.help_text
         return self.questions.answer(HealthQuestion(context, text))
 
     def _route_attachment(
@@ -574,9 +574,13 @@ def _message_kind(message: dict[str, object]) -> str:
 def _attachment_from_message(
     context: MessageContext, message: dict[str, object]
 ) -> AttachmentProvenance | None:
+    caption = message.get("caption")
+    caption = caption if isinstance(caption, str) else ""
     document = message.get("document")
     if isinstance(document, dict):
-        return _attachment_provenance(context, "document", document)
+        return replace(
+            _attachment_provenance(context, "document", document), caption=caption
+        )
     photos = message.get("photo")
     if isinstance(photos, list):
         candidates = [value for value in photos if isinstance(value, dict)]
@@ -589,8 +593,11 @@ def _attachment_from_message(
                     * (_optional_int(value.get("height")) or 0),
                 ),
             )
-            return _attachment_provenance(
-                context, "photo", selected, mime_type="image/jpeg"
+            return replace(
+                _attachment_provenance(
+                    context, "photo", selected, mime_type="image/jpeg"
+                ),
+                caption=caption,
             )
     voice = message.get("voice")
     if isinstance(voice, dict):

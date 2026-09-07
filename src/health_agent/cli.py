@@ -88,6 +88,7 @@ from health_agent.panel.launchd import (
     panel_launchd_paths,
 )
 from health_agent.panel.service import build_panel_service
+from health_agent.pilot.cli import app as pilot_app
 from health_agent.questions.composition import (
     build_question_application,
     build_telegram_question_runtime,
@@ -166,6 +167,7 @@ app.add_typer(automation_app, name="automation")
 app.add_typer(question_app, name="question")
 app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
+app.add_typer(pilot_app, name="pilot")
 app.add_typer(lab_extraction_app, name="lab-extract")
 app.add_typer(visit_app, name="visit")
 app.add_typer(create_calendar_cli(), name="calendar")
@@ -1326,6 +1328,18 @@ def configure_telegram_token() -> None:
 @telegram_app.command("run")
 def run_telegram() -> None:
     """Run the bound private long-poller using only verified local credentials."""
+    settings = Settings()
+    if settings.pilot_enabled:
+        from health_agent.pilot.runtime import run_pilot
+
+        try:
+            run_pilot(settings, "sleep", DEFAULT_PROFILE_ID)
+        except KeyboardInterrupt:
+            return
+        except Exception:  # noqa: BLE001 -- never expose credential/provider exceptions
+            typer.echo("status=failed error=pilot_runtime_unavailable", err=True)
+            raise typer.Exit(code=1) from None
+        return
     try:
         runtime = build_telegram_question_runtime(Settings())
         runtime.poller.validate_startup()

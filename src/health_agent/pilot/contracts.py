@@ -20,25 +20,42 @@ class Record:
 
 class Store(Protocol):
     def put(
-        self, profile_id: UUID, domain: str, kind: str, source_key: str,
-        payload: dict[str, Any], *, at: datetime | None = None,
+        self,
+        profile_id: UUID,
+        domain: str,
+        kind: str,
+        source_key: str,
+        payload: dict[str, Any],
+        *,
+        at: datetime | None = None,
     ) -> Record: ...
 
     def list(
-        self, profile_id: UUID, domain: str, kind: str | None = None,
-        *, limit: int = 100,
+        self,
+        profile_id: UUID,
+        domain: str,
+        kind: str | None = None,
+        *,
+        limit: int = 100,
     ) -> list[Record]: ...
 
     def get(self, profile_id: UUID, record_id: str) -> Record | None: ...
 
     def patch(
-        self, profile_id: UUID, record_id: str, payload: dict[str, Any],
+        self,
+        profile_id: UUID,
+        record_id: str,
+        payload: dict[str, Any],
     ) -> Record: ...
 
 
 class Brain(Protocol):
     def __call__(
-        self, system: str, payload: dict[str, Any], *, image_path: Path | None = None,
+        self,
+        system: str,
+        payload: dict[str, Any],
+        *,
+        image_path: Path | None = None,
     ) -> str: ...
 
 
@@ -57,7 +74,12 @@ class Notice:
 
 class Coach(Protocol):
     def handle(
-        self, profile_id: UUID, text: str, *, source_key: str, now: datetime,
+        self,
+        profile_id: UUID,
+        text: str,
+        *,
+        source_key: str,
+        now: datetime,
         attachment: Attachment | None = None,
     ) -> str: ...
 

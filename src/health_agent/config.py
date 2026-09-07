@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     )
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     vault_root: Path = Field(default=Path("data/vault"), validation_alias="VAULT_ROOT")
+    pilot_enabled: bool = Field(default=False, validation_alias="PILOT_ENABLED")
     gmail_root: Path = Field(
         default=Path("data/google/gmail"), validation_alias="GMAIL_ROOT"
     )

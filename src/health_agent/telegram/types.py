@@ -50,6 +50,7 @@ class AttachmentProvenance:
     declared_size_bytes: int | None
     duration_seconds: int | None
     source_external_id: str
+    caption: str = ""
 
 
 @dataclass(frozen=True, slots=True)
