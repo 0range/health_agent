@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from health_agent.pilot.storage import PilotRecord
 from health_agent.whoop.models import WhoopCycle, WhoopSleep, WhoopWorkout
 
 SessionScopeFactory = Callable[[], AbstractContextManager[Session]]
+_MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class HealthcheckReader:
@@ -38,17 +40,26 @@ class HealthcheckReader:
         self._clock = clock
 
     def coverage(self, profile_id: UUID) -> DataCoverage:
-        """Read every query in a rollback-only transaction scoped by profile."""
-        with self._sessions() as session:
-            whoop = self._safe(lambda: self._latest_whoop(session, profile_id))
-            labs = self._safe(lambda: self._lab_dates(session, profile_id))
-            counts = self._safe(lambda: self._counts(session, profile_id))
-            pilot = self._safe(lambda: self._pilot(session, profile_id))
-            session.rollback()
-        if whoop is _UNKNOWN or labs is _UNKNOWN:
-            return DataCoverage(status="unknown")
-        latest_whoop = whoop
-        collected, issued, received = labs
+        """Read independent sources in separate rollback-only transactions."""
+        whoop = self._read(lambda session: self._latest_whoop(session, profile_id))
+        labs = self._read(lambda session: self._lab_dates(session, profile_id))
+        counts = self._read(lambda session: self._counts(session, profile_id))
+        coros = self._read(lambda session: self._coros(session, profile_id))
+        apple = self._read(lambda session: self._apple(session, profile_id))
+        latest_whoop = None if whoop is _UNKNOWN else whoop
+        whoop_status = (
+            "unknown"
+            if whoop is _UNKNOWN
+            else ("empty" if whoop is None else "available")
+        )
+        if labs is _UNKNOWN:
+            collected = issued = received = None
+            labs_status = "unknown"
+        else:
+            collected, issued, received = labs
+            labs_status = (
+                "empty" if collected is issued is received is None else "available"
+            )
         if counts is _UNKNOWN:
             queued = running = waiting = in_flight = needs_attention = None
             needs_review = verified = None
@@ -61,23 +72,22 @@ class HealthcheckReader:
             extraction_status = (
                 "empty" if sum(queue) == needs_review == verified == 0 else "available"
             )
-        if pilot is _UNKNOWN:
-            coros = (None, None, None, None)
-            apple = (None, None, None, None, None, None, None)
-            pilot_status = "unknown"
+        if coros is _UNKNOWN:
+            coros_values = (None, None, None, None)
+            coros_status = "unknown"
         else:
-            coros, apple = pilot
-            pilot_status = (
-                "empty" if coros[0] == apple[0] == apple[4] == 0 else "available"
-            )
+            coros_values = coros
+            coros_status = "empty" if coros[0] == 0 else "available"
+        if apple is _UNKNOWN:
+            apple = (None, None, None, None, None, None, None)
+            apple_status = "unknown"
+        else:
+            apple_status = "empty" if apple[0] == apple[4] == 0 else "available"
         status = (
             "empty"
-            if latest_whoop is None
-            and collected is None
-            and issued is None
-            and received is None
+            if whoop_status == labs_status == "empty"
             and extraction_status == "empty"
-            and pilot_status == "empty"
+            and coros_status == apple_status == "empty"
             else "available"
         )
         return DataCoverage(
@@ -89,17 +99,20 @@ class HealthcheckReader:
             pending_extraction_count=pending,
             needs_review_count=needs_review,
             verified_count=verified,
+            whoop_status=whoop_status,
+            labs_status=labs_status,
             extraction_status=extraction_status,
-            pilot_status=pilot_status,
+            coros_status=coros_status,
+            apple_status=apple_status,
             extraction_queued_count=queued,
             extraction_running_count=running,
             extraction_waiting_cloud_count=waiting,
             extraction_cloud_in_flight_count=in_flight,
             extraction_needs_attention_count=needs_attention,
-            coros_activity_count=coros[0],
-            coros_first_date=coros[1],
-            coros_latest_date=coros[2],
-            coros_last_sync_at=coros[3],
+            coros_activity_count=coros_values[0],
+            coros_first_date=coros_values[1],
+            coros_latest_date=coros_values[2],
+            coros_last_sync_at=coros_values[3],
             apple_weight_count=apple[0],
             apple_weight_first_date=apple[1],
             apple_weight_latest_date=apple[2],
@@ -109,10 +122,12 @@ class HealthcheckReader:
             apple_workout_latest_date=apple[6],
         )
 
-    @staticmethod
-    def _safe(operation):  # type: ignore[no-untyped-def]
+    def _read(self, operation):  # type: ignore[no-untyped-def]
         try:
-            return operation()
+            with self._sessions() as session:
+                result = operation(session)
+                session.rollback()
+                return result
         except Exception:  # noqa: BLE001 - raw local errors must not reach the page.
             return _UNKNOWN
 
@@ -186,50 +201,75 @@ class HealthcheckReader:
             int(statuses.get(ReviewStatus.VERIFIED, 0)),
         )
 
-    def _pilot(self, session: Session, profile_id: UUID):  # type: ignore[no-untyped-def]
+    def _coros(self, session: Session, profile_id: UUID):  # type: ignore[no-untyped-def]
         rows = tuple(
-            session.scalars(
-                select(PilotRecord).where(PilotRecord.profile_id == profile_id)
+            session.execute(
+                select(PilotRecord.kind, PilotRecord.payload).where(
+                    PilotRecord.profile_id == profile_id,
+                    PilotRecord.domain == "training",
+                    PilotRecord.kind.in_(("activity", "sync_run")),
+                )
             )
         )
         now = self._clock().astimezone(UTC)
         coros_dates = [
-            _source_date(row.payload, ("started_at", "date"), now)
-            for row in rows
-            if row.domain == "training" and row.kind == "activity"
-        ]
-        weights = [
-            _source_date(row.payload, ("recorded_at",), now)
-            for row in rows
-            if row.domain == "shared"
-            and row.kind == "weight"
-            and row.payload.get("source") == "apple_health"
-        ]
-        workouts = [
-            _source_date(row.payload, ("started_at",), now)
-            for row in rows
-            if row.domain == "training"
-            and row.kind == "apple_workout"
-            and row.payload.get("source") == "apple_health"
+            _source_date(payload, ("started_at", "date"), now)
+            for kind, payload in rows
+            if kind == "activity"
         ]
         syncs = [
-            _source_datetime(row.payload, ("finished_at",), now)
-            for row in rows
-            if row.domain == "training"
-            and row.kind == "sync_run"
-            and row.payload.get("status") in {"success", "incomplete"}
+            _source_datetime(payload, ("finished_at",), now)
+            for kind, payload in rows
+            if kind == "sync_run" and payload.get("status") in {"success", "incomplete"}
+        ]
+        return _range(coros_dates, syncs)
+
+    def _apple(self, session: Session, profile_id: UUID):  # type: ignore[no-untyped-def]
+        rows = tuple(
+            session.execute(
+                select(
+                    PilotRecord.domain,
+                    PilotRecord.kind,
+                    PilotRecord.at,
+                    PilotRecord.payload,
+                ).where(
+                    PilotRecord.profile_id == profile_id,
+                    or_(
+                        (PilotRecord.domain == "shared")
+                        & PilotRecord.kind.in_(("weight", "apple_import")),
+                        (PilotRecord.domain == "training")
+                        & (PilotRecord.kind == "apple_workout"),
+                    ),
+                )
+            )
+        )
+        now = self._clock().astimezone(UTC)
+        weights = [
+            _source_date(payload, ("recorded_at",), now)
+            for domain, kind, _at, payload in rows
+            if domain == "shared"
+            and kind == "weight"
+            and payload.get("source") == "apple_health"
+        ]
+        workouts = [
+            _source_date(payload, ("started_at",), now)
+            for domain, kind, _at, payload in rows
+            if domain == "training"
+            and kind == "apple_workout"
+            and payload.get("source") == "apple_health"
         ]
         imports = [
-            row.at.astimezone(UTC)
-            for row in rows
-            if row.domain == "shared"
-            and row.kind == "apple_import"
-            and row.at.tzinfo is not None
-            and row.at.astimezone(UTC) <= now
+            at.astimezone(UTC)
+            for domain, kind, at, _payload in rows
+            if domain == "shared"
+            and kind == "apple_import"
+            and at.tzinfo is not None
+            and at.astimezone(UTC) <= now
         ]
         return (
-            _range(coros_dates, syncs),
-            (*_date_range(weights), max(imports, default=None), *_date_range(workouts)),
+            *_date_range(weights),
+            max(imports, default=None),
+            *_date_range(workouts),
         )
 
 
@@ -260,22 +300,21 @@ def _source_date(
         if not isinstance(value, str):
             continue
         try:
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is None:
-                if "T" in value:
-                    continue
-                parsed_date = parsed.date()
-            else:
-                if parsed.astimezone(UTC) > now:
-                    continue
-                parsed_date = parsed.date()
+            parsed_date = date.fromisoformat(value)
         except ValueError:
-            try:
-                parsed_date = date.fromisoformat(value)
-            except ValueError:
+            pass
+        else:
+            return (
+                parsed_date if parsed_date <= now.astimezone(_MOSCOW).date() else None
+            )
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None or parsed.astimezone(UTC) > now:
                 continue
-        if parsed_date <= now.date():
-            return parsed_date
+            parsed_date = parsed.astimezone(_MOSCOW).date()
+        except ValueError:
+            continue
+        return parsed_date
     return None
 
 

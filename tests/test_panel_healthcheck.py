@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
 from health_agent.db import session_scope
@@ -17,7 +17,7 @@ from health_agent.models import (
     ReviewStatus,
     SourceRecord,
 )
-from health_agent.panel.healthcheck import HealthcheckReader
+from health_agent.panel.healthcheck import HealthcheckReader, _source_date
 from health_agent.panel.http import PanelApplication
 from health_agent.panel.models import (
     BotStatus,
@@ -74,7 +74,13 @@ class SyntheticHealthService:
                         pending_extraction_count=2,
                         needs_review_count=3,
                         verified_count=7,
+                        whoop_status="available",
+                        labs_status="available",
+                        extraction_status="available",
+                        coros_status="available",
+                        apple_status="available",
                         extraction_queued_count=2,
+                        extraction_cloud_in_flight_count=1,
                         extraction_needs_attention_count=1,
                         coros_activity_count=4,
                         coros_first_date=date(2026, 8, 1),
@@ -115,6 +121,8 @@ def test_healthcheck_renders_isolated_two_profile_coverage_and_escapes_html() ->
     assert "COROS: 4" in html
     assert "Apple Health — разовый импорт" in html
     assert "Очередь страниц: 2" in html and "Требуют внимания: 1" in html
+    assert "Обрабатываются облаком: 1" in html
+    assert "Нужно внимание" in html
     second = html.split("Профиль B", 1)[1]
     assert "2026-09-03" not in second
     assert "WHOOP не подключён" in second
@@ -345,6 +353,90 @@ def test_production_route_executes_read_only_local_sql(clean_database) -> None:
     assert response.status == 200
     assert statements
     assert all(statement.upper().startswith("SELECT") for statement in statements)
+
+
+def test_reader_preserves_sources_after_real_postgres_statement_failure(
+    clean_database,
+) -> None:
+    with session_scope(clean_database) as database:
+        database.add(Profile(id=FIRST, name="Профиль A"))
+        database.flush()
+        _add_whoop_day(database, FIRST, date(2026, 9, 3), "first")
+        database.add(
+            PilotRecord(
+                profile_id=FIRST,
+                domain="training",
+                kind="activity",
+                source_key="coros:ok",
+                at=datetime(2026, 9, 5, tzinfo=UTC),
+                payload={"date": "2026-09-02"},
+            )
+        )
+
+    class BrokenCountsReader(HealthcheckReader):
+        @staticmethod
+        def _counts(session: Session, profile_id: UUID):  # type: ignore[no-untyped-def]
+            del profile_id
+            session.execute(text("SELECT * FROM deliberately_missing_panel_table"))
+
+    coverage = BrokenCountsReader(
+        lambda: session_scope(clean_database), clock=lambda: CHECKED
+    ).coverage(FIRST)
+
+    assert coverage.extraction_status == "unknown"
+    assert coverage.pending_extraction_count is None
+    assert coverage.latest_whoop_date == date(2026, 9, 3)
+    assert coverage.coros_status == "available"
+    assert coverage.coros_activity_count == 1
+
+
+def test_source_dates_use_moscow_day_and_reject_naive_or_future_timestamps() -> None:
+    now = datetime(2026, 9, 6, 22, 0, tzinfo=UTC)
+
+    assert _source_date({"date": "2026-09-07"}, ("date",), now) == date(2026, 9, 7)
+    assert _source_date(
+        {"started_at": "2026-09-07T00:30:00+03:00"}, ("started_at",), now
+    ) == date(2026, 9, 7)
+    assert (
+        _source_date({"started_at": "2026-09-06T23:59:00"}, ("started_at",), now)
+        is None
+    )
+    assert (
+        _source_date({"started_at": "2026-09-06 23:59:00"}, ("started_at",), now)
+        is None
+    )
+    assert (
+        _source_date({"started_at": "2026-09-07T01:01:00+03:00"}, ("started_at",), now)
+        is None
+    )
+
+
+def test_renderer_marks_unknown_and_incomplete_queue_without_coercing_counts() -> None:
+    service = SyntheticHealthService()
+    snapshot = service.healthcheck()
+    panel = snapshot.profiles[0].panel
+    service.healthcheck = lambda: HealthcheckSnapshot(  # type: ignore[method-assign]
+        CHECKED,
+        (
+            HealthcheckProfile(
+                panel,
+                DataCoverage(
+                    "available",
+                    whoop_status="empty",
+                    labs_status="empty",
+                    extraction_status="unknown",
+                    coros_status="empty",
+                    apple_status="empty",
+                ),
+            ),
+        ),
+    )
+
+    html = _get(service).body.decode()
+
+    assert "Локальная очередь временно недоступна" in html
+    assert "Ожидают извлечения: неизвестно" in html
+    assert "Нужно внимание" in html
 
 
 def _add_whoop_day(

@@ -924,41 +924,82 @@ def _render_coverage(coverage: DataCoverage) -> str:
     def day(value: date | None) -> str:
         return "нет данных" if value is None else value.isoformat()
 
+    def count(value: int | None) -> str:
+        return "неизвестно" if value is None else str(value)
+
     received = (
         "нет данных"
         if coverage.latest_received_at is None
-        else _human_time(coverage.latest_received_at)
+        else _moscow_time(coverage.latest_received_at)
     )
     queue = (
         "Локальная очередь временно недоступна."
         if coverage.extraction_status == "unknown"
         and coverage.extraction_queued_count is None
-        else f"Очередь страниц: {coverage.extraction_queued_count or 0} · В работе: {coverage.extraction_running_count or 0} · Ожидают облако: {coverage.extraction_waiting_cloud_count or 0} · Обрабатываются облаком: {coverage.extraction_cloud_in_flight_count or 0} · Требуют внимания: {coverage.extraction_needs_attention_count or 0}"
+        else f"Очередь страниц: {count(coverage.extraction_queued_count)} · В работе: {count(coverage.extraction_running_count)} · Ожидают облако: {count(coverage.extraction_waiting_cloud_count)} · Обрабатываются облаком: {count(coverage.extraction_cloud_in_flight_count)} · Требуют внимания: {count(coverage.extraction_needs_attention_count)}"
     )
-    if coverage.pilot_status == "unknown" and coverage.coros_activity_count is None:
-        pilot = "<p>Источники COROS и Apple временно недоступны.</p>"
+    if coverage.coros_status == "unknown":
+        coros = "<p>COROS: локальные данные временно недоступны.</p>"
     else:
         coros_sync = (
             "нет данных"
             if coverage.coros_last_sync_at is None
             else _moscow_time(coverage.coros_last_sync_at)
         )
+        coros = f"<p>COROS: {count(coverage.coros_activity_count)} тренировок, диапазон {escape(day(coverage.coros_first_date))} — {escape(day(coverage.coros_latest_date))}; последняя синхронизация (Москва): {escape(coros_sync)}.</p>"
+    if coverage.apple_status == "unknown":
+        apple = "<p>Apple Health: локальные данные временно недоступны.</p>"
+    else:
         apple_import = (
             "нет данных"
             if coverage.apple_imported_at is None
             else _moscow_time(coverage.apple_imported_at)
         )
-        pilot = f"""<p>COROS: {coverage.coros_activity_count or 0} тренировок, диапазон {escape(day(coverage.coros_first_date))} — {escape(day(coverage.coros_latest_date))}; последняя синхронизация (Москва): {escape(coros_sync)}.</p>
-<p>Apple Health — разовый импорт: вес {coverage.apple_weight_count or 0}, диапазон {escape(day(coverage.apple_weight_first_date))} — {escape(day(coverage.apple_weight_latest_date))}; кандидаты тренировок {coverage.apple_workout_candidate_count or 0} (не добавлены к COROS); импорт (Москва): {escape(apple_import)}.</p>"""
-    return f"""<article class="card" data-state="connected"><div class="card-head"><h3>Покрытие данных</h3>
-<span class="status-pill">Доступно</span></div>
-<p>Последняя дата данных WHOOP: {escape(day(coverage.latest_whoop_date))}</p>
-<p>Последняя дата сдачи анализа: {escape(day(coverage.latest_lab_collected_date))}</p>
-<p>Последняя дата выдачи анализа: {escape(day(coverage.latest_lab_issued_date))}</p>
+        apple = f"<p>Apple Health — разовый импорт: вес {count(coverage.apple_weight_count)}, диапазон {escape(day(coverage.apple_weight_first_date))} — {escape(day(coverage.apple_weight_latest_date))}; кандидаты тренировок {count(coverage.apple_workout_candidate_count)}, диапазон {escape(day(coverage.apple_workout_first_date))} — {escape(day(coverage.apple_workout_latest_date))} (не добавлены к COROS); импорт (Москва): {escape(apple_import)}.</p>"
+    incomplete = "unknown" in {
+        coverage.whoop_status,
+        coverage.labs_status,
+        coverage.extraction_status,
+        coverage.coros_status,
+        coverage.apple_status,
+    } or any(
+        (
+            coverage.extraction_queued_count,
+            coverage.extraction_running_count,
+            coverage.extraction_waiting_cloud_count,
+            coverage.extraction_cloud_in_flight_count,
+            coverage.extraction_needs_attention_count,
+        )
+    )
+    state, label = (
+        ("action_required", "Нужно внимание")
+        if incomplete
+        else ("connected", "Доступно")
+    )
+    whoop_day = (
+        "неизвестно"
+        if coverage.whoop_status == "unknown"
+        else day(coverage.latest_whoop_date)
+    )
+    lab_day = (
+        "неизвестно"
+        if coverage.labs_status == "unknown"
+        else day(coverage.latest_lab_collected_date)
+    )
+    issued_day = (
+        "неизвестно"
+        if coverage.labs_status == "unknown"
+        else day(coverage.latest_lab_issued_date)
+    )
+    return f"""<article class="card" data-state="{state}"><div class="card-head"><h3>Покрытие данных</h3>
+<span class="status-pill">{label}</span></div>
+<p>Последняя дата данных WHOOP: {escape(whoop_day)}</p>
+<p>Последняя дата сдачи анализа: {escape(lab_day)}</p>
+<p>Последняя дата выдачи анализа: {escape(issued_day)}</p>
 <p class="muted">Последний файл получен: {escape(received)}</p>
 <p>{escape(queue)}</p>
-<p>Ожидают извлечения: {coverage.pending_extraction_count or 0} · Требуют проверки: {coverage.needs_review_count or 0} · Проверены: {coverage.verified_count or 0}</p>
-{pilot}
+<p>Ожидают извлечения: {count(coverage.pending_extraction_count)} · Требуют проверки: {count(coverage.needs_review_count)} · Проверены: {count(coverage.verified_count)}</p>
+{coros}{apple}
 </article>"""
 
 

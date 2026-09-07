@@ -92,8 +92,11 @@ class DataCoverage:
     pending_extraction_count: int | None = None
     needs_review_count: int | None = None
     verified_count: int | None = None
-    extraction_status: str = "unknown"
-    pilot_status: str = "unknown"
+    whoop_status: str | None = None
+    labs_status: str | None = None
+    extraction_status: str | None = None
+    coros_status: str | None = None
+    apple_status: str | None = None
     extraction_queued_count: int | None = None
     extraction_running_count: int | None = None
     extraction_waiting_cloud_count: int | None = None
