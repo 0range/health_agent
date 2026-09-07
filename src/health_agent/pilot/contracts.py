@@ -41,6 +41,10 @@ class Store(Protocol):
 
     def get(self, profile_id: UUID, record_id: str) -> Record | None: ...
 
+    def by_source(
+        self, profile_id: UUID, domain: str, kind: str, source_key: str,
+    ) -> Record | None: ...
+
     def patch(
         self,
         profile_id: UUID,

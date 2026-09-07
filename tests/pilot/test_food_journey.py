@@ -17,6 +17,64 @@ def _photo(path: Path, name: str) -> Attachment:
     return Attachment(path / name, "image/jpeg")
 
 
+@pytest.mark.parametrize("kind", ["comment", "photo", "photo_confirmation", "text_confirmation"])
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize("original_time", [False, True])
+def test_durable_replay_beyond_history_caps(tmp_path, kind, offline, original_time):
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "", source_key="first", now=now, attachment=_photo(tmp_path, "first.jpg"))
+    first = store.list(profile, "food", "meal")[0]
+    if kind == "photo_confirmation":
+        coach.handle(profile, "", source_key="ambiguous", now=now + timedelta(minutes=40), attachment=_photo(tmp_path, "second.jpg"))
+    if kind == "text_confirmation":
+        coach.handle(profile, "масло", source_key="pending", now=now + timedelta(days=1))
+    brain.reply = RuntimeError("offline") if offline else Brain().reply
+    event = now + (timedelta(days=1, minutes=1) if kind == "text_confirmation" else timedelta(minutes=41))
+    text = {"comment": "немного масла", "photo": "", "photo_confirmation": "тот же", "text_confirmation": "новый"}[kind]
+    attachment = _photo(tmp_path, "retry.jpg") if kind == "photo" else None
+    if kind == "photo":
+        event = now + timedelta(minutes=2)
+    coach.handle(profile, text, source_key="replay", now=event, attachment=attachment)
+    binding = next(r for _, r in store.records if r.kind == kind and r.source_key == "replay")
+    original = store.get(profile, binding.payload["meal_id"])
+    for index in range(1001):
+        store.put(profile, "food", kind, f"filler{index}", {"meal_id": "unrelated", "text": "filler", "status": "confirmed"}, at=event + timedelta(seconds=index + 1))
+    brain.reply = Brain().reply
+    coach.handle(profile, "поел суп", source_key="newer", now=event + timedelta(days=2))
+    newer = store.list(profile, "food", "meal")[0]
+    before = json.dumps(newer.payload, sort_keys=True)
+    calls = len(brain.calls)
+    count = len(store.records)
+    replay_at = event if original_time else event + timedelta(days=2)
+    coach.handle(profile, text, source_key="replay", now=replay_at, attachment=attachment)
+    assert len(store.records) == count
+    assert json.dumps(store.get(profile, newer.id).payload, sort_keys=True) == before
+    assert len(brain.calls) == calls + int(offline)
+    assert store.get(profile, original.id).payload["analysis_status"] == "complete"
+    if kind == "comment" and offline:
+        assert "немного масла" in brain.calls[-1][0]["meal"]["comments"]
+    assert store.get(profile, first.id).payload["occurred_at"] == first.payload["occurred_at"]
+
+
+def test_comment_honors_binding_returned_by_idempotent_put(monkeypatch):
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "поел рис", source_key="first", now=now)
+    coach.handle(profile, "масло", source_key="comment", now=now + timedelta(minutes=1))
+    coach.handle(profile, "поел суп", source_key="second", now=now + timedelta(hours=3))
+    newer = store.list(profile, "food", "meal")[0]
+    before = json.dumps(newer.payload, sort_keys=True)
+    calls = len(brain.calls)
+    # Simulate a lookup/insert race: the insert returns the already bound comment.
+    monkeypatch.setattr(store, "by_source", lambda *args: None)
+    coach._comment(profile, newer, "изменённый текст", "comment", now + timedelta(hours=3))
+    assert json.dumps(store.get(profile, newer.id).payload, sort_keys=True) == before
+    assert len(brain.calls) == calls
+
+
 def test_photo_comments_stay_on_one_meal_and_replay_is_bound(tmp_path: Path) -> None:
     store, brain, profile = MemoryStore(), Brain(), uuid4()
     coach = FoodCoach(store, brain)

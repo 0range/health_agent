@@ -14,6 +14,11 @@ from health_agent.pilot.training import TrainingCoach
 
 
 class MemoryStore:
+    def by_source(self, profile_id, domain, kind, source_key):
+        return next((record for owner, record in self.records
+                     if owner == profile_id and record.domain == domain
+                     and record.kind == kind and record.source_key == source_key), None)
+
     def __init__(self) -> None:
         self.records: list[tuple[UUID, Record]] = []
 
@@ -304,6 +309,71 @@ def _preferences(store, profile, now, *, discipline="плавание", count=2)
         },
         at=now,
     )
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_revision_preserves_sunday_dates_and_accepted_bytes_on_monday(offline):
+    import json
+
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    sunday = datetime(2026, 9, 6, 15, tzinfo=UTC)
+    coach = TrainingCoach(store, brain)
+    coach.handle(profile, "/план", source_key="draft", now=sunday)
+    coach.handle(profile, "/сохранить план", source_key="accept", now=sunday)
+    accepted = store.list(profile, "training", "accepted_plan")[0]
+    before = json.dumps(accepted.payload, sort_keys=True)
+    if offline:
+        def unavailable(*args, **kwargs):
+            raise RuntimeError("offline")
+        coach = TrainingCoach(store, unavailable)
+    coach.handle(profile, "перенеси тренировку на четверг", source_key="revision",
+                 now=sunday + timedelta(days=1))
+    revised = store.list(profile, "training", "proposal")[0]
+    assert revised.payload["date_range"] == {"monday": "2026-09-07", "sunday": "2026-09-13"}
+    if not offline:
+        assert brain.calls[-1][1]["next_week"] == revised.payload["date_range"]
+    assert json.dumps(store.get(profile, accepted.id).payload, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("text", ["перенеси бассейн", "замени бег", "поменяй велосипед"])
+def test_named_discipline_revision_versions_without_acceptance(text):
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 6, 15, tzinfo=UTC)
+    coach = TrainingCoach(store, brain)
+    coach.handle(profile, "/план", source_key="draft", now=now)
+    for index, discussion in enumerate(["почему бассейн во вторник?", "можно перенести бассейн?", "в среду не могу"]):
+        coach.handle(profile, discussion, source_key=f"discussion{index}", now=now)
+        assert brain.calls[-1][1]["task"] == "dialogue"
+    coach.handle(profile, text, source_key="revision", now=now + timedelta(minutes=1))
+    assert brain.calls[-1][1]["task"] == "revise_weekly_plan"
+    assert len(store.list(profile, "training", "proposal")) == 2
+    assert not store.list(profile, "training", "accepted_plan")
+
+
+def test_long_weekly_sections_both_survive_notice_budget():
+    store, profile = MemoryStore(), uuid4()
+    now = datetime(2026, 9, 6, 15, tzinfo=UTC)
+    store.put(profile, "training", "activity", "run", {"sport": "run"}, at=now)
+    def long_brain(system, payload, **kwargs):
+        return ("Фактический разбор. " if payload["task"] == "reflection" else "Черновик: плавание. ") * 200
+    notice = TrainingCoach(store, long_brain).due(profile, now)[0]
+    assert len(notice.text) <= 1800
+    assert "Фактический разбор." in notice.text
+    assert "Ориентир на следующую неделю, не обязательство" in notice.text
+    assert "Черновик: плавание." in notice.text
+
+
+@pytest.mark.parametrize("dates", [None, {}, {"monday": "invalid", "sunday": "2026-09-13"},
+                                  {"monday": "2026-09-08", "sunday": "2026-09-14"},
+                                  {"monday": "2026-09-07", "sunday": "2026-09-20"}])
+def test_revision_does_not_invent_new_dates_for_invalid_existing_range(dates):
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    store.put(profile, "training", "proposal", "old", {"text": "Черновик", "date_range": dates}, at=now)
+    reply = TrainingCoach(store, brain).handle(profile, "перенеси тренировку", source_key="revision", now=now)
+    assert "/план" in reply
+    assert not brain.calls
+    assert len(store.list(profile, "training", "proposal")) == 1
 
 
 def test_sunday_preferences_prepare_dated_cached_draft_without_acceptance():

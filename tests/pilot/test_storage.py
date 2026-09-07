@@ -1,9 +1,29 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
+from health_agent.db import session_scope
 from health_agent.models import DEFAULT_PROFILE_ID
-from health_agent.pilot.storage import PilotStore
+from health_agent.pilot.storage import PilotRecord, PilotStore
+
+
+def test_exact_source_lookup_outlives_history_caps_and_is_scoped(clean_database):
+    store = PilotStore(clean_database)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    original = store.put(DEFAULT_PROFILE_ID, "food", "comment", "original", {"meal_id": "first"}, at=now)
+    with session_scope(clean_database) as session:
+        session.add_all([
+            PilotRecord(profile_id=DEFAULT_PROFILE_ID, domain="food", kind="comment",
+                        source_key=f"newer{index}", payload={}, at=now + timedelta(seconds=index + 1))
+            for index in range(1001)
+        ])
+    assert original.id not in {r.id for r in store.list(DEFAULT_PROFILE_ID, "food", "comment", limit=1000)}
+    assert store.by_source(DEFAULT_PROFILE_ID, "food", "comment", "original") == original
+    assert store.by_source(uuid4(), "food", "comment", "original") is None
+    assert store.by_source(DEFAULT_PROFILE_ID, "training", "comment", "original") is None
+    assert store.by_source(DEFAULT_PROFILE_ID, "food", "photo", "original") is None
+    assert store.by_source(DEFAULT_PROFILE_ID, "food", "comment", "missing") is None
 
 
 def test_records_persist_replay_and_isolate(clean_database):

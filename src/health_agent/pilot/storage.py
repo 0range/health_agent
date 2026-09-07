@@ -99,6 +99,20 @@ class PilotStore:
                 for row in session.scalars(statement.limit(max(0, min(limit, 1000))))
             ]
 
+    def by_source(
+        self, profile_id: UUID, domain: str, kind: str, source_key: str,
+    ) -> Record | None:
+        with session_scope(self.engine) as session:
+            row = session.scalar(
+                select(PilotRecord).where(
+                    PilotRecord.profile_id == profile_id,
+                    PilotRecord.domain == domain,
+                    PilotRecord.kind == kind,
+                    PilotRecord.source_key == source_key,
+                )
+            )
+            return None if row is None else _record(row)
+
     def get(self, profile_id: UUID, record_id: str) -> Record | None:
         try:
             identifier = UUID(record_id)

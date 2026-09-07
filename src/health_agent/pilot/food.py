@@ -292,22 +292,26 @@ class FoodCoach:
         self, profile_id: UUID, meal: Record, text: str, source_key: str, now: datetime,
     ) -> str:
         saved = self._by_source(profile_id, "comment", source_key)
-        if saved is not None:
+        replay = saved is not None
+        if saved is None:
+            saved = self._store.put(profile_id, "food", "comment", source_key, {
+                "meal_id": meal.id, "text": text,
+            }, at=now)
+        # A conflicting idempotent insert can return an older binding.
+        if replay or saved.payload["meal_id"] != meal.id:
             bound = self._store.get(profile_id, str(saved.payload["meal_id"]))
             if bound is None:
                 return "Комментарий сохранён, но связанный приём пищи не найден."
             if bound.payload.get("analysis_status") == "complete":
                 return self._feedback(bound.payload)
-            return self._analysis_reply(self._analyse(profile_id, bound))
-        saved = self._store.put(profile_id, "food", "comment", source_key, {
-            "meal_id": meal.id, "text": text,
-        }, at=now)
+            return self._analysis_reply(self._analyse(profile_id, bound, comment=saved))
+        text = str(saved.payload["text"])
         payload = dict(meal.payload)
         payload["previous_analysis"] = payload.get("analysis")
         if re.search(r"\b(?:порци|примерно|около)\b", text.lower()):
             payload["user_portion"] = text[:100]
         persisted = self._store.patch(profile_id, meal.id, payload)
-        return self._analysis_reply(self._analyse(profile_id, persisted))
+        return self._analysis_reply(self._analyse(profile_id, persisted, comment=saved))
 
     def _confirm_text(self, profile_id: UUID, source_key: str, now: datetime) -> str:
         previous = self._by_source(profile_id, "text_confirmation", source_key)
@@ -347,6 +351,7 @@ class FoodCoach:
 
     def _analyse(
         self, profile_id: UUID, meal: Record, image_path: Path | None = None,
+        *, comment: Record | None = None,
     ) -> Record:
         payload = dict(meal.payload)
         payload["analysis"] = None
@@ -354,11 +359,13 @@ class FoodCoach:
         payload["analysis_error"] = None
         payload["analysis_status"] = "pending"
         try:
-            comments = [
-                str(item.payload["text"])
-                for item in reversed(self._store.list(profile_id, "food", "comment"))
+            comment_records = [
+                item for item in self._store.list(profile_id, "food", "comment")
                 if item.payload.get("meal_id") == meal.id
             ]
+            if comment is not None and all(item.id != comment.id for item in comment_records):
+                comment_records.append(comment)
+            comments = [str(item.payload["text"]) for item in sorted(comment_records, key=lambda item: item.at)]
             chosen_image = image_path
             if chosen_image is None and payload.get("photos"):
                 chosen_image = Path(str(payload["photos"][-1]["path"]))
@@ -787,8 +794,7 @@ class FoodCoach:
                      if r.payload.get("meal_id") == meal_id), None)
 
     def _by_source(self, profile_id: UUID, kind: str, source_key: str) -> Record | None:
-        return next((r for r in self._store.list(profile_id, "food", kind)
-                     if r.source_key == source_key), None)
+        return self._store.by_source(profile_id, "food", kind, source_key)
 
     @staticmethod
     def _extract_time(text: str, now: datetime) -> tuple[datetime, str, bool]:

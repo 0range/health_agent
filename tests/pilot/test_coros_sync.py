@@ -10,6 +10,9 @@ from health_agent.pilot.coros_sync import CorosSync
 
 
 class MemoryStore:
+    def by_source(self, profile_id, domain, kind, source_key):
+        return self.records.get((profile_id, domain, kind, source_key))
+
     def __init__(self):
         self.records = {}
 

@@ -86,13 +86,12 @@ class TrainingCoach:
         if not preferences and not goals and not accepted and not activities:
             return []
         draft = self._propose(profile_id, _draft_key(local_now), now)
-        parts = []
+        label = "Ориентир на следующую неделю, не обязательство\n"
+        reflection = ""
         if accepted or activities:
-            parts.append(
-                self._cached_reflection(profile_id, key, now, accepted, activities)
-            )
-        parts.append("Ориентир на следующую неделю, не обязательство\n" + draft)
-        text = "\n\n".join(parts)[:1800]
+            reflection = self._cached_reflection(profile_id, key, now, accepted, activities)[:750]
+        prefix = reflection + "\n\n" if reflection else ""
+        text = prefix + label + draft[:1800 - len(prefix) - len(label)]
         return [Notice(key, text)]
 
     def _annual_goals(self, profile_id: UUID) -> str:
@@ -277,7 +276,7 @@ class TrainingCoach:
             )
         if "давай план на неделю" in normalized:
             return self._propose(profile_id, source_key, now)
-        if _is_revision_request(normalized):
+        if _is_revision_request(normalized, self._latest_payload(profile_id, "proposal")):
             return self._revise(profile_id, text, source_key, now)
         payload = {
             "task": "dialogue",
@@ -312,7 +311,10 @@ class TrainingCoach:
         if current is None:
             return self._propose(profile_id, source_key, now)
         preferences = self._weekly_preferences(profile_id)
-        start, end = _next_week(now)
+        dates = _proposal_dates(current)
+        if dates is None:
+            return "У черновика нет корректных дат недели. Создайте новый черновик командой /план."
+        start, end = dates
         payload = {
             "task": "revise_weekly_plan",
             "request": text,
@@ -435,9 +437,36 @@ def _draft_key(local_now: datetime) -> str:
     return f"training-draft-{week.year}-W{week.week:02d}"
 
 
-def _is_revision_request(text: str) -> bool:
+def _proposal_dates(proposal: dict[str, Any]) -> tuple[date, date] | None:
+    dates = proposal.get("date_range")
+    if not isinstance(dates, dict):
+        return None
+    try:
+        monday = date.fromisoformat(dates["monday"])
+        sunday = date.fromisoformat(dates["sunday"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if monday.weekday() != 0 or sunday - monday != timedelta(days=6):
+        return None
+    return monday, sunday
+
+
+def _is_revision_request(text: str, current: dict[str, Any] | None = None) -> bool:
+    if "?" in text or text.startswith(("почему", "можно", "как ", "зачем")):
+        return False
     change = any(word in text for word in ("перенеси", "замени", "поменяй", "скорректируй"))
     target = any(word in text for word in ("план", "заняти", "трениров", "сесси"))
+    if current:
+        disciplines = ["бассейн", "плаван", "бег", "пробеж", "велосипед", "силов", "йог", "ходьб", "лыж"]
+        preferences = current.get("preferences")
+        if isinstance(preferences, dict):
+            disciplines.extend(
+                item["discipline"].lower()
+                for item in preferences.get("sessions", [])
+                if isinstance(item, dict) and isinstance(item.get("discipline"), str)
+                and item["discipline"].strip()
+            )
+        target = target or any(word in text for word in disciplines)
     return change and target
 
 
