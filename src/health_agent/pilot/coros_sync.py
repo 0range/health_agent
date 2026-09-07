@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from health_agent.automation.storage import atomic_private_write
 from health_agent.pilot.contracts import Store
@@ -19,6 +20,7 @@ from health_agent.pilot.coros import (
 from health_agent.pilot.coros_auth import CorosOAuth
 
 COROS_RESULT_LIMIT = 100
+MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class _ArchivingTransport:
@@ -86,7 +88,7 @@ class CorosSync:
             raise ValueError("until must not be before since")
         started_at = self.clock().astimezone(UTC)
         calls_before = self._archive.calls
-        counts = {"requests": 0, "fetched": 0, "stored": 0, "incomplete": 0}
+        counts = {"requests": 0, "fetched": 0, "confirmed": 0, "incomplete": 0}
         seen: set[str] = set()
         try:
             for window_start, window_end in _month_windows(since, until):
@@ -98,16 +100,17 @@ class CorosSync:
                         continue
                     seen.add(identifier)
                     counts["fetched"] += 1
+                    payload, observed_at = _activity_record(activity)
                     record = self.store.put(
                         self.profile_id,
                         "training",
                         "activity",
                         f"activity:{identifier}",
-                        activity,
-                        at=_activity_time(activity),
+                        payload,
+                        at=observed_at,
                     )
-                    if record.payload == activity:
-                        counts["stored"] += 1
+                    if record.payload == payload:
+                        counts["confirmed"] += 1
             counts["requests"] = self._archive.calls - calls_before
             self._record_run(
                 started_at,
@@ -206,17 +209,27 @@ def _activity_id(activity: dict[str, Any]) -> str:
     return str(identifier)
 
 
-def _activity_time(activity: dict[str, Any]) -> datetime:
+def _activity_record(activity: dict[str, Any]) -> tuple[dict[str, Any], datetime]:
+    payload = dict(activity)
     value = activity.get("started_at")
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
         parsed = datetime.fromisoformat(value)
     else:
-        raise TypeError("COROS activity is missing started_at")
+        provider_date = activity.get("date")
+        if not isinstance(provider_date, str):
+            raise TypeError("COROS activity is missing its date")
+        try:
+            parsed = datetime.combine(date.fromisoformat(provider_date), time.min, MOSCOW)
+        except ValueError as error:
+            raise ValueError("COROS activity date is invalid") from error
+        # This timestamp exists only to make date-indexed Store queries possible.
+        # Consumers must not infer an activity start time from a day-precision row.
+        payload["timestamp_precision"] = "day"
     if parsed.tzinfo is None:
         raise ValueError("COROS activity started_at must include a timezone")
-    return parsed
+    return payload, parsed
 
 
 def _without_tokens(value: Any) -> Any:

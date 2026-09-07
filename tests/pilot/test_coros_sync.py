@@ -62,12 +62,14 @@ def test_sync_uses_month_windows_archives_raw_and_replays_unchanged(tmp_path):
         for key, record in store.records.items()
         if key[2:4] == ("activity", "activity:2026-01-20")
     )
-    sync.sync(date(2026, 1, 20), date(2026, 3, 2))
+    second = sync.sync(date(2026, 1, 20), date(2026, 3, 2))
     replayed = store.records[
         (sync.profile_id, "training", "activity", "activity:2026-01-20")
     ]
 
-    assert first == {"requests": 3, "fetched": 3, "stored": 3, "incomplete": 0}
+    expected = {"requests": 3, "fetched": 3, "confirmed": 3, "incomplete": 0}
+    assert first == expected
+    assert second == expected
     assert replayed == original
     assert [
         (iso_day(call[1]["startDate"]), iso_day(call[1]["endDate"]))
@@ -101,7 +103,12 @@ def test_limit_is_split_and_saturated_day_is_explicitly_incomplete(tmp_path):
     sync = build(tmp_path, Transport(respond))
     counts = sync.sync(date(2026, 1, 1), date(2026, 1, 2))
 
-    assert counts == {"requests": 3, "fetched": 101, "stored": 101, "incomplete": 1}
+    assert counts == {
+        "requests": 3,
+        "fetched": 101,
+        "confirmed": 101,
+        "incomplete": 1,
+    }
     run = next(r for r in sync.store.records.values() if r.kind == "sync_run")
     assert run.payload["status"] == "incomplete"
 
@@ -138,3 +145,26 @@ def test_archives_redact_token_shaped_fields(tmp_path):
     archived = json.loads(next((tmp_path / "raw").glob("*.json")).read_text())
     assert archived["payload"]["access_token"] == "[redacted]"
     assert "do-not-save" not in json.dumps(archived)
+
+
+def test_date_only_activity_is_retained_and_does_not_stop_later_windows(tmp_path):
+    def respond(arguments):
+        start = iso_day(arguments["startDate"])
+        if start == "2025-12-01":
+            return [{"id": "old", "date": "2025-12-04", "raw": "original"}]
+        return [activity("new", "2026-01-03")]
+
+    store = MemoryStore()
+    sync = build(tmp_path, Transport(respond), store)
+    counts = sync.sync(date(2025, 12, 1), date(2026, 1, 31))
+
+    old = store.records[(sync.profile_id, "training", "activity", "activity:old")]
+    assert counts["confirmed"] == 2
+    assert old.payload == {
+        "id": "old",
+        "date": "2025-12-04",
+        "raw": "original",
+        "timestamp_precision": "day",
+    }
+    assert old.at.isoformat() == "2025-12-04T00:00:00+03:00"
+    assert any(record.source_key == "activity:new" for record in store.records.values())
