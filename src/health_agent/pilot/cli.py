@@ -5,10 +5,11 @@ import json
 import os
 import plistlib
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import typer
 
@@ -16,12 +17,63 @@ from health_agent.automation.storage import atomic_private_write, private_direct
 from health_agent.config import Settings
 from health_agent.db import build_engine
 from health_agent.models import DEFAULT_PROFILE_ID
-from health_agent.pilot.runtime import HELP, run_pilot, telegram_root
+from health_agent.pilot.runtime import HELP, _pilot_lock, run_pilot, telegram_root
 from health_agent.pilot.storage import PilotStore
 from health_agent.telegram.admin import DatabaseProfileDirectory, TelegramAdminService
 from health_agent.telegram.stores import PrivateBotTokenStore, SqliteTelegramState
 
 app = typer.Typer(help="Run the sleep, food and training pilot bots.")
+
+
+@app.command("apple-import")
+def apple_import(
+    export_file: Path,
+    profile_id: Annotated[UUID, typer.Option("--profile-id")] = DEFAULT_PROFILE_ID,
+) -> None:
+    from health_agent.pilot.apple_import import import_apple_export
+
+    store = PilotStore(build_engine(Settings()))
+    try:
+        counts = import_apple_export(store, profile_id, export_file)
+        typer.echo(json.dumps(counts))
+    finally:
+        store.engine.dispose()
+
+
+@app.command("coros-sync")
+def coros_sync(
+    since: Annotated[str, typer.Option("--since")] = "2010-01-01",
+    until: Annotated[str | None, typer.Option("--until")] = None,
+    profile_id: Annotated[UUID, typer.Option("--profile-id")] = DEFAULT_PROFILE_ID,
+) -> None:
+    """Preserve raw COROS responses and parsed activity history on this Mac."""
+    from health_agent.pilot.coros_auth import CorosOAuth
+    from health_agent.pilot.coros_sync import run_coros_sync
+
+    store = PilotStore(build_engine(Settings()))
+    root = Path("data/pilot/training/coros") / str(profile_id)
+    try:
+        with _pilot_lock(root / "sync.lock"):
+            counts = run_coros_sync(
+                store,
+                CorosOAuth(root),
+                profile_id,
+                root,
+                date.fromisoformat(since),
+                date.fromisoformat(until)
+                if until
+                else datetime.now(ZoneInfo("Europe/Moscow")).date(),
+            )
+        typer.echo(json.dumps(counts))
+        if counts["incomplete"]:
+            raise typer.Exit(2)
+    except typer.Exit:
+        raise
+    except Exception as error:  # noqa: BLE001 -- no provider payloads or secrets in logs
+        typer.echo(f"COROS sync failed: {type(error).__name__}", err=True)
+        raise typer.Exit(1) from None
+    finally:
+        store.engine.dispose()
 
 
 @app.command("coros-connect")

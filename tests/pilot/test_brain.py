@@ -106,3 +106,58 @@ def test_transcription_uses_ogg_and_consent(monkeypatch, tmp_path):
     assert PilotBrain(settings, UUID(int=1)).transcribe(path) == "Проснулся бодрым"
     assert calls[0].content == b"OggSfake"
     assert calls[0].headers["x-data-logging-enabled"] == "false"
+
+
+def test_shared_source_preferences_and_apple_data_do_not_leak_chats(clean_database):
+    import json
+
+    store = PilotStore(clean_database)
+    profile = UUID(int=1)
+    store.put(
+        profile,
+        "shared",
+        "settings",
+        "source-priorities",
+        {"weight": {"primary": "apple_health"}},
+    )
+    store.put(
+        profile,
+        "shared",
+        "weight",
+        "w1",
+        {"source": "apple_health", "weight_kg": 80, "raw_xml": "private original"},
+    )
+    store.put(
+        profile,
+        "training",
+        "apple_workout",
+        "a1",
+        {
+            "source": "apple_health",
+            "upstream_source": "COROS",
+            "potential_copy": True,
+            "raw_xml": "private original",
+        },
+    )
+    store.put(
+        profile,
+        "food",
+        "turn",
+        "privatefood",
+        {"text": "food conversation must stay separate"},
+    )
+    client = Client()
+    brain = PilotBrain(
+        Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,)),
+        profile,
+        client=client,
+        store=store,
+        domain="training",
+    )
+    brain("Training", {"message": "План недели"})
+    payload = json.loads(client.calls[0]["messages"][1]["content"][0]["text"])
+    assert payload["source_priorities"]["weight"]["primary"] == "apple_health"
+    assert payload["apple_weight_history"][0]["weight_kg"] == 80
+    assert payload["apple_workout_candidates"][0]["potential_copy"] is True
+    assert "food conversation" not in str(payload)
+    assert "private original" not in str(payload)
