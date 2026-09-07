@@ -139,3 +139,35 @@ clean
 ```
 
 Self-review checked the exact 12:00 photo → 12:10 `поел суп` → 12:20 photo sequence, a no-context `Почему я поел и хочу спать?` question (zero meals and zero model calls), and both manual/automatic provider-failure reflections with projected 200-character food values. The previously accepted replay, quiet-hours, and aggregation areas were not reopened. No known concerns remain in this round.
+
+## Fix round 3 — stale text-only meal eligibility
+
+Base: `08b5b60`.
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food_journey.py -k 'explicit_text_meal_is_a_boundary or stale_text_only'
+```
+
+Result before fix: 1 passed, 1 failed. The nearby 10-minute text-meal boundary worked, but a September 14 photo attached to a September 7 text-only meal, leaving one meal and moving the old meal's anchor.
+
+GREEN: a current text-only meal now uses its real `occurred_at` as a provisional grouping anchor. The existing exact rule applies unchanged: under 40 minutes attaches, inclusive 40–150 minutes persists an ambiguity, and over 150 minutes starts a new photo meal. Once confirmed, the first photo establishes `latest_photo_at` and the normal last-photo anchor behavior takes over. No photo timestamp is synthesized.
+
+Final verification:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food.py tests/pilot/test_food_journey.py tests/pilot/test_photo_first_acceptance.py
+46 passed (five unrelated SWIG deprecation warnings)
+
+.venv/bin/ruff check src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+All checks passed!
+
+.venv/bin/mypy src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+Success: no issues found in 3 source files
+
+git diff --check
+clean
+```
+
+Self-review verified both the accepted nearby sequence and the exact September 7 → September 14 counterexample. The stale photo creates a new meal at the event time and leaves the old meal payload byte-for-byte unchanged. No other reviewed behavior was modified and no known concern remains.

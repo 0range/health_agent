@@ -201,9 +201,10 @@ class FoodCoach:
         photo = self._store.put(
             profile_id, "food", "photo", source_key, photo_payload, at=now,
         )
-        if not latest.payload.get("latest_photo_at"):
-            return self._attach_photo(profile_id, latest, photo)
-        gap = now - self._from_iso(str(latest.payload["latest_photo_at"]))
+        provisional_anchor = latest.payload.get(
+            "latest_photo_at", latest.payload["occurred_at"],
+        )
+        gap = now - self._from_iso(str(provisional_anchor))
         if gap < timedelta(minutes=40):
             return self._attach_photo(profile_id, latest, photo)
         if gap > timedelta(minutes=150):

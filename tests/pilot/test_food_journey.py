@@ -319,6 +319,26 @@ def test_explicit_text_meal_is_a_boundary_for_following_photo(tmp_path: Path) ->
     assert len(breakfast.payload["photos"]) == 1
 
 
+def test_stale_text_only_meal_does_not_capture_a_new_photo(tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    old = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "/ел суп", source_key="old-text", now=old)
+    old_meal = store.list(profile, "food", "meal")[0]
+    old_before = dict(old_meal.payload)
+
+    fresh = old + timedelta(days=7)
+    coach.handle(
+        profile, "", source_key="fresh-photo", now=fresh,
+        attachment=_photo(tmp_path, "fresh.jpg"),
+    )
+    assert len(store.list(profile, "food", "meal")) == 2
+    assert store.get(profile, old_meal.id).payload == old_before  # type: ignore[union-attr]
+    newest = store.list(profile, "food", "meal")[0]
+    assert newest.payload["occurred_at"] == fresh.isoformat()
+    assert newest.payload["photo_path"].endswith("fresh.jpg")
+
+
 def test_question_containing_intake_verb_does_not_create_meal() -> None:
     store, brain, profile = MemoryStore(), Brain(), uuid4()
     reply = FoodCoach(store, brain).handle(
