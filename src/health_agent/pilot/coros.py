@@ -7,7 +7,8 @@ keeps access tokens out of the health-agent store and makes the boundary testabl
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import re
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from health_agent.pilot.coros_auth import CorosAuthError, CorosOAuth
 
 COROS_MCP_ENDPOINT = "https://mcp.coros.com/mcp"
 COROS_ACTIVITY_TOOL = "querySportRecords"
+_ACTIVITY_LIMIT = 100
 COROS_READ_TOOLS = frozenset(
     {
         "querySportRecords",
@@ -188,8 +190,16 @@ class CorosReadClient:
         result = self._transport.call_tool(
             COROS_ACTIVITY_TOOL,
             {
-                "startDate": since.date().isoformat(),
-                "endDate": until.date().isoformat(),
+                "startDate": since.strftime("%Y%m%d"),
+                "endDate": until.strftime("%Y%m%d"),
+                "sportTypeCodes": None,
+                "minDistanceKm": None,
+                "maxDistanceKm": None,
+                "minDurationMinutes": None,
+                "maxDurationMinutes": None,
+                "maxAveragePace": None,
+                "locationKeyword": None,
+                "limit": _ACTIVITY_LIMIT,
             },
         )
         activities = _activity_list(result)
@@ -200,6 +210,8 @@ class CorosReadClient:
 
 def _activity_list(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Accept the common direct and MCP structured-content response envelopes."""
+    if result.get("isError") is True:
+        raise RuntimeError("COROS activity query reported an error")
     candidate: object = result.get("activities")
     if candidate is None:
         structured = result.get("structuredContent")
@@ -207,6 +219,84 @@ def _activity_list(result: dict[str, Any]) -> list[dict[str, Any]]:
             candidate = structured.get("activities", structured.get("records"))
     if candidate is None:
         candidate = result.get("records")
+    if candidate is None:
+        content = result.get("content")
+        if (
+            isinstance(content, list)
+            and len(content) == 1
+            and isinstance(content[0], dict)
+        ):
+            text = content[0].get("text")
+            if isinstance(text, str):
+                try:
+                    decoded = json.loads(text)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        "COROS activity response text is not JSON encoded"
+                    ) from error
+                if not isinstance(decoded, str):
+                    raise TypeError(
+                        "COROS activity response text did not decode to text"
+                    )
+                candidate = _parse_sport_records(decoded)
     if not isinstance(candidate, list):
         raise TypeError("COROS response is missing an activity list")
     return candidate  # type: ignore[return-value]
+
+
+def _parse_sport_records(text: str) -> list[dict[str, Any]]:
+    heading = re.match(
+        r"^Sport Records — (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}) \((\d+) records\)\n===\n",
+        text,
+    )
+    if heading is None:
+        raise ValueError("COROS activity response has an invalid heading")
+    expected = int(heading.group(3))
+    blocks = (
+        re.split(r"\n(?=\d+\. )", text[heading.end() :].strip()) if expected else []
+    )
+    activities = [_parse_record_block(block) for block in blocks if block.strip()]
+    if len(activities) != expected:
+        raise ValueError("COROS activity response record count did not match")
+    if expected >= _ACTIVITY_LIMIT:
+        for activity in activities:
+            activity["query_may_be_truncated"] = True
+    return activities
+
+
+def _parse_record_block(block: str) -> dict[str, Any]:
+    title = re.match(r"^\d+\. (.+) — (\d{4}-\d{2}-\d{2})$", block.splitlines()[0])
+    label = re.search(r"(?m)^\s*LabelId:\s*(\d+)\s*\|\s*SportType:\s*(\d+)\s*$", block)
+    window = re.search(r"startTimestamp=(\d+)\s*\|\s*endTimestamp=(\d+)", block)
+    duration = re.search(r"Duration:\s*([0-9:]+)", block)
+    distance = re.search(r"Distance:\s*([0-9]+(?:\.[0-9]+)?)\s*km", block)
+    if title is None or label is None:
+        raise ValueError("COROS activity response contains an invalid record")
+    result: dict[str, Any] = {
+        "id": label.group(1),
+        "label_id": label.group(1),
+        "source": "coros",
+        "sport": title.group(1),
+        "date": title.group(2),
+        "sport_type": int(label.group(2)),
+        "raw": block,
+    }
+    if window:
+        start_timestamp = int(window.group(1))
+        result["start_timestamp"] = start_timestamp
+        result["end_timestamp"] = int(window.group(2))
+        result["started_at"] = datetime.fromtimestamp(start_timestamp, UTC).isoformat()
+    if duration:
+        result["duration_s"] = _duration_seconds(duration.group(1))
+    if distance:
+        result["distance_km"] = float(distance.group(1))
+    return result
+
+
+def _duration_seconds(value: str) -> int:
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    raise ValueError("COROS activity duration is invalid")

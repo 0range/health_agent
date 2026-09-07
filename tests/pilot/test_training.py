@@ -120,7 +120,7 @@ def test_goal_proposal_acceptance_activities_and_reflection_are_durable():
 
 def test_profiles_are_isolated_and_missing_data_is_explicit():
     store, brain, first, second = MemoryStore(), Brain(), uuid4(), uuid4()
-    now = datetime(2026, 9, 13, 19, tzinfo=UTC)
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)  # 18:00 Europe/Moscow
     coach = TrainingCoach(store, brain)
     coach.handle(first, "Болит колено после бега", source_key="m1", now=now)
     coach.handle(first, "/план", source_key="p1", now=now)
@@ -132,9 +132,29 @@ def test_profiles_are_isolated_and_missing_data_is_explicit():
     notice = coach.due(first, now)
     assert len(notice) == 1 and "данн" in notice[0].text.lower()
     store.put(
-        first, "shared", "notice", notice[0].key, {"text": notice[0].text}, at=now
+        first, "training", "notice", notice[0].key, {"text": notice[0].text}, at=now
     )
     assert coach.due(first, now) == []
+
+
+def test_weekly_due_uses_moscow_time_and_training_delivery_ledger():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = TrainingCoach(store, brain)
+    store.put(
+        profile,
+        "training",
+        "accepted_plan",
+        "accepted",
+        {"text": "draft"},
+        at=datetime(2026, 9, 12, tzinfo=UTC),
+    )
+    assert coach.due(profile, datetime(2026, 9, 13, 14, 59, tzinfo=UTC)) == []
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    notice = coach.due(profile, now)[0]
+    store.put(profile, "shared", "notice", notice.key, {"text": notice.text}, at=now)
+    assert coach.due(profile, now)  # wrong domain is not a successful delivery ledger
+    store.put(profile, "training", "notice", notice.key, {"text": notice.text}, at=now)
+    assert coach.due(profile, now) == []
 
 
 def test_only_explicit_training_goals_are_used_and_every_prompt_has_medical_boundary():

@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from health_agent.pilot.contracts import (
     ActivitySource,
@@ -18,6 +19,7 @@ from health_agent.pilot.contracts import (
 )
 
 _DOMAIN = "training"
+_MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class TrainingCoach:
@@ -65,11 +67,12 @@ class TrainingCoach:
 
     def due(self, profile_id: UUID, now: datetime) -> list[Notice]:
         now = _aware(now)
-        if now.weekday() != 6 or now.hour < 18:
+        local_now = now.astimezone(_MOSCOW)
+        if local_now.weekday() != 6 or local_now.hour < 18:
             return []
-        week = now.date().isocalendar()
+        week = local_now.date().isocalendar()
         key = f"training-weekly-{week.year}-W{week.week:02d}"
-        if self._by_source(profile_id, "notice", key, domain="shared") is not None:
+        if self._by_source(profile_id, "notice", key) is not None:
             return []
         accepted = self._store.list(profile_id, _DOMAIN, "accepted_plan", limit=1)
         activities = self._import_activities(profile_id, now - timedelta(days=7), now)
