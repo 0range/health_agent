@@ -22,7 +22,7 @@ class LabExtractionProfile(Base):
     __tablename__ = "lab_extraction_profiles"
     __table_args__ = (
         CheckConstraint(
-            "daily_budget BETWEEN 1 AND 100", name="ck_extraction_daily_budget"
+            "daily_budget BETWEEN 1 AND 500", name="ck_extraction_daily_budget"
         ),
         CheckConstraint(
             "cloud_requests_today >= 0", name="ck_extraction_daily_requests"

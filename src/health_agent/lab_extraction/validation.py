@@ -86,6 +86,42 @@ def _field_span(field: str, excerpt: str, text: str, start: int = 0) -> tuple[in
     raise ValueError("candidate_evidence_mismatch")
 
 
+def restore_source_name_whitespace(payload: Any, text: str) -> Any:
+    """Restore a unique whitespace-only name identity; evidence stays untouched.
+
+    This is adapter preprocessing, not validation. The strict validator must still
+    accept the entire restored candidate before any result can be published.
+    """
+    if len(text) > MAX_PAGE_CHARACTERS:
+        raise ValueError("invalid_candidate_schema")
+    if not isinstance(payload, dict) or set(payload) != {"candidates"}:
+        raise ValueError("invalid_candidate_schema")
+    rows = payload["candidates"]
+    if not isinstance(rows, list) or len(rows) > MAX_CANDIDATES:
+        raise ValueError("invalid_candidate_count")
+    restored = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != _FIELDS:
+            raise ValueError("invalid_candidate_schema")
+        name = _source_string(row["source_name"], 120)
+        excerpt = _source_string(row["evidence_excerpt"], 1000)
+        if excerpt not in text:
+            raise ValueError("candidate_evidence_mismatch")
+        updated = dict(row)
+        if name not in excerpt:
+            # Literal tokens, case, punctuation and every non-whitespace byte
+            # must agree. A repeated excerpt or name is not a unique identity.
+            if text.find(excerpt, text.find(excerpt) + 1) != -1:
+                raise ValueError("candidate_evidence_mismatch")
+            pattern = r"\s+".join(re.escape(token) for token in name.split())
+            matches = list(re.finditer(pattern, excerpt))
+            if len(matches) != 1:
+                raise ValueError("candidate_evidence_mismatch")
+            updated["source_name"] = _source_string(matches[0].group(), 120)
+        restored.append(updated)
+    return {"candidates": restored}
+
+
 def validate_candidates(payload: Any, text: str) -> tuple[Candidate, ...]:
     if not isinstance(payload, dict) or set(payload) != {"candidates"}:
         raise ValueError("invalid_candidate_schema")
@@ -385,7 +421,10 @@ def _parse_labelled(text: str) -> dict[str, str | None] | None:
                 return None
             found[key] = value
             position = end
-    if set(found) not in ({"name", "value", "unit"}, {"name", "value", "unit", "reference"}):
+    if set(found) not in (
+        {"name", "value", "unit"},
+        {"name", "value", "unit", "reference"},
+    ):
         return None
     if _VALUE.fullmatch(found["value"]) is None:
         return None
@@ -400,7 +439,11 @@ def _parse_labelled(text: str) -> dict[str, str | None] | None:
 
 
 def _explicit_layout_fields(excerpt: str) -> dict[str, str | None] | None:
-    row = _parse_pipe(excerpt) if "|" in excerpt or "\t" in excerpt else _parse_labelled(excerpt)
+    row = (
+        _parse_pipe(excerpt)
+        if "|" in excerpt or "\t" in excerpt
+        else _parse_labelled(excerpt)
+    )
     if row is None:
         return None
     candidate = Candidate(
@@ -434,12 +477,21 @@ def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
     while start >= 0:
         end = start + len(excerpt)
         first = next(
-            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= start <= line_end),
+            (
+                index
+                for index, (line_start, line_end, _) in enumerate(lines)
+                if line_start <= start <= line_end
+            ),
             None,
         )
         last_position = max(start, end - 1)
         last = next(
-            (index for index, (line_start, line_end, _) in enumerate(lines) if line_start <= last_position < line_end or (line_start == line_end == last_position)),
+            (
+                index
+                for index, (line_start, line_end, _) in enumerate(lines)
+                if line_start <= last_position < line_end
+                or (line_start == line_end == last_position)
+            ),
             None,
         )
         if first is None or last is None:
@@ -447,7 +499,9 @@ def _complete_explicit_excerpt(excerpt: str, text: str) -> bool:
             continue
         first_start, _, _ = lines[first]
         _, last_end, _ = lines[last]
-        whole_lines = not text[first_start:start].strip() and not text[end:last_end].strip()
+        whole_lines = (
+            not text[first_start:start].strip() and not text[end:last_end].strip()
+        )
         if whole_lines:
             if "|" in excerpt or "\t" in excerpt:
                 return first == last and len(excerpt.splitlines()) == 1

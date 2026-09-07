@@ -16,7 +16,10 @@ from health_agent.lab_extraction.types import (
     Candidate,
     ExtractionError,
 )
-from health_agent.lab_extraction.validation import validate_candidates
+from health_agent.lab_extraction.validation import (
+    restore_source_name_whitespace,
+    validate_candidates,
+)
 
 _SCHEMA = {
     "type": "object",
@@ -172,6 +175,8 @@ def parse_lab_response(response: Any, text: str) -> tuple[Candidate, ...]:
     if len(output) > 80_000:
         raise ExtractionError("cloud_invalid_output")
     try:
-        return validate_candidates(json.loads(output), text)
+        return validate_candidates(
+            restore_source_name_whitespace(json.loads(output), text), text
+        )
     except (TypeError, ValueError):
         raise ExtractionError("cloud_invalid_output") from None

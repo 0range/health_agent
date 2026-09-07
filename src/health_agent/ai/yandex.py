@@ -19,7 +19,10 @@ from health_agent.lab_extraction.types import (
     Candidate,
     ExtractionError,
 )
-from health_agent.lab_extraction.validation import validate_candidates
+from health_agent.lab_extraction.validation import (
+    restore_source_name_whitespace,
+    validate_candidates,
+)
 from health_agent.questions.models import HealthQuestionContext
 from health_agent.questions.openai import (
     MEDICAL_SAFETY_INSTRUCTIONS,
@@ -224,6 +227,8 @@ class YandexLabExtractor(_YandexAdapter):
             raise ExtractionError("cloud_outcome_unknown") from None
         output = _chat_content(response)
         try:
-            return validate_candidates(json.loads(output), text)
+            return validate_candidates(
+                restore_source_name_whitespace(json.loads(output), text), text
+            )
         except (TypeError, ValueError):
             raise ExtractionError("cloud_invalid_output") from None

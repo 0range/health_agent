@@ -226,7 +226,7 @@ def test_yandex_records_actual_model_and_extraction_method(clean_database, tmp_p
     with session_scope(clean_database) as session:
         job = session.scalars(select(LabExtractionJob)).one()
         assert job.model_name == "gpt://synthetic-folder/qwen3.6-35b-a3b"
-        assert job.extraction_method == "yandex_structured"
+        assert job.extraction_method == "yandex_structured_name_ws_v2"
 
 
 def test_unknown_cloud_outcome_is_not_retried_on_restart(clean_database, tmp_path):

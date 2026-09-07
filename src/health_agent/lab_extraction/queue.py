@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import UUID, uuid4
 
-from sqlalchemy import Engine, exists, func, select, text
+from sqlalchemy import Engine, exists, func, select, text, true
 from sqlalchemy.orm import Session
 
 from health_agent.db import session_scope
@@ -118,7 +118,7 @@ class ExtractionQueue:
     def configure(
         self, profile_id: UUID, *, enabled: bool, openai: bool, daily_budget: int
     ) -> None:
-        if not 1 <= daily_budget <= 100:
+        if not 1 <= daily_budget <= 500:
             raise ExtractionError("invalid_daily_budget")
         with (
             profile_lock(self.engine, profile_id),
@@ -194,13 +194,18 @@ class ExtractionQueue:
                 for row in rows
             )
 
-    def discover_and_recover(self, profile_id: UUID) -> None:
+    def discover_and_recover(
+        self, profile_id: UUID, *, document_id: UUID | None = None
+    ) -> None:
         with session_scope(self.engine) as session:
             active = session.scalars(
                 select(LabExtractionJob)
                 .where(
                     LabExtractionJob.profile_id == profile_id,
                     LabExtractionJob.status.in_(("running", "cloud_in_flight")),
+                    true()
+                    if document_id is None
+                    else LabExtractionJob.document_id == document_id,
                 )
                 .with_for_update()
             ).all()
@@ -214,6 +219,7 @@ class ExtractionQueue:
                 .join(DocumentPage)
                 .where(
                     Document.profile_id == profile_id,
+                    true() if document_id is None else Document.id == document_id,
                     Document.media_type.in_(
                         ("application/pdf", "image/jpeg", "image/png")
                     ),
@@ -228,11 +234,11 @@ class ExtractionQueue:
                 .order_by(Document.created_at, Document.id, DocumentPage.page_number)
                 .limit(500)
             ).all()
-            for document_id, page in pages:
+            for discovered_document_id, page in pages:
                 session.add(
                     LabExtractionJob(
                         profile_id=profile_id,
-                        document_id=document_id,
+                        document_id=discovered_document_id,
                         page_number=page,
                         extractor_version=EXTRACTOR_VERSION,
                         status="queued" if page <= 100 else "needs_attention",
@@ -240,7 +246,14 @@ class ExtractionQueue:
                     )
                 )
 
-    def pending(self, profile_id: UUID, limit: int, *, cloud: bool) -> tuple[UUID, ...]:
+    def pending(
+        self,
+        profile_id: UUID,
+        limit: int,
+        *,
+        cloud: bool,
+        document_id: UUID | None = None,
+    ) -> tuple[UUID, ...]:
         states = ("queued", "waiting_cloud") if cloud else ("queued",)
         with session_scope(self.engine) as session:
             return tuple(
@@ -249,6 +262,9 @@ class ExtractionQueue:
                     .where(
                         LabExtractionJob.profile_id == profile_id,
                         LabExtractionJob.status.in_(states),
+                        true()
+                        if document_id is None
+                        else LabExtractionJob.document_id == document_id,
                         LabExtractionJob.extractor_version == EXTRACTOR_VERSION,
                     )
                     .order_by(LabExtractionJob.updated_at, LabExtractionJob.id)
@@ -327,7 +343,12 @@ class ExtractionQueue:
         unresolved: bool = False,
         cloud_method: str = "openai_structured",
     ) -> int:
-        if cloud_method not in {"openai_structured", "yandex_structured"}:
+        if cloud_method not in {
+            "openai_structured",
+            "yandex_structured",
+            "openai_structured_name_ws_v2",
+            "yandex_structured_name_ws_v2",
+        }:
             raise ExtractionError("cloud_request_rejected")
         with session_scope(self.engine) as session:
             # Same first lock as explicit review/date transitions. Never hold it

@@ -52,7 +52,7 @@ def configure(
         ),
     ] = False,
     disabled: bool = False,
-    daily_budget: Annotated[int, typer.Option(min=1, max=100)] = 20,
+    daily_budget: Annotated[int, typer.Option(min=1, max=500)] = 20,
 ) -> None:
     """Enable local processing; cloud is disabled unless explicitly requested."""
     service = _call(build_service)
@@ -78,10 +78,13 @@ def run(
     profile_id: UUID,
     limit: Annotated[int, typer.Option(min=1, max=20)] = 4,
     cloud_limit: Annotated[int, typer.Option(min=0, max=10)] = 2,
+    document_id: Annotated[UUID | None, typer.Option()] = None,
 ) -> None:
     """Discover/backfill new pages and process one bounded batch."""
     report = _call(
-        lambda: build_service().run(profile_id, limit=limit, cloud_limit=cloud_limit)
+        lambda: build_service().run(
+            profile_id, limit=limit, cloud_limit=cloud_limit, document_id=document_id
+        )
     )
     typer.echo(" ".join(f"{key}={value}" for key, value in asdict(report).items()))
 

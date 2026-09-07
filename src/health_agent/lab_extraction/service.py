@@ -94,7 +94,12 @@ class LabExtractionService:
         )
 
     def run(
-        self, profile_id: UUID, *, limit: int = 4, cloud_limit: int = 2
+        self,
+        profile_id: UUID,
+        *,
+        limit: int = 4,
+        cloud_limit: int = 2,
+        document_id: UUID | None = None,
     ) -> RunReport:
         if not 1 <= limit <= 20 or not 0 <= cloud_limit <= 10:
             raise ExtractionError("invalid_run_limit")
@@ -104,11 +109,11 @@ class LabExtractionService:
                 raise ExtractionError("extraction_not_configured")
             if not state.enabled:
                 return RunReport("deferred")
-            self.queue.discover_and_recover(profile_id)
+            self.queue.discover_and_recover(profile_id, document_id=document_id)
             processed = inserted = requests = 0
             cloud_available = True
             for job_id in self.queue.pending(
-                profile_id, limit, cloud=state.cloud_enabled
+                profile_id, limit, cloud=state.cloud_enabled, document_id=document_id
             ):
                 claim = self.queue.claim(profile_id, job_id)
                 processed += 1
@@ -163,9 +168,9 @@ class LabExtractionService:
                         candidates,
                         cloud=True,
                         cloud_method=(
-                            "yandex_structured"
+                            "yandex_structured_name_ws_v2"
                             if self.settings.ai_provider == "yandex"
-                            else "openai_structured"
+                            else "openai_structured_name_ws_v2"
                         ),
                     )
                 except ExtractionError as error:
