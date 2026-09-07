@@ -187,9 +187,16 @@ class FoodCoach:
         if meal is None:
             return "Сначала сохраните приём пищи."
         minutes = int(match.group(1))
+        target = now + timedelta(minutes=minutes)
+        occurred = self._from_iso(meal.payload["occurred_at"])
+        protocol = self._protocol(profile_id)
+        if target > occurred + timedelta(hours=4.5):
+            return "Не могу отложить: интервал напоминания уже закончится. Новое напоминание не запланировано."
+        if self._quiet(target, protocol):
+            return "Не могу отложить на тихие часы. Новое напоминание не запланировано."
         self._store.put(profile_id, "food", "control", source_key, {
             "action": "snooze", "meal_id": meal.id,
-            "until": (now + timedelta(minutes=minutes)).isoformat(),
+            "until": target.isoformat(),
         }, at=now)
         return f"Напомню через {minutes} мин."
 

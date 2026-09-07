@@ -100,7 +100,7 @@ class CorosSync:
                         continue
                     seen.add(identifier)
                     counts["fetched"] += 1
-                    payload, observed_at = _activity_record(activity)
+                    payload, observed_at = normalize_coros_activity(activity)
                     record = self.store.put(
                         self.profile_id,
                         "training",
@@ -209,7 +209,9 @@ def _activity_id(activity: dict[str, Any]) -> str:
     return str(identifier)
 
 
-def _activity_record(activity: dict[str, Any]) -> tuple[dict[str, Any], datetime]:
+def normalize_coros_activity(
+    activity: dict[str, Any],
+) -> tuple[dict[str, Any], datetime]:
     payload = dict(activity)
     value = activity.get("started_at")
     if isinstance(value, datetime):

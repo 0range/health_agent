@@ -167,6 +167,26 @@ def test_reminder_expires_and_bad_interval_config_falls_back(setup: tuple[Memory
     assert coach.due(profile, datetime(2026, 9, 9, 4, tzinfo=UTC)) == []  # no stale 07:00 alert
 
 
+def test_snooze_rejects_expired_and_quiet_hour_targets_without_promising_delivery(
+    setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime],
+) -> None:
+    store, _, coach, profile, noon = setup
+    coach.handle(profile, "/ел 12:00 обед", source_key="meal", now=noon)
+    late = coach.handle(
+        profile, "/позже 30", source_key="late", now=noon + timedelta(hours=4, minutes=20)
+    )
+    assert "не могу" in late.lower()
+    assert not store.list(profile, "food", "control")
+
+    evening = datetime(2026, 9, 8, 18, 30, tzinfo=UTC)  # 21:30 Moscow
+    coach.handle(profile, "/ел 21:30 обед", source_key="evening", now=evening)
+    quiet = coach.handle(
+        profile, "/позже 30", source_key="quiet", now=evening
+    )
+    assert "тихие часы" in quiet.lower()
+    assert not store.list(profile, "food", "control")
+
+
 def test_replayed_old_correction_does_not_reanchor_newer_meal(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
     store, _, coach, profile, _ = setup
     first = datetime(2026, 9, 7, 9, tzinfo=UTC)

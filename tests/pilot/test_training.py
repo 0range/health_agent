@@ -4,6 +4,10 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import httpx
+import openai
+import pytest
+
 from health_agent.pilot.contracts import Record
 from health_agent.pilot.training import TrainingCoach
 
@@ -126,9 +130,11 @@ def test_profiles_are_isolated_and_missing_data_is_explicit():
     coach.handle(first, "/план", source_key="p1", now=now)
     coach.handle(first, "/сохранить план", source_key="a1", now=now)
 
+    calls_before = len(brain.calls)
     result = coach.handle(second, "/итоги", source_key="i2", now=now)
     assert "нет данных" in result.lower()
-    assert "Болит" not in str(brain.calls[-1])
+    assert len(brain.calls) == calls_before
+    assert not store.list(second, "training", "conversation")
     notice = coach.due(first, now)
     assert len(notice) == 1 and "данн" in notice[0].text.lower()
     store.put(
@@ -216,3 +222,65 @@ def test_free_dialogue_replays_without_second_model_call_and_remembers_context()
         profile, "Что мы решили?", source_key="m2", now=now + timedelta(minutes=1)
     )
     assert "Хочу снова начать бегать" in str(brain.calls[-1])
+
+
+def test_plan_uses_bounded_dialogue_and_dialogue_sees_plan_without_accepting_it():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    coach = TrainingCoach(store, brain)
+    coach.handle(profile, "На этой неделе только плавание", source_key="m1", now=now)
+    proposal = coach.handle(profile, "/план", source_key="p1", now=now)
+    plan_payload = brain.calls[-1][1]
+    assert "только плавание" in str(plan_payload["recent_training_messages"])
+    assert not store.list(profile, "training", "accepted_plan")
+
+    coach.handle(profile, "Перенеси занятие в этом плане", source_key="m2", now=now)
+    dialogue_payload = brain.calls[-1][1]
+    assert dialogue_payload["latest_proposal"]["text"] == proposal
+    assert dialogue_payload["latest_accepted_plan"] is None
+
+    coach.handle(profile, "/сохранить план", source_key="a1", now=now)
+    coach.handle(profile, "Что в принятом плане?", source_key="m3", now=now)
+    assert brain.calls[-1][1]["latest_accepted_plan"]["text"] == proposal
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        openai.APITimeoutError(request=httpx.Request("POST", "https://test.invalid")),
+        openai.RateLimitError(
+            "limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", "https://test.invalid")
+            ),
+            body=None,
+        ),
+    ],
+)
+def test_real_provider_failures_fall_back_for_plan_dialogue_and_cached_due(failure):
+    store, profile = MemoryStore(), uuid4()
+    now = datetime(2026, 9, 13, 15, tzinfo=UTC)
+
+    def failing_brain(*args, **kwargs):
+        raise failure
+
+    coach = TrainingCoach(store, failing_brain)
+    assert "Черновик" in coach.handle(profile, "/план", source_key="p", now=now)
+    assert "сохранено" in coach.handle(profile, "Могу плавать", source_key="m", now=now)
+    coach.handle(profile, "/сохранить план", source_key="a", now=now)
+    first = coach.due(profile, now)
+    second = coach.due(profile, now)
+    assert first == second
+    assert len(store.list(profile, "training", "reflection")) == 1
+
+
+def test_date_only_interactive_activity_uses_canonical_moscow_day_precision():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    coach = TrainingCoach(
+        store, brain, activity_source=lambda *_: [{"id": "day", "date": "2026-09-06"}]
+    )
+    coach.handle(profile, "/план", source_key="p", now=now)
+    activity = store.list(profile, "training", "activity")[0]
+    assert activity.at.isoformat() == "2026-09-06T00:00:00+03:00"
+    assert activity.payload["timestamp_precision"] == "day"

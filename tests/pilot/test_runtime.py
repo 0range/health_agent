@@ -111,11 +111,12 @@ class Coach:
 def setup_runtime(tmp_path, clean_database):
     store = PilotStore(clean_database)
     coach = Coach(store)
-    actions = PilotActions(coach, store, "food")
+    actions = PilotActions(coach, store, "food", DEFAULT_PROFILE_ID)
     replies = PrivateReplyStore(tmp_path / "replies")
     state = SqliteTelegramState(tmp_path / "state.sqlite3", clock=lambda: NOW)
     state.register_bot(111, "food_test")
     state.bind_identity(111, TelegramIdentity(101, DEFAULT_PROFILE_ID, 101))
+    state.bind_identity(111, TelegramIdentity(202, uuid4(), 202))
     gateway = Gateway()
     messenger = TelegramMessenger(111, gateway, state)
     service = TelegramUpdateService(
@@ -125,7 +126,10 @@ def setup_runtime(tmp_path, clean_database):
         messenger,
         PilotQuestions(actions, replies),
         SimpleNamespace(status=lambda _: "status", sync=lambda _: "sync"),
-        PilotInbox(coach, store, "food", tmp_path, SimpleNamespace()),
+        PilotInbox(
+            coach, store, "food", tmp_path, SimpleNamespace(),
+            configured_profile_id=DEFAULT_PROFILE_ID,
+        ),
         staging_root=tmp_path / "staging",
         clock=lambda: NOW,
         text_actions=PreparedTelegramTextActions(actions, replies),
@@ -171,6 +175,10 @@ def test_telegram_postgres_replay_caption_and_identity(tmp_path, clean_database)
     assert len(PilotStore(clean_database).list(DEFAULT_PROFILE_ID, "food", "meal")) == 1
     service.process_update(update(3, "Чужие данные", user=202))
     assert len(coach.calls) == 1
+    assert "другого профиля" in gateway.sent[-1][1]
+    service.process_update(update(4, "Чужое фото", photo=True, user=202))
+    assert len(coach.calls) == 1
+    assert "другого профиля" in gateway.sent[-1][1]
 
 
 def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
@@ -195,6 +203,8 @@ def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
     state = SqliteTelegramState(tmp_path / "real-state.sqlite3", clock=lambda: NOW)
     state.register_bot(111, "food_test")
     state.bind_identity(111, TelegramIdentity(101, DEFAULT_PROFILE_ID, 101))
+    other_profile = uuid4()
+    state.bind_identity(111, TelegramIdentity(202, other_profile, 202))
     gateway = Gateway()
     messenger = TelegramMessenger(111, gateway, state)
     service = TelegramUpdateService(
@@ -202,9 +212,12 @@ def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
         gateway,
         state,
         messenger,
-        PilotQuestions(actions, replies),
+        PilotQuestions(PilotActions(coach, store, "food", DEFAULT_PROFILE_ID), replies),
         SimpleNamespace(status=lambda _: "status", sync=lambda _: "sync"),
-        PilotInbox(coach, store, "food", tmp_path, brain),
+        PilotInbox(
+            coach, store, "food", tmp_path, brain,
+            configured_profile_id=DEFAULT_PROFILE_ID,
+        ),
         staging_root=tmp_path / "real-staging",
         clock=lambda: NOW,
         text_actions=PreparedTelegramTextActions(actions, replies),
@@ -224,6 +237,10 @@ def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
     assert model_run.payload["status"] == "completed"
     assert model_run.payload["model"] == client.calls[0]["model"]
     assert model_run.payload["output"]
+
+    assert service.process_update(update(21, "секрет второго профиля", user=202)).terminal
+    assert len(client.calls) == 1
+    assert not store.list(other_profile, "food")
 
 
 def test_sleep_help_preserves_existing_commands_and_adds_sleep_commands():

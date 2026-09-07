@@ -17,6 +17,7 @@ from health_agent.pilot.contracts import (
     Record,
     Store,
 )
+from health_agent.pilot.coros_sync import normalize_coros_activity
 
 _DOMAIN = "training"
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -127,6 +128,7 @@ class TrainingCoach:
             "task": "weekly_plan",
             "annual_goals": goals,
             "recent_activities": activities,
+            "recent_training_messages": self._conversation_payloads(profile_id),
             "history_is_insufficient": sparse,
             "requirements": (
                 "Write a conservative, high-level seven-day draft in Russian. Do not invent races, "
@@ -136,7 +138,7 @@ class TrainingCoach:
         }
         try:
             answer = self._brain(_SYSTEM, payload)
-        except (RuntimeError, ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- provider boundary; storage stays outside
             answer = "Черновик недели: чередуйте лёгкую активность и отдых без заданного темпа. Какой объём тренировок для вас привычен сейчас?"
         if sparse and (answer.count("?") != 1 or not answer.rstrip().endswith("?")):
             answer = (
@@ -210,7 +212,7 @@ class TrainingCoach:
         }
         try:
             answer = self._brain(_SYSTEM, payload)
-        except (RuntimeError, ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- provider boundary; storage stays outside
             answer = (
                 "Итог ограничен сохранёнными фактами. Данных об активностях нет; это не означает, что тренировки были пропущены."
                 if not activities
@@ -238,11 +240,13 @@ class TrainingCoach:
             "task": "dialogue",
             "message": text,
             "conversation": self._conversation_payloads(profile_id),
+            "latest_proposal": self._latest_payload(profile_id, "proposal"),
+            "latest_accepted_plan": self._latest_payload(profile_id, "accepted_plan"),
             "requirements": "Reply in concise Russian; distinguish user reports, plans, and completed activity facts.",
         }
         try:
             answer = self._brain(_SYSTEM, payload)
-        except (RuntimeError, ValueError, TypeError):
+        except Exception:  # noqa: BLE001 -- provider boundary; storage stays outside
             answer = "Сообщение о тренировках сохранено. Анализ сейчас недоступен."
         self._store.put(
             profile_id,
@@ -258,6 +262,10 @@ class TrainingCoach:
         records = self._store.list(profile_id, _DOMAIN, "conversation", limit=12)
         return [r.payload for r in reversed(records)]
 
+    def _latest_payload(self, profile_id: UUID, kind: str) -> dict[str, Any] | None:
+        records = self._store.list(profile_id, _DOMAIN, kind, limit=1)
+        return records[0].payload if records else None
+
     def _import_activities(
         self, profile_id: UUID, since: datetime, until: datetime
     ) -> list[dict[str, Any]]:
@@ -271,13 +279,14 @@ class TrainingCoach:
                             json.dumps(activity, sort_keys=True, default=str).encode()
                         ).hexdigest()[:24]
                     )
+                    normalized, occurred_at = normalize_coros_activity(dict(activity))
                     self._store.put(
                         profile_id,
                         _DOMAIN,
                         "activity",
                         f"activity:{stable}",
-                        dict(activity),
-                        at=_activity_at(activity, until),
+                        normalized,
+                        at=occurred_at,
                     )
             except (RuntimeError, ValueError, TypeError):
                 # A read failure means unknown activity data, never a missed workout.
@@ -309,18 +318,6 @@ def _training_goal(record: Record) -> bool:
     domain = record.payload.get("domain")
     hierarchy = record.payload.get("hierarchy")
     return domain == "training" or hierarchy in ("training", ["training"])
-
-
-def _activity_at(activity: dict[str, Any], fallback: datetime) -> datetime:
-    value = (
-        activity.get("started_at") or activity.get("start_time") or activity.get("date")
-    )
-    if isinstance(value, str):
-        try:
-            return _aware(datetime.fromisoformat(value))
-        except ValueError:
-            pass
-    return fallback
 
 
 def _aware(value: datetime) -> datetime:

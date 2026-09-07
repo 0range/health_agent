@@ -1,5 +1,6 @@
 """Adapters that run each coach through the established Telegram delivery path."""
 
+import hashlib
 import json
 import os
 import tempfile
@@ -54,12 +55,13 @@ from health_agent.visits.telegram import DatabaseVisitCommands
 
 HELP = {
     "sleep": HELP_TEXT
-    + "\n\nПомогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку. Можно голосом.\n/дневник — записи\n/итоги — разбор недели\n/утро 09:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
-    "food": "Присылай фото еды с подписью или /ел 12:00 обед. Сохраню приём, оценю тарелку и напомню о следующем.\n/время 12:30 — исправить время\n/позже 30 — отложить\n/пропустить — пропустить напоминание\n/сегодня · /неделя — дневник\n/напоминания выкл — пауза\n/цели — цели",
+    + "\n\nПомогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку.\n/дневник — записи\n/итоги — разбор недели\n/утро 09:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
+    "food": "Присылай фото еды с подписью или /ел 12:00 обед. Сохраню приём, оценю тарелку и напомню о следующем.\n/время 12:30 — исправить время\n/порция 200 г — уточнить порцию\n/позже 30 — отложить\n/пропустить — пропустить напоминание\n/сегодня · /неделя — дневник\n/напоминания выкл — пауза\n/цели — цели",
     "training": "Здесь годовые ориентиры, план недели и разбор тренировок.\n/год — ориентиры года\n/план — предложить неделю\n/сохранить план — принять предложение\n/итоги — план и факт\n/цели — цели\nПланы остаются здесь, во внешние системы ничего не записываю.",
 }
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
+_PROFILE_REJECTED = "Этот пилот настроен для другого профиля. Сообщение не обрабатывалось."
 
 
 @contextmanager
@@ -74,10 +76,17 @@ def _pilot_lock(path: Path):
 
 
 class PilotActions:
-    def __init__(self, coach: Coach, store: Store, domain: str) -> None:
+    def __init__(
+        self, coach: Coach, store: Store, domain: str,
+        configured_profile_id: UUID | None = None,
+    ) -> None:
         self.coach, self.store, self.domain = coach, store, domain
+        self.configured_profile_id = configured_profile_id
 
     def handle(self, context: MessageContext, text: str) -> str:
+        if (self.configured_profile_id is not None
+                and context.profile_id != self.configured_profile_id):
+            return _PROFILE_REJECTED
         key = f"telegram:{context.bot_id}:{context.update_id}"
         now = context.sent_at or context.received_at
         source = self.store.put(
@@ -125,15 +134,27 @@ class PilotInbox:
         root: Path,
         brain: PilotBrain,
         medical: TelegramMedicalInbox | None = None,
+        configured_profile_id: UUID | None = None,
     ) -> None:
         self.coach, self.store, self.domain = coach, store, domain
         self.root, self.brain, self.medical = root, brain, medical
+        self.configured_profile_id = configured_profile_id
 
     def ingest(
         self, provenance: AttachmentProvenance, chunks: Iterable[bytes]
     ) -> InboxReceipt:
         if self.medical is not None and provenance.kind == "document":
             return self.medical.ingest(provenance, chunks)
+        if (self.configured_profile_id is not None
+                and provenance.context.profile_id != self.configured_profile_id):
+            digest = hashlib.sha256()
+            size = 0
+            for chunk in chunks:
+                digest.update(chunk)
+                size += len(chunk)
+            return InboxReceipt(
+                digest.hexdigest(), size, "profile_rejected", _PROFILE_REJECTED
+            )
         staging = private_directory(self.root / "staging")
         descriptor, temporary = tempfile.mkstemp(dir=staging)
         temporary_path = Path(temporary)
@@ -410,7 +431,7 @@ def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
         gateway = TelegramBotAPI(credential.token)
         messenger = TelegramMessenger(credential.bot_id, gateway, state)
         replies = PrivateReplyStore(root / "prepared-replies")
-        actions = PilotActions(coach, store, domain)
+        actions = PilotActions(coach, store, domain, profile_id)
         handlers: Any = actions
         medical = None
         if domain == "sleep":
@@ -427,7 +448,7 @@ def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
             medical = TelegramMedicalInbox(
                 engine, FileVault(settings.vault_root), root / "medical-staging"
             )
-        inbox = PilotInbox(coach, store, domain, root, brain, medical)
+        inbox = PilotInbox(coach, store, domain, root, brain, medical, profile_id)
         updates = TelegramUpdateService(
             credential.bot_id,
             gateway,
