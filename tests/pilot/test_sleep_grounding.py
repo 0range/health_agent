@@ -231,13 +231,19 @@ def test_multiturn_causal_continuity(last):
         assert "сколько часов" not in reply
 
 
-def test_new_topic_wins_over_previous_sleep_question():
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Что означает анализ холестерина?",
+        "Объясни анализ холестерина",
+        "Расскажи про холестерин",
+    ],
+)
+def test_new_topic_wins_over_previous_sleep_question(question):
     brain, profile = FakeBrain("Ответ о холестерине"), uuid4()
     coach = SleepCoach(MemoryStore(), brain)
     coach.handle(profile, "Почему я спать хочу?", source_key="s", now=NOW)
-    reply = coach.handle(
-        profile, "Что означает анализ холестерина?", source_key="c", now=NOW
-    )
+    reply = coach.handle(profile, question, source_key="c", now=NOW)
     assert reply == "Ответ о холестерине"
     assert brain.calls[-1][1]["focused_sleep"] is False
 
@@ -288,10 +294,15 @@ def test_production_lab_identity_and_aggregate_not_redated_as_measurement():
         "А сейчас инфекция возможна?",
         "Может, дело всё-таки в погоде?",
         "Кстати, температуры нет, новые анализы есть",
+        "А это инфекция? Объясни.",
+        "Расскажи, может дело в погоде?",
+        "Объясни подробнее, почему так устал",
     ],
 )
 @pytest.mark.parametrize("intermediate", [False, True])
-def test_real_question_and_relevant_unanchored_followups_stay_causal(followup, intermediate):
+def test_real_question_and_relevant_unanchored_followups_stay_causal(
+    followup, intermediate
+):
     brain, profile = FakeBrain("это не инфекция"), uuid4()
     coach = SleepCoach(MemoryStore(), brain, health_context=lambda _p, _q: context())
     coach.handle(

@@ -17,12 +17,12 @@ _FOLLOWUP = re.compile(
     re.IGNORECASE,
 )
 _CONTINUITY_TOPICS = re.compile(
-    r"инфекц|погод|анализ|температур|темрератур|начал|спал|сплю|сонлив|устал",
+    r"инфекц|погод|температур|темрератур|начал|спал|сплю|сонлив|устал",
     re.IGNORECASE,
 )
 _NEW_TOPIC = re.compile(
     r"что (?:означает|такое|значит)|как (?:лечить|принимать)|"
-    r"расскажи|объясни|другой вопрос|сменим тему",
+    r"другой вопрос|сменим тему",
     re.IGNORECASE,
 )
 _LAB = re.compile(
@@ -67,7 +67,11 @@ def _continues_topic(text: str) -> bool:
     # Standalone requests for explanations or a new topic take precedence.
     if _NEW_TOPIC.search(text):
         return False
-    return bool(_FOLLOWUP.search(text) or _CONTINUITY_TOPICS.search(text))
+    lab_update = bool(
+        re.search(r"анализ", text, re.IGNORECASE)
+        and re.search(r"нов\w*|стар\w*|год\w* назад|есть|нет\w*", text, re.IGNORECASE)
+    )
+    return bool(_FOLLOWUP.search(text) or _CONTINUITY_TOPICS.search(text) or lab_update)
 
 
 def _historical_request(question: str) -> bool:
