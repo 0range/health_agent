@@ -30,7 +30,7 @@ _COMPONENT_TERMS = {
     "vegetables": ("овощ", "салат", "зелень", "томат", "огур", "капуст", "vegetable"),
     "protein": ("мяс", "рыб", "яйц", "кур", "индей", "боб", "тофу", "protein"),
     "grains": ("рис", "греч", "овся", "хлеб", "паст", "макарон", "grain"),
-    "fruit": ("фрукт", "яблок", "банан", "ягод", "fruit"),
+    "fruit": ("фрукт", "яблок", "банан", "ягод", "малин", "клубник", "fruit"),
     "dairy": ("молок", "йогур", "кефир", "сыр", "творог", "dairy"),
 }
 
@@ -61,6 +61,8 @@ class FoodCoach:
             return self._control(profile_id, "skip", source_key, now)
         if lowered.startswith("/время"):
             return self._correct(profile_id, command, source_key, now)
+        if lowered.startswith("/порция"):
+            return self._correct_portion(profile_id, command, source_key, now)
         if lowered.startswith("/сегодня"):
             return self._summary(profile_id, now, days=1)
         if lowered.startswith("/неделя"):
@@ -119,26 +121,32 @@ class FoodCoach:
             existing = self._store.put(
                 profile_id, "food", "meal", source_key, payload, at=occurred,
             )
-        payload = dict(existing.payload)
+        updated = self._analyse(profile_id, existing)
+        if updated.payload.get("analysis") is None:
+            return "Приём пищи сохранён; анализ сейчас недоступен. Напоминание продолжит работать."
+        return self._feedback(updated.payload)
+
+    def _analyse(self, profile_id: UUID, meal: Record) -> Record:
+        payload = dict(meal.payload)
         try:
             raw = self._brain(
                 self._system_prompt(),
-                {"meal": {"text": payload["original"], "caption": payload["caption"]},
+                {"meal": {
+                    "text": payload["original"], "caption": payload["caption"],
+                    "portion": payload.get("user_portion"),
+                },
                  "protocol": self._protocol(profile_id)},
                 image_path=Path(payload["photo_path"]) if payload["photo_path"] else None,
             )
             payload["analysis_raw"] = raw
             payload["analysis"] = self._parse_analysis(
                 raw, bool(payload["photo_path"]), str(payload["category"]),
-                self._protocol(profile_id),
+                self._protocol(profile_id), payload.get("user_portion"),
             )
             payload["analysis_error"] = None if payload["analysis"] is not None else "invalid_json"
         except Exception as exc:  # noqa: BLE001 - authorized model callable is a boundary
             payload["analysis_error"] = type(exc).__name__
-        updated = self._store.patch(profile_id, existing.id, payload)
-        if updated.payload.get("analysis") is None:
-            return "Приём пищи сохранён; анализ сейчас недоступен. Напоминание продолжит работать."
-        return self._feedback(updated.payload)
+        return self._store.patch(profile_id, meal.id, payload)
 
     def _correct(self, profile_id: UUID, text: str, source_key: str, now: datetime) -> str:
         previous = self._by_source(profile_id, "correction", source_key)
@@ -175,6 +183,33 @@ class FoodCoach:
             "until": (now + timedelta(minutes=minutes)).isoformat(),
         }, at=now)
         return f"Напомню через {minutes} мин."
+
+    def _correct_portion(
+        self, profile_id: UUID, text: str, source_key: str, now: datetime,
+    ) -> str:
+        previous = self._by_source(profile_id, "portion_correction", source_key)
+        if previous is not None:
+            meal = self._store.get(profile_id, str(previous.payload["meal_id"]))
+            return (self._feedback(meal.payload) if meal and meal.payload.get("analysis")
+                    else "Порция уже сохранена; анализ сейчас недоступен.")
+        portion = text[len("/порция"):].strip()
+        if not portion or len(portion) > 100:
+            return "Укажите порцию, например: /порция 200 г."
+        meal = self._latest_meal(profile_id)
+        if meal is None:
+            return "Сначала сохраните приём пищи."
+        correction = self._store.put(
+            profile_id, "food", "portion_correction", source_key,
+            {"meal_id": meal.id, "portion": portion}, at=now,
+        )
+        payload = dict(meal.payload)
+        payload["user_portion"] = correction.payload["portion"]
+        payload["portion_corrected_at"] = now.isoformat()
+        persisted = self._store.patch(profile_id, meal.id, payload)
+        updated = self._analyse(profile_id, persisted)
+        if updated.payload.get("analysis") is None:
+            return "Порция сохранена; повторный анализ сейчас недоступен."
+        return self._feedback(updated.payload)
 
     def _control(self, profile_id: UUID, action: str, source_key: str, now: datetime) -> str:
         meal = self._latest_meal(profile_id)
@@ -280,6 +315,7 @@ class FoodCoach:
     @staticmethod
     def _parse_analysis(
         raw: str, photo: bool, category: str = "", protocol: dict[str, Any] | None = None,
+        user_portion: Any = None,
     ) -> dict[str, Any] | None:
         try:
             cleaned = raw.strip()
@@ -297,14 +333,26 @@ class FoodCoach:
                            if isinstance(foods, list) else [])
         portion = result.get("portion_estimate")
         result["portion_estimate"] = portion.strip()[:200] if isinstance(portion, str) and portion.strip() else None
+        result["portion_user"] = (user_portion.strip()[:100]
+                                  if isinstance(user_portion, str) and user_portion.strip()
+                                  else None)
         unknowns = result.get("unknowns")
         result["unknowns"] = ([item.strip() for item in unknowns
                                if isinstance(item, str) and item.strip()][:50]
                               if isinstance(unknowns, list) else [])
         supplied_components = result.get("plate_components")
-        result["plate_components"] = ([item for item in supplied_components
-                                       if isinstance(item, str) and item in _COMPONENT_LABELS][:5]
-                                      if isinstance(supplied_components, list) else [])
+        if isinstance(supplied_components, list):
+            result["plate_components"] = [
+                item for item in supplied_components
+                if isinstance(item, str) and item in _COMPONENT_LABELS
+            ][:5]
+        elif isinstance(supplied_components, dict):
+            result["plate_components"] = [
+                key for key, evidence in supplied_components.items()
+                if key in _COMPONENT_LABELS and isinstance(evidence, str) and evidence.strip()
+            ][:5]
+        else:
+            result["plate_components"] = []
         for key in _NUTRIENTS:
             number = result.get(key)
             if number is None:
@@ -354,8 +402,8 @@ class FoodCoach:
                         if item in expected and item not in components), None)
         if missing is not None:
             return f"{observation} По выбранному правилу можно добавить {_COMPONENT_LABELS[missing]}."
-        if analysis.get("portion_estimate") is None:
-            return f"{observation} Уточните размер порции для более полной записи."
+        if analysis.get("portion_estimate") is None and analysis.get("portion_user") is None:
+            return f"{observation} Уточните размер порции: /порция 200 г."
         return observation
 
     @staticmethod
@@ -403,8 +451,9 @@ class FoodCoach:
     @staticmethod
     def _system_prompt() -> str:
         return (
-            "Return JSON only with foods, plate_components (only vegetables, protein, grains, "
-            "fruit, dairy), portion_estimate, nullable kcal, protein_g, fat_g, "
+            "Return one JSON object only. plate_components MUST be a JSON array using only "
+            "these exact strings: [\"vegetables\", \"protein\", \"grains\", \"fruit\", "
+            "\"dairy\"]. Also return foods, portion_estimate, nullable kcal, protein_g, fat_g, "
             "carbs_g, saturated_fat_g, fiber_g, cholesterol_mg, confidence, unknowns, feedback. "
             "Never invent quantities. Missing nutrients are null. A photo portion is an estimate. "
             "Feedback is short and neutral: one plate observation and at most one optional change "

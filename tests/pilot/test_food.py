@@ -271,3 +271,64 @@ def test_week_summary_excludes_overnight_and_post_dinner_adjacency(
 
     summary = coach.handle(profile, "/неделя", source_key="week", now=lunch)
     assert "1 из 1" in summary
+
+
+def test_live_vision_component_dict_is_normalized_without_false_fruit_change(
+    setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime],
+) -> None:
+    store, brain, coach, profile, noon = setup
+    store.put(profile, "food", "settings", "protocol", {
+        "plate_rules": {"lunch": ["grains", "fruit"]},
+    })
+    brain.reply = json.dumps({
+        "foods": ["Овсяная каша", "Малина", "Орехи (миндаль)"],
+        "plate_components": {
+            "grains": "Овсяная каша", "fruit": "Малина", "vegetables": None,
+            "protein": None, "dairy": None,
+        },
+        "portion_estimate": None,
+        "kcal": None, "protein_g": None, "fat_g": None, "carbs_g": None,
+        "saturated_fat_g": None, "fiber_g": None, "cholesterol_mg": None,
+        "confidence": 0.6, "unknowns": ["размер порции"],
+        "feedback": "Молочные продукты запрещены.",
+    }, ensure_ascii=False)
+    answer = coach.handle(profile, "овсянка", source_key="live-photo", now=noon)
+    analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
+    assert analysis["plate_components"] == ["grains", "fruit"]
+    assert "добавить фрукты" not in answer.lower()
+    assert "/порция 200 г" in answer
+
+
+def test_portion_correction_reanalyses_same_meal_and_photo_idempotently(tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    photo = Attachment(tmp_path / "oatmeal.jpg", "image/jpeg", "завтрак")
+    brain.reply = json.dumps({
+        "foods": ["Овсяная каша"], "plate_components": {"grains": "каша"},
+        "portion_estimate": None, "kcal": None, "protein_g": None, "fat_g": None,
+        "carbs_g": None, "saturated_fat_g": None, "fiber_g": None,
+        "cholesterol_mg": None, "confidence": 0.5, "unknowns": ["порция"],
+        "feedback": "ignored",
+    }, ensure_ascii=False)
+    coach.handle(profile, "", source_key="photo-meal", now=now, attachment=photo)
+    meal_before = store.list(profile, "food", "meal")[0]
+    due_before = coach.due(profile, now + timedelta(hours=3, minutes=30))[0].key
+
+    brain.reply = Brain().reply
+    answer = coach.handle(
+        profile, "/порция 200 г", source_key="portion-fix", now=now + timedelta(minutes=5),
+    )
+    meal_after = store.list(profile, "food", "meal")[0]
+    assert meal_after.id == meal_before.id
+    assert meal_after.payload["occurred_at"] == meal_before.payload["occurred_at"]
+    assert meal_after.payload["user_portion"] == "200 г"
+    assert brain.calls[-1][0]["meal"]["portion"] == "200 г"
+    assert brain.calls[-1][1] == photo.path
+    assert coach.due(profile, now + timedelta(hours=3, minutes=30))[0].key == due_before
+    calls = len(brain.calls)
+    assert coach.handle(
+        profile, "/порция 200 г", source_key="portion-fix", now=now + timedelta(minutes=5),
+    ) == answer
+    assert len(brain.calls) == calls
+    assert len(store.list(profile, "food", "meal")) == 1
