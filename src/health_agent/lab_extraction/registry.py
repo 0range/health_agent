@@ -106,7 +106,16 @@ _ANALYTES = (
         "nmol/L|ng/mL|ng/dL",
     ),
     ("estradiol", "Estradiol|Эстрадиол", "pmol/L|pg/mL"),
-    ("prolactin", "Prolactin|Пролактин", "ng/mL|mIU/L|uIU/mL"),
+    (
+        "prolactin",
+        "Prolactin|Пролактин|Пролактин / Prolactin",
+        "ng/mL|mIU/L|uIU/mL|mU/L",
+    ),
+    (
+        "monomeric_prolactin",
+        "Пролактин мономерный (пост ПЭГ)|Пролактин мономерный (пост-ПЭГ)|Monomeric prolactin",
+        "ng/mL|mIU/L|uIU/mL|mU/L",
+    ),
     ("progesterone", "Progesterone|Прогестерон", "nmol/L|ng/mL"),
     ("cortisol", "Cortisol|Кортизол", "nmol/L|ug/dL"),
     ("insulin", "Insulin|Инсулин", "uIU/mL|pmol/L"),
@@ -128,11 +137,9 @@ _UNIT_ALIASES = {
     "mg/L": "мг/л",
     "U/L": "ед/л|ед./л|u/l|iu/l|ме/л",
     "mIU/L": "мме/л",
+    "mU/L": "мЕд/л",
     "uIU/mL": "µiu/ml|μiu/ml|мкме/мл",
-    "10^9/L": (
-        "10^9/л|10*9/л|10⁹/л|10⁹/l|10*9/l|"
-        "тыс/мкл|*10^9/л|10*9/литр|10^9/литр"
-    ),
+    "10^9/L": ("10^9/л|10*9/л|10⁹/л|10⁹/l|10*9/l|тыс/мкл|*10^9/л|10*9/литр|10^9/литр"),
     "10^12/L": "10^12/л|10*12/л|10¹²/л|10¹²/l|10*12/l",
     "fL": "фл",
     "pg": "пг|пг/кл",

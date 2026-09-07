@@ -12,6 +12,165 @@ from health_agent.pdf_lab_geometry import (
     extract_lab_geometry,
 )
 
+RUSSIAN_HEADERS = [
+    "Параметр",
+    "Значение",
+    "Ед. измер.",
+    "Реф.значение",
+    "Представление",
+]
+
+
+def preamble_grid_pdf(*, headers=None, rows=None, competing=False, merged_at=None):
+    headers = RUSSIAN_HEADERS if headers is None else headers
+    rows = (
+        rows
+        if rows is not None
+        else [
+            ["Пролактин / Prolactin", "234", "мЕд/л", "80-400", "[-*-]"],
+            ["Пролактин мономерный (пост ПЭГ)", "156", "мЕд/л", "60-300", "[---]*"],
+        ]
+    )
+    body = [headers, *rows]
+    if competing:
+        body.append(headers if competing is True else competing)
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=850, height=500)
+    font = pymupdf.Font("cjk")
+    page.insert_font(fontname="cyr", fontbuffer=font.buffer)
+    xs = [20, 370, 460, 550, 660, 825]
+    ys = [20 + 35 * index for index in range(len(body) + 4)]
+    for x in (xs[0], xs[-1]):
+        page.draw_line((x, ys[0]), (x, ys[-1]))
+    for index, x in enumerate(xs[1:-1], 1):
+        bottom = ys[3] if merged_at == index else ys[-2]
+        page.draw_line((x, ys[2]), (x, bottom))
+    for y in ys:
+        page.draw_line((xs[0], y), (xs[-1], y))
+    for row, value in (
+        (0, "Synthetic report"),
+        (1, "Collection date:"),
+        (len(body) + 2, "Signature 2025-04-03 Prolactin 999 mU/L 1-1000"),
+    ):
+        page.insert_text((25, ys[row] + 21), value, fontname="cyr", fontsize=9)
+    for row, values in enumerate(body, 2):
+        for column, value in enumerate(values):
+            page.insert_text(
+                (xs[column] + 4, ys[row] + 21), value, fontname="cyr", fontsize=9
+            )
+    source = pdf.tobytes()
+    pdf.close()
+    return source
+
+
+def test_preamble_grid_preserves_exact_source_cells_and_versions_evidence():
+    source = preamble_grid_pdf()
+    result = extract_lab_geometry(source, 1)
+    assert len(result.rows) == 2
+    assert result.method == "pdf_table_v2"
+    assert result.source_sha256 == hashlib.sha256(source).hexdigest()
+    assert [row.result.text for row in result.rows] == ["234", "156"]
+    assert [row.unit.text for row in result.rows] == ["мЕд/л", "мЕд/л"]
+    assert [row.reference.text for row in result.rows] == ["80-400", "60-300"]
+    assert [row.comment.text for row in result.rows] == ["[-*-]", "[---]*"]
+    assert "999" not in result.text
+    assert "*" not in result.text
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        ["Параметр", "Значение", "Other", "Реф.значение", "Представление"],
+        ["Параметр", "Значение", "Значение", "Реф.значение", "Представление"],
+        ["Параметр", "Значение", "Реф.значение", "Ед. измер.", "Представление"],
+    ],
+)
+def test_preamble_grid_rejects_inexact_headers(headers):
+    assert extract_lab_geometry(preamble_grid_pdf(headers=headers), 1).rows == ()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"competing": True},
+        {"merged_at": 1},
+        {"merged_at": 2},
+        {"merged_at": 3},
+        {"merged_at": 4},
+        {"competing": ["Test", "Result", "Reference range", "Unit", "Comment"]},
+        {"rows": [["Unknown marker", "234", "мЕд/л", "80-400", ""]]},
+        {"rows": [["Пролактин / Prolactin", "234", "g/L", "80-400", ""]]},
+    ],
+)
+def test_preamble_grid_rejects_ambiguous_geometry_and_invalid_rows(options):
+    assert extract_lab_geometry(preamble_grid_pdf(**options), 1).rows == ()
+
+
+def test_prolactin_exact_aliases_and_distinct_literal_unit_families():
+    assert canonical_name("Пролактин / Prolactin") == "prolactin"
+    for alias in (
+        "Пролактин мономерный (пост ПЭГ)",
+        "Пролактин мономерный (пост-ПЭГ)",
+        "Monomeric prolactin",
+    ):
+        assert canonical_name(alias) == "monomeric_prolactin"
+    assert canonical_name("Macroprolactin").startswith("unmapped_")
+    for name in ("prolactin", "monomeric_prolactin"):
+        assert normalize_registered(name, "123", "мЕд/л")[1] == "mU/L"
+        for unit in ("mU/L", "mIU/L", "uIU/mL", "ng/mL"):
+            assert normalize_registered(name, "123", unit)[1] == unit
+
+
+def test_second_exact_russian_header_maps_wrapped_reference_heading():
+    source = preamble_grid_pdf(
+        headers=[
+            "Показатель",
+            "Результат",
+            "Ед. изм.",
+            "Референсные\nпределы",
+            "Комментарий",
+        ],
+        rows=[["Глюкоза", "5.2", "ммоль/л", "3.9-5.5", ""]],
+    )
+    result = extract_lab_geometry(source, 1)
+    assert len(result.rows) == 1
+    assert result.method == "pdf_table_v2"
+    assert result.rows[0].reference.text == "3.9-5.5"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ["Monomeric prolactin", "156", "60-300", "mIU/L", ""],
+        ["Prolactin", "234", "80-400", "mU/L", ""],
+    ],
+)
+def test_new_registry_rows_in_old_header_require_v2(row):
+    result = extract_lab_geometry(gridded_pdf(rows=[row]), 1)
+    assert len(result.rows) == 1
+    assert result.method == "pdf_table_v2"
+
+
+def test_preamble_grid_does_not_strip_numeric_flag():
+    source = preamble_grid_pdf(
+        rows=[["Пролактин / Prolactin", "234*", "мЕд/л", "80-400", "[---]*"]]
+    )
+    assert extract_lab_geometry(source, 1).rows == ()
+
+
+def test_separate_physical_tables_on_one_page_are_independently_proven():
+    source_pdf = pymupdf.open(stream=preamble_grid_pdf(), filetype="pdf")
+    combined = pymupdf.open()
+    page = combined.new_page(width=850, height=1000)
+    page.show_pdf_page(pymupdf.Rect(0, 0, 850, 500), source_pdf, 0)
+    page.show_pdf_page(pymupdf.Rect(0, 500, 850, 1000), source_pdf, 0)
+    result = extract_lab_geometry(combined.tobytes(), 1)
+    combined.close()
+    source_pdf.close()
+    assert len(result.rows) == 4
+    assert result.method == "pdf_table_v2"
+    assert result.rows[2].name.bbox[1] > result.rows[1].name.bbox[3]
+
 
 def gridded_pdf(*, headers=None, rows=None, column_major=True, merged_at=None):
     headers = headers or ["Test", "Result", "Reference range", "Unit", "Comment"]
@@ -235,7 +394,9 @@ def test_kdl_rejects_excess_nested_drawing_items_with_safe_error():
         ("Средний объем тромбоцитов (MPV)", "fL", "mpv"),
     ],
 )
-def test_allowed_aliases_are_exact_and_unit_compatible(source_name, source_unit, expected):
+def test_allowed_aliases_are_exact_and_unit_compatible(
+    source_name, source_unit, expected
+):
     canonical = canonical_name(source_name)
     assert canonical == expected
     assert normalize_registered(canonical, "1", source_unit)[1] != ""

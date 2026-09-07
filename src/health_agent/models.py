@@ -165,7 +165,9 @@ class PageEvidence(Base):
         UniqueConstraint("id", "document_id", "page_number"),
         UniqueConstraint("document_id", "page_number", "method", "source_sha256"),
         CheckConstraint("page_number >= 1", name="ck_page_evidence_page_positive"),
-        CheckConstraint("method IN ('pdf_table_v1')", name="ck_page_evidence_method"),
+        CheckConstraint(
+            "method IN ('pdf_table_v1', 'pdf_table_v2')", name="ck_page_evidence_method"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

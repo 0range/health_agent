@@ -8,10 +8,13 @@ from uuid import uuid4
 
 import pymupdf
 import pytest
+from alembic.config import Config
 from sqlalchemy import Engine, event, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
+from test_pdf_lab_geometry import preamble_grid_pdf
 
+from alembic import command
 from health_agent import pdf_evidence
 from health_agent.importer import correct_observation, import_document
 from health_agent.models import (
@@ -25,6 +28,113 @@ from health_agent.models import (
 )
 from health_agent.pdf_evidence import persist_pdf_evidence, repair_pdf_evidence
 from health_agent.vault import FileVault
+
+
+@pytest.mark.parametrize("method", ["pdf_table_v1", "pdf_table_v2"])
+def test_evidence_version_migration_preserves_rows_and_guards_downgrade(
+    session: Session, clean_database: Engine, tmp_path: Path, method: str
+) -> None:
+    source = tmp_path / "migration-synthetic.pdf"
+    data = _pdf(source)
+    document = _legacy_document(session, FileVault(tmp_path / "vault"), source)
+    evidence = PageEvidence(
+        document_id=document.id,
+        page_number=1,
+        method=method,
+        source_sha256=hashlib.sha256(data).hexdigest(),
+        evidence_json={"synthetic": "immutable source"},
+    )
+    session.add(evidence)
+    session.flush()
+    evidence_id = evidence.id
+    session.commit()
+    config = Config("alembic.ini")
+
+    def roundtrip() -> None:
+        with clean_database.begin() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0016_extraction_backfill_budget")
+            command.upgrade(config, "head")
+
+    if method == "pdf_table_v2":
+        with pytest.raises(
+            DBAPIError, match="Refusing to downgrade existing pdf_table_v2 evidence"
+        ):
+            roundtrip()
+    else:
+        roundtrip()
+    with clean_database.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0017_pdf_evidence_v2"
+        )
+        row = connection.execute(
+            text("SELECT method, evidence_json FROM page_evidence WHERE id = :id"),
+            {"id": evidence_id},
+        ).one()
+        assert row.method == method
+        assert row.evidence_json == {"synthetic": "immutable source"}
+
+
+def test_v2_preamble_rows_preserve_v1_text_dates_and_replay(
+    session: Session, tmp_path: Path
+) -> None:
+    source = tmp_path / "synthetic-preamble.pdf"
+    data = preamble_grid_pdf()
+    source.write_bytes(data)
+    vault = FileVault(tmp_path / "vault")
+    document = _legacy_document(session, vault, source)
+    page = session.scalar(
+        select(DocumentPage).where(DocumentPage.document_id == document.id)
+    )
+    assert page is not None
+    before = (page.extracted_text, document.issued_date, document.collected_date)
+    old_json = {"synthetic": "retained immutable v1 evidence"}
+    old = PageEvidence(
+        document_id=document.id,
+        page_number=1,
+        method="pdf_table_v1",
+        source_sha256=hashlib.sha256(data).hexdigest(),
+        evidence_json=old_json,
+    )
+    session.add(old)
+    session.flush()
+    report = persist_pdf_evidence(
+        session, document.id, profile_id=DEFAULT_PROFILE_ID, pdf_bytes=data
+    )
+    assert report.inserted == 2
+    evidence = session.scalar(
+        select(PageEvidence).where(
+            PageEvidence.document_id == document.id,
+            PageEvidence.method == "pdf_table_v2",
+        )
+    )
+    assert evidence is not None
+    rows = tuple(
+        session.scalars(
+            select(LabObservation).where(LabObservation.document_id == document.id)
+        )
+    )
+    assert {row.canonical_name for row in rows} == {"prolactin", "monomeric_prolactin"}
+    assert all(row.page_evidence_id == evidence.id for row in rows)
+    assert all(row.status is ReviewStatus.NEEDS_REVIEW for row in rows)
+    assert all(row.source_unit == "мЕд/л" and row.source_flag is None for row in rows)
+    assert all(
+        row.normalized_value is None and row.normalized_unit is None for row in rows
+    )
+    replay = persist_pdf_evidence(
+        session, document.id, profile_id=DEFAULT_PROFILE_ID, pdf_bytes=data
+    )
+    assert replay.inserted == 0 and replay.duplicates == 2
+    session.refresh(old)
+    session.refresh(page)
+    session.refresh(document)
+    assert old.evidence_json == old_json
+    assert (
+        page.extracted_text,
+        document.issued_date,
+        document.collected_date,
+    ) == before
 
 
 def _pdf(path: Path) -> bytes:
@@ -208,20 +318,28 @@ def test_repair_blocks_outside_hash_and_oversize_sources(
 
     document.vault_path = str(source)
     session.flush()
-    assert repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    assert (
+        repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    )
 
     document.vault_path = str(vault.root / document.sha256[:2] / document.sha256)
     document.sha256 = "z" * 64
     session.flush()
-    assert repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    assert (
+        repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    )
 
     document.sha256 = hashlib.sha256(data).hexdigest()
     session.flush()
     monkeypatch.setattr(pdf_evidence, "MAX_PDF_BYTES", len(data) - 1)
-    assert repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    assert (
+        repair_pdf_evidence(session, vault, profile_id=DEFAULT_PROFILE_ID).blocked == 1
+    )
 
 
-def test_persist_rejects_no_pages_and_page_cap(session: Session, tmp_path: Path) -> None:
+def test_persist_rejects_no_pages_and_page_cap(
+    session: Session, tmp_path: Path
+) -> None:
     source = tmp_path / "source.pdf"
     data = _pdf(source)
     vault = FileVault(tmp_path / "vault")
@@ -247,7 +365,9 @@ def test_persist_rejects_no_pages_and_page_cap(session: Session, tmp_path: Path)
         )
 
 
-def test_unsupported_layout_imports_without_evidence(session: Session, tmp_path: Path) -> None:
+def test_unsupported_layout_imports_without_evidence(
+    session: Session, tmp_path: Path
+) -> None:
     source = tmp_path / "narrative.pdf"
     pdf = pymupdf.open()
     page = pdf.new_page()

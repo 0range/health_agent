@@ -26,9 +26,7 @@ _MAX_DRAWING_ITEMS = 4_096
 _MAX_CELL = 500
 _MAX_TEXT = 60_000
 _MAX_CANDIDATES = 40
-_NUMBER = re.compile(
-    r"[<>≤≥]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?"
-)
+_NUMBER = re.compile(r"[<>≤≥]?(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?")
 
 _GRID_HEADERS: dict[tuple[str, ...], tuple[str, ...]] = {
     (
@@ -43,6 +41,22 @@ _GRID_HEADERS: dict[tuple[str, ...], tuple[str, ...]] = {
         "result",
         "reference",
         "unit",
+        "comment",
+    ),
+}
+_GRID_HEADERS_V2 = {
+    ("Параметр", "Значение", "Ед. измер.", "Реф.значение", "Представление"): (
+        "name",
+        "result",
+        "unit",
+        "reference",
+        "comment",
+    ),
+    ("Показатель", "Результат", "Ед. изм.", "Референсные пределы", "Комментарий"): (
+        "name",
+        "result",
+        "unit",
+        "reference",
         "comment",
     ),
 }
@@ -99,10 +113,12 @@ def extract_lab_geometry(pdf_bytes: bytes, page_number: int) -> GeometryPage:
     digest = hashlib.sha256(pdf_bytes).hexdigest()
     try:
         with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
-            if not 0 < len(document) <= _MAX_PAGES or not 1 <= page_number <= len(document):
+            if not 0 < len(document) <= _MAX_PAGES or not 1 <= page_number <= len(
+                document
+            ):
                 raise ValueError(_ERROR)
             page = document[page_number - 1]
-            grid_rows = _grid_rows(page)
+            grid_rows, method = _grid_rows(page)
             rows = grid_rows if grid_rows else _word_rows(page)
     except Exception:  # noqa: BLE001 -- native parser details never cross this API
         raise ValueError(_ERROR) from None
@@ -112,11 +128,23 @@ def extract_lab_geometry(pdf_bytes: bytes, page_number: int) -> GeometryPage:
     text = "\n".join(row.derived_line for row in result)
     if len(text) > _MAX_TEXT:
         raise ValueError(_ERROR)
-    return GeometryPage(page_number, _METHOD, result, text, digest)
+    if any(_new_registry_row(row) for row in result):
+        method = "pdf_table_v2"
+    return GeometryPage(page_number, method, result, text, digest)
 
 
-def _grid_rows(page: pymupdf.Page) -> list[GeometryRow]:
+def _new_registry_row(row: GeometryRow) -> bool:
+    name = canonical_name(row.name.text)
+    return (
+        name == "monomeric_prolactin"
+        or row.name.text.casefold() == "пролактин / prolactin"
+        or (name == "prolactin" and row.unit.text.casefold() in {"mu/l", "мед/л"})
+    )
+
+
+def _grid_rows(page: pymupdf.Page) -> tuple[list[GeometryRow], str]:
     result: list[GeometryRow] = []
+    method = _METHOD
     finder = page.find_tables()
     if len(finder.tables) > _MAX_TABLES:
         raise ValueError(_ERROR)
@@ -124,15 +152,49 @@ def _grid_rows(page: pymupdf.Page) -> list[GeometryRow]:
         data = table.extract()
         if not data or len(data) > _MAX_ROWS + 1:
             continue
-        header = tuple(_text(value) for value in data[0])
-        roles = _GRID_HEADERS.get(header)
-        if roles is None or len(roles) > _MAX_COLUMNS or len(table.rows) != len(data):
+        headers = [
+            (index, header, roles)
+            for index, values in enumerate(data)
+            if (
+                roles := (_GRID_HEADERS | _GRID_HEADERS_V2).get(
+                    header := tuple(_text(value) for value in values)
+                )
+            )
+            is not None
+        ]
+        if len(headers) > 1:
+            # A formerly accepted first-header table is now ambiguous. If another
+            # table contributes rows, its page JSON must not reuse the old key.
+            method = "pdf_table_v2"
+        if len(headers) != 1 or len(table.rows) != len(data):
             continue
-        header_boxes = table.rows[0].cells
+        index, header, roles = headers[0]
+        if len(roles) > _MAX_COLUMNS:
+            continue
+        header_boxes = table.rows[index].cells
         if not _valid_mapping(header_boxes, page.rect):
             continue
-        for values, source_row in zip(data[1:], table.rows[1:], strict=True):
-            if len(values) != len(roles) or not _valid_mapping(source_row.cells, page.rect):
+        # Only fully merged preamble rows may precede the exact header.
+        if any(
+            sum(box is not None for box in row.cells) != 1
+            or next(box for box in row.cells if box is not None)[::2]
+            != (header_boxes[0][0], header_boxes[-1][2])
+            for row in table.rows[:index]
+        ):
+            continue
+        changed_layout = index > 0 or header in _GRID_HEADERS_V2
+        for values, source_row in zip(
+            data[index + 1 :], table.rows[index + 1 :], strict=True
+        ):
+            if len(values) != len(roles) or not _valid_mapping(
+                source_row.cells, page.rect
+            ):
+                continue
+            if any(
+                box[0] != anchor[0] or box[2] != anchor[2]
+                for box, anchor in zip(source_row.cells, header_boxes, strict=True)
+            ):
+                method = "pdf_table_v2"
                 continue
             cells = {
                 role: _cell(values[index], source_row.cells[index])
@@ -141,7 +203,9 @@ def _grid_rows(page: pymupdf.Page) -> list[GeometryRow]:
             row = _accepted_row(cells)
             if row is not None:
                 result.append(row)
-    return result
+                if changed_layout:
+                    method = "pdf_table_v2"
+    return result, method
 
 
 def _word_rows(page: pymupdf.Page) -> list[GeometryRow]:
@@ -184,9 +248,7 @@ def _word_rows(page: pymupdf.Page) -> list[GeometryRow]:
             if ambiguous or not assigned["result"]:
                 continue
             cells = {
-                role: _words_cell(values)
-                for role, values in assigned.items()
-                if values
+                role: _words_cell(values) for role, values in assigned.items() if values
             }
             if any(not _valid_bbox(cell.bbox, page.rect) for cell in cells.values()):
                 continue
@@ -222,10 +284,22 @@ def _physical_table_geometry(
             if item[0] == "re":
                 rectangle = item[1]
                 edges = (
-                    (pymupdf.Point(rectangle.x0, rectangle.y0), pymupdf.Point(rectangle.x0, rectangle.y1)),
-                    (pymupdf.Point(rectangle.x1, rectangle.y0), pymupdf.Point(rectangle.x1, rectangle.y1)),
-                    (pymupdf.Point(rectangle.x0, rectangle.y0), pymupdf.Point(rectangle.x1, rectangle.y0)),
-                    (pymupdf.Point(rectangle.x0, rectangle.y1), pymupdf.Point(rectangle.x1, rectangle.y1)),
+                    (
+                        pymupdf.Point(rectangle.x0, rectangle.y0),
+                        pymupdf.Point(rectangle.x0, rectangle.y1),
+                    ),
+                    (
+                        pymupdf.Point(rectangle.x1, rectangle.y0),
+                        pymupdf.Point(rectangle.x1, rectangle.y1),
+                    ),
+                    (
+                        pymupdf.Point(rectangle.x0, rectangle.y0),
+                        pymupdf.Point(rectangle.x1, rectangle.y0),
+                    ),
+                    (
+                        pymupdf.Point(rectangle.x0, rectangle.y1),
+                        pymupdf.Point(rectangle.x1, rectangle.y1),
+                    ),
                 )
             elif item[0] == "l":
                 edges = ((item[1], item[2]),)
@@ -272,7 +346,10 @@ def _physical_table_geometry(
         (top, bottom)
         for top, bottom in pairwise(ys[header_rows[0] + 1 :])
         if all(
-            any(segment_top <= top and bottom <= segment_bottom for segment_top, segment_bottom in vertical[x])
+            any(
+                segment_top <= top and bottom <= segment_bottom
+                for segment_top, segment_bottom in vertical[x]
+            )
             for x in (columns[0][0], *[column[1] for column in columns])
         )
     ]
@@ -367,7 +444,10 @@ def _cell(value: str | None, bbox: tuple | None) -> GeometryCell:
 
 def _words_cell(words: list[tuple]) -> GeometryCell:
     ordered = sorted(words, key=lambda word: (word[1], word[0]))
-    return GeometryCell(" ".join(_text(word[4]) for word in ordered), _union(word[:4] for word in ordered))
+    return GeometryCell(
+        " ".join(_text(word[4]) for word in ordered),
+        _union(word[:4] for word in ordered),
+    )
 
 
 def _union(boxes: Iterable[tuple[float, ...]]) -> tuple[float, float, float, float]:
