@@ -266,6 +266,79 @@ def test_cached_limit_counts_nonqueue_observations(clean_database, tmp_path):
         assert session.scalars(select(LabExtractionJob)).one().candidate_count == 0
 
 
+@pytest.mark.parametrize("safe_error", [None, "vault_integrity"])
+def test_cached_new_pending_refreshes_document_preserving_verified_sibling(
+    clean_database,
+    tmp_path,
+    safe_error,
+):
+    from datetime import date
+    from decimal import Decimal
+
+    from health_agent.lab_extraction.cached import import_cached
+    from health_agent.models import Document, DocumentPage
+
+    document_id, _worker = failed_page(clean_database, tmp_path)
+    with session_scope(clean_database) as session:
+        document = session.get_one(Document, document_id)
+        document.processing_status = (
+            "processed" if safe_error is None else "needs_attention"
+        )
+        document.safe_error_code = safe_error
+        document.collected_date = date(2024, 1, 2)
+        sibling = LabObservation(
+            document_id=document_id,
+            page_number=1,
+            canonical_name="historical",
+            source_name="Historical assay",
+            source_value="2",
+            source_unit="U/L",
+            parsed_value=Decimal(2),
+            normalized_value=Decimal(2),
+            normalized_unit="U/L",
+            evidence_excerpt="Historical assay 2 U/L",
+            confidence=1,
+            status=ReviewStatus.VERIFIED,
+        )
+        session.add(sibling)
+        session.flush()
+        sibling_id = sibling.id
+    path = capture(tmp_path, text=TEXT, rows=[GOOD, BAD])
+    assert (
+        import_cached(clean_database, DEFAULT_PROFILE_ID, document_id, 1, path).inserted
+        == 1
+    )
+    assert (
+        import_cached(clean_database, DEFAULT_PROFILE_ID, document_id, 1, path).inserted
+        == 0
+    )
+    with session_scope(clean_database) as session:
+        document = session.get_one(Document, document_id)
+        assert document.processing_status == (
+            "needs_review" if safe_error is None else "needs_attention"
+        )
+        assert document.safe_error_code == safe_error
+        assert document.collected_date == date(2024, 1, 2)
+        sibling = session.get_one(LabObservation, sibling_id)
+        assert (
+            sibling.status,
+            sibling.source_name,
+            sibling.source_value,
+            sibling.parsed_value,
+        ) == (ReviewStatus.VERIFIED, "Historical assay", "2", Decimal(2))
+        pending = session.scalars(
+            select(LabObservation).where(LabObservation.id != sibling_id)
+        ).one()
+        assert pending.status == ReviewStatus.NEEDS_REVIEW
+        job = session.scalars(select(LabExtractionJob)).one()
+        assert (job.status, job.safe_error_code, job.cloud_attempts) == (
+            "needs_attention",
+            "cloud_partial_output",
+            1,
+        )
+        assert session.scalars(select(DocumentPage)).one().extracted_text == TEXT
+
+
 def test_partial_restores_only_name_whitespace_per_row():
     text = "Assay monomeric (post\nPEG)\n137\nmIU/L\n72 - 229"
     good = {

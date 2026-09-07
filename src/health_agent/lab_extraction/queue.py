@@ -111,6 +111,28 @@ def _value_key(name: str, value: str, unit: str | None) -> tuple[str, str, str]:
     return canonical_name(name), name_key(value).replace(",", "."), unit_key(unit or "")
 
 
+def _refresh_after_insertion(session: Session, document: Document) -> None:
+    """Reflect pending rows while preserving unresolved source failures."""
+    recoverable = {"no_lab_candidates", "ocr_required", "ocr_unavailable"}
+    if document.safe_error_code is None or document.safe_error_code in recoverable:
+        document.processing_status = "needs_review"
+    if document.safe_error_code in recoverable:
+        session.flush()
+        empty_page = session.scalar(
+            select(
+                exists().where(
+                    DocumentPage.document_id == document.id,
+                    (DocumentPage.extracted_text.is_(None))
+                    | (DocumentPage.extracted_text == ""),
+                )
+            )
+        )
+        if not empty_page:
+            document.safe_error_code = None
+        else:
+            document.processing_status = "needs_attention"
+
+
 def _insert_candidates(
     session: Session,
     document_id: UUID,
@@ -482,31 +504,7 @@ class ExtractionQueue:
             elif cloud or not unresolved:
                 _finish(job, "completed")
             if inserted:
-                if document.safe_error_code is None or document.safe_error_code in {
-                    "no_lab_candidates",
-                    "ocr_required",
-                    "ocr_unavailable",
-                }:
-                    document.processing_status = "needs_review"
-                if document.safe_error_code in {
-                    "no_lab_candidates",
-                    "ocr_required",
-                    "ocr_unavailable",
-                }:
-                    session.flush()
-                    empty_page = session.scalar(
-                        select(
-                            exists().where(
-                                DocumentPage.document_id == document.id,
-                                (DocumentPage.extracted_text.is_(None))
-                                | (DocumentPage.extracted_text == ""),
-                            )
-                        )
-                    )
-                    if not empty_page:
-                        document.safe_error_code = None
-                    else:
-                        document.processing_status = "needs_attention"
+                _refresh_after_insertion(session, document)
             return inserted
 
     def reserve_cloud(

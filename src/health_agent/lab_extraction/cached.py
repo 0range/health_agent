@@ -14,7 +14,12 @@ from sqlalchemy import Engine, select
 from health_agent.ai.yandex import _chat_content
 from health_agent.db import session_scope
 from health_agent.lab_extraction.models import LabExtractionJob
-from health_agent.lab_extraction.queue import _finish, _insert_candidates, profile_lock
+from health_agent.lab_extraction.queue import (
+    _finish,
+    _insert_candidates,
+    _refresh_after_insertion,
+    profile_lock,
+)
 from health_agent.lab_extraction.types import (
     EXTRACTOR_VERSION,
     MAX_CLOUD_CHARACTERS,
@@ -149,6 +154,8 @@ def import_cached(
         job.candidate_count += inserted
         job.extraction_method = "cached_structured_partial_v3"
         _finish(job, "needs_attention", "cloud_partial_output")
+        if inserted:
+            _refresh_after_insertion(session, document)
         return CachedImportReport(
             inserted, len(partial.candidates), partial.rejected_count
         )
