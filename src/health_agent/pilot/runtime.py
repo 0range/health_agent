@@ -273,21 +273,82 @@ def maybe_coros_sync(
 
     if already_synced():
         return False
-    auth = CorosOAuth(auth_root)
-    if not auth.status():
-        return False
-    with _pilot_lock(auth.root / "sync.lock"):
-        if already_synced():
+    recent_failure = next(
+        (
+            run
+            for run in store.list(profile_id, "training", "sync_run")
+            if run.payload.get("status") in {"failed", "incomplete"}
+        ),
+        None,
+    )
+    if recent_failure is not None:
+        try:
+            finished_at = datetime.fromisoformat(
+                str(recent_failure.payload["finished_at"])
+            )
+            if finished_at > now.astimezone(UTC) - timedelta(hours=1):
+                return False
+        except (KeyError, TypeError, ValueError):
+            pass
+    try:
+        auth = CorosOAuth(auth_root)
+        if not auth.status():
             return False
-        run_coros_sync(
-            store,
-            auth,
+        with _pilot_lock(auth.root / "sync.lock"):
+            if already_synced():
+                return False
+            run_coros_sync(
+                store,
+                auth,
+                profile_id,
+                auth.root,
+                today - timedelta(days=6),
+                today,
+            )
+    except Exception as error:
+        store.put(
             profile_id,
-            auth.root,
-            today - timedelta(days=6),
-            today,
+            "training",
+            "sync_run",
+            f"coros-runtime-failure:{now.astimezone(UTC).isoformat()}",
+            {
+                "status": "failed",
+                "since": (today - timedelta(days=6)).isoformat(),
+                "until": today.isoformat(),
+                "started_at": now.astimezone(UTC).isoformat(),
+                "finished_at": now.astimezone(UTC).isoformat(),
+                "failure": type(error).__name__,
+            },
+            at=now,
         )
+        raise
     return True
+
+
+def run_pilot_cycle_tasks(
+    coach: Coach,
+    store: PilotStore,
+    messenger: TelegramMessenger,
+    state: Any,
+    bot_id: int,
+    profile_id: UUID,
+    domain: str,
+    now: datetime,
+    *,
+    coros_root: Path | None = None,
+) -> int:
+    """Run optional archive work without allowing it to starve notices."""
+    if domain == "training":
+        try:
+            maybe_coros_sync(
+                store,
+                profile_id,
+                coros_root or Path("data/pilot/training/coros") / str(profile_id),
+                now,
+            )
+        except Exception as error:  # noqa: BLE001 -- provider details stay private
+            state.record_poll(bot_id, f"pilot_coros_{type(error).__name__}")
+    return dispatch_notices(coach, store, messenger, profile_id, domain, now)
 
 
 def build_coach(
@@ -390,14 +451,16 @@ def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
                 try:
                     report = poller.poll_once()
                     now = datetime.now(UTC)
-                    if domain == "training":
-                        maybe_coros_sync(
-                            store,
-                            profile_id,
-                            Path("data/pilot/training/coros") / str(profile_id),
-                            now,
-                        )
-                    dispatch_notices(coach, store, messenger, profile_id, domain, now)
+                    run_pilot_cycle_tasks(
+                        coach,
+                        store,
+                        messenger,
+                        state,
+                        credential.bot_id,
+                        profile_id,
+                        domain,
+                        now,
+                    )
                     if report.blocked_until is not None:
                         time.sleep(
                             min(

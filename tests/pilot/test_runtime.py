@@ -18,6 +18,7 @@ from health_agent.pilot.runtime import (
     PilotQuestions,
     dispatch_notices,
     maybe_coros_sync,
+    run_pilot_cycle_tasks,
 )
 from health_agent.pilot.storage import PilotStore
 from health_agent.questions.replies import PrivateReplyStore
@@ -267,6 +268,88 @@ def test_daily_coros_sync_is_bounded_and_skips_completed_day(
     assert maybe_coros_sync(store, DEFAULT_PROFILE_ID, auth_root, NOW)
     assert not maybe_coros_sync(store, DEFAULT_PROFILE_ID, auth_root, NOW)
     assert calls == [(auth_root, auth_root, NOW.date() - timedelta(days=6), NOW.date())]
+
+
+def test_failed_coros_sync_cools_down_across_restart_without_starving_notice(
+    monkeypatch, tmp_path, clean_database
+):
+    from health_agent.pilot import coros_auth, coros_sync
+
+    store = PilotStore(clean_database)
+    sync_calls = []
+
+    class Auth:
+        def __init__(self, root):
+            self.root = root
+
+        def status(self):
+            return True
+
+    def fail_sync(*args, **kwargs):
+        sync_calls.append((args, kwargs))
+        raise RuntimeError("private provider detail")
+
+    class TrainingCoach:
+        def handle(self, profile, text, *, source_key, now, attachment=None):
+            return "unused"
+
+        def due(self, profile, now):
+            if store.list(profile, "training", "notice"):
+                return []
+            return [Notice("weekly", "Пора подвести итоги")]
+
+    monkeypatch.setattr(coros_auth, "CorosOAuth", Auth)
+    monkeypatch.setattr(coros_sync, "run_coros_sync", fail_sync)
+    state = SimpleNamespace(
+        errors=[], record_poll=lambda bot, code: state.errors.append(code)
+    )
+    telegram_state = SqliteTelegramState(
+        tmp_path / "failure-state.sqlite3", clock=lambda: NOW
+    )
+    telegram_state.register_bot(111, "training_test")
+    telegram_state.bind_identity(111, TelegramIdentity(101, DEFAULT_PROFILE_ID, 101))
+    gateway = Gateway()
+    messenger = TelegramMessenger(111, gateway, telegram_state)
+    auth_root = tmp_path / "coros-failure"
+
+    assert (
+        run_pilot_cycle_tasks(
+            TrainingCoach(),
+            store,
+            messenger,
+            state,
+            111,
+            DEFAULT_PROFILE_ID,
+            "training",
+            NOW,
+            coros_root=auth_root,
+        )
+        == 1
+    )
+    assert gateway.sent == [(101, "Пора подвести итоги")]
+    assert state.errors == ["pilot_coros_RuntimeError"]
+    failure = store.list(DEFAULT_PROFILE_ID, "training", "sync_run")[0]
+    assert failure.payload["status"] == "failed"
+    assert failure.payload["failure"] == "RuntimeError"
+    assert "private provider detail" not in str(failure.payload)
+
+    restarted_store = PilotStore(clean_database)
+    assert (
+        run_pilot_cycle_tasks(
+            TrainingCoach(),
+            restarted_store,
+            messenger,
+            state,
+            111,
+            DEFAULT_PROFILE_ID,
+            "training",
+            NOW + timedelta(minutes=30),
+            coros_root=auth_root,
+        )
+        == 0
+    )
+    assert len(sync_calls) == 1
+    assert gateway.sent == [(101, "Пора подвести итоги")]
 
 
 def test_urgent_input_preserved_without_coach(tmp_path, clean_database):
