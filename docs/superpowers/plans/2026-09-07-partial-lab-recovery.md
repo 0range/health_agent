@@ -47,3 +47,23 @@ assert len(result.candidates) == 1 and result.rejected_count == 1
 - [ ] Task review + final whole-change review, full pytest/Ruff/mypy. Then backup production and run new import-cached on exact-matching captures for likelylab pages; invalid/nonlab/unknown pages remain untouched. Store private per-page outcomes, no bulkclinicalverification.
 - [ ] Use existing supported document-scoped PDF evidence persistence and conservative labelled date recovery only where read-only probe demonstrates valid geometry/date evidence; preserve immutable current source. Report supported rows/remaining failures rather than inventing dates or queuezeroing.
 - [ ] Update short user-facing result with actual newcandidates vs verified counts and remaining gaps. Push verified commit to workingbranch and fast-forward main only if no unrelated remotechanges. User needs no action unless original genuinelyambiguous.
+
+## Task 2: Proven gridded lab layout with a non-first header
+
+**Files:** src/health_agent/pdf_lab_geometry.py, src/health_agent/lab_extraction/registry.py, tests/test_pdf_lab_geometry.py, tests/test_pdf_evidence.py, docs/pdf-lab-geometry.md. Disjoint from Task1 implementation; parallel allowed by user. No cloud/service/panel/schema changes.
+
+**Context:** Read-only actual original shows a drawn five-column grid, but PyMuPDF combines the report heading and signature into the same table. The exact laboratory header is row2 rather than row0. Existing parser discards all rows. Pure geometry probe132pages found4supported and0newrows: repeating existingrepair is insufficient. No PHI in fixtures; generate syntheticPDF with Cyrillic-capable font, merged preamble and footer, exact headings only copied as format labels.
+
+**Interfaces:** keep extract_lab_geometry/pdf_evidence APIs. Recognize complete header `("Параметр", "Значение", "Ед. измер.", "Реф.значение", "Представление")` mapping `(name,result,unit,reference,comment)`. `_grid_rows` can locate one exact complete supported header after merged preamble rows; require unambiguous header and aligned ordered physical cell columns, reject incompatible/multiple mappings; do not interpret merged preamble/footer/narrative as rows. Preserve old supported formats unchanged. Source representation column stored as comment only: no inference of H/L/* from `[-*-]` or `[---]*`. For newly supported layout use explicit geometry method `pdf_table_v2` so immutable stored v1 evidence is never overwritten; pages using only original supportedlayouts retain v1 method. Required mapped cells and numeric/unit validation remain strict.
+
+Registry exactaliases only: total `prolactin` additionally `Пролактин / Prolactin`; distinct new `monomeric_prolactin` aliases `Пролактин мономерный (пост ПЭГ)|Пролактин мономерный (пост-ПЭГ)|Monomeric prolactin`, never collapse total/monomeric/macro. For both add separate literal unit family `mU/L` with alias `мЕд/л`; do NOT silently merge this new family with mIU/L/uIU/mL or mass units. Monomeric also accepts existing explicit mIU/L/uIU/mL/ng/mL unitfamilies without conversion. Preserve source names/units. No inferdates from signature or blankcollectionlabel; new rows NEEDS_REVIEW.
+
+- [ ] RED synthetic grid with2mergedpreamble rows, supportedRussianheader, two arbitrary plausible syntheticnumericrows and mergedfooter; assert2source-proven rows, correctfieldmapping,commentnotflag, exactsourcehash, v2method. Existing firstheader fixtures stillv1.
+```python
+assert canonical_name("Пролактин / Prolactin") == "prolactin"
+assert canonical_name("Пролактин мономерный (пост ПЭГ)") == "monomeric_prolactin"
+assert normalize_registered("prolactin", "123", "мЕд/л")[1] == "mU/L"
+```
+- [ ] Add negative synthetic missing/duplicate/misorderedheaders, mergedrequiredcells, competingheaders and footer numerictext; no guessedrowownership. Keep unknown/incompatibleunit rows rejected. Implement only exactlayout/aliases, no broadOCR/parser redesign.
+- [ ] DisposablePG persistence via existingpersist_pdf_evidence: twoNEEDS_REVIEW rows attachedv2PageEvidence; repeatedruninserts0, oldpage_textanddatesunchanged, noverification; preserveexistingv1evidence. Syntheticonly.
+- [ ] GREEN `.venv/bin/pytest -q tests/test_pdf_lab_geometry.py tests/test_pdf_evidence.py tests/lab_extraction/test_local.py` (locate actual registry testfile ifnamedotherwise), Ruffchangedfiles,mypy sourcepdfgeometry/registry. Commitownedonly; report RED/GREEN and concerns to task-2-report.md; no liveops.
