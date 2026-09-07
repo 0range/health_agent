@@ -126,7 +126,7 @@ def test_dinner_quiet_hours_skip_pause_and_restart(setup: tuple[MemoryStore, Bra
 def test_unknown_nutrients_stay_null_and_bad_precision_is_rejected(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
     store, brain, coach, profile, noon = setup
     brain.reply = '{"foods":["суп"],"portion_estimate":"миска","kcal":412.37,"protein_g":null,"fat_g":null,"carbs_g":null,"saturated_fat_g":null,"fiber_g":null,"cholesterol_mg":null,"confidence":0.4,"unknowns":[],"feedback":"В тарелке суп."}'
-    coach.handle(profile, "суп", source_key="soup", now=noon)
+    coach.handle(profile, "/ел суп", source_key="soup", now=noon)
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
     assert analysis["kcal"] is None
     assert analysis["protein_g"] is None
@@ -214,7 +214,7 @@ def test_unsafe_or_overprecise_feedback_gets_bounded_fallback(
     value = json.loads(str(Brain().reply))
     value["feedback"] = unsafe
     brain.reply = json.dumps(value, ensure_ascii=False)
-    answer = coach.handle(profile, "обед", source_key="unsafe", now=noon)
+    answer = coach.handle(profile, "/ел обед", source_key="unsafe", now=noon)
     assert len(answer) <= 280
     assert unsafe not in answer
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
@@ -229,7 +229,7 @@ def test_all_structured_fields_are_normalized_without_crash(setup: tuple[MemoryS
         "protein_g": float("inf"), "unknowns": "ничего", "confidence": "high",
         "feedback": {"advice": "eat"},
     })
-    coach.handle(profile, "рис", source_key="malformed", now=noon)
+    coach.handle(profile, "/ел рис", source_key="malformed", now=noon)
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
     assert analysis["foods"] == []
     assert analysis["portion_estimate"] is None
@@ -312,7 +312,7 @@ def test_live_vision_component_dict_is_normalized_without_false_fruit_change(
         "confidence": 0.6, "unknowns": ["размер порции"],
         "feedback": "Молочные продукты запрещены.",
     }, ensure_ascii=False)
-    answer = coach.handle(profile, "овсянка", source_key="live-photo", now=noon)
+    answer = coach.handle(profile, "/ел овсянка", source_key="live-photo", now=noon)
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
     assert analysis["plate_components"] == ["grains", "fruit"]
     assert "добавить фрукты" not in answer.lower()

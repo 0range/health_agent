@@ -62,3 +62,44 @@ clean
 - Verified weekly generation checks delivered notice first and never retries a cached provider fallback on polling.
 - Verified the root-owned real Telegram/Postgres acceptance test passes.
 - No known correctness or scope concerns remain.
+
+## Fix round 1 — six Important review findings
+
+Base: `c4a5237`; reviewed implementation: `643d80e`.
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food.py tests/pilot/test_food_journey.py
+```
+
+New reviewer-counterexample tests initially produced seven failures: distinct photo outputs were not aggregated immutably; late delivery moved a newer meal backwards; ordinary food words fabricated intake; next-day durable retry was unavailable; and weekly quiet-hours/shared evidence behavior was absent. Existing explicit test inputs that had relied on bare food nouns were changed to the supported optional `/ел` compatibility route.
+
+Fixes by finding:
+
+1. Each photo now retains its first parsed observation and raw output unchanged. Every successful derived result is appended to `analysis_revisions`. Meal aggregation conservatively unions distinct foods/components across photo observations and later clarification, nulls quantities instead of summing multi-view estimates, and records repeated-view uncertainty. The selected latest photo caption is supplied to analysis.
+2. Photo grouping selects the latest confirmed photo at or before the Telegram event time, never an arrival-latest future meal. Confirming an older pending photo retains the maximum confirmed anchor, so `latest_photo_at`/`ended_at` cannot move backwards.
+3. Only `/ел`, explicit completed-intake verbs, or a food-bearing meal label creates a text meal. Ingredient-like text and current-plate questions attach as comments when eligible; prospective/uncertain text is preserved for clarification.
+4. Durable comment and confirmation source keys are resolved before current-day/candidate routing. Replays retry only their stored meal when incomplete, including next-day comment and failed photo/text confirmation retries.
+5. Automatic weekly reflections now honor configured/default quiet hours before generating or returning cached unsolicited notices.
+6. Manual `/неделя` and automatic Sunday delivery share the same reflection path. Evidence includes exact recorded dates, unique recorded-food variety, configured plate-framework coverage, per-nutrient known-estimate counts, and end-to-next-start intervals. Interval calculation excludes overnight intervals and every remaining adjacency after dinner.
+
+Distinct-output tests use rice/vegetables, cake, and oil responses rather than the same fake response for every photo.
+
+Final verification:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food.py tests/pilot/test_food_journey.py tests/pilot/test_photo_first_acceptance.py
+42 passed (five unrelated SWIG deprecation warnings)
+
+.venv/bin/ruff check src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+All checks passed!
+
+.venv/bin/mypy src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+Success: no issues found in 3 source files
+
+git diff --check
+clean
+```
+
+Self-review: replay-first dispatch was checked for comments, photo confirmations, and text confirmations; event-time grouping was checked against the review's 12:00/15:00/12:10 sequence; immutable observations were checked after comment reanalysis; cached weekly output remains stable after provider failure and is suppressed during quiet hours. `/время` remains the documented current start-time correction and was intentionally not expanded in this round. No known remaining concern in the six requested findings.

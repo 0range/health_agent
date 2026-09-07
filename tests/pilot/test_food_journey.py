@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -190,3 +192,111 @@ def test_multiple_photos_are_preserved_and_latest_photo_anchors_reminder(tmp_pat
     assert coach.due(profile, start + timedelta(minutes=20, hours=3, seconds=1)) == []
     assert coach.due(profile, start + timedelta(hours=4, minutes=30))
     assert all(call[1] in {tmp_path / "1.jpg", tmp_path / "2.jpg"} for call in brain.calls)
+
+
+class SequenceBrain(Brain):
+    def __init__(self, replies: list[str | Exception]) -> None:
+        super().__init__()
+        self.replies = replies
+
+    def __call__(self, system: str, payload: dict[str, Any], *, image_path: Path | None = None) -> str:
+        self.calls.append((payload, image_path))
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def _analysis(foods: list[str], caption: str = "") -> str:
+    return json.dumps({
+        "foods": foods, "plate_components": [], "portion_estimate": caption or None,
+        "kcal": None, "protein_g": None, "fat_g": None, "carbs_g": None,
+        "saturated_fat_g": None, "fiber_g": None, "cholesterol_mg": None,
+        "confidence": 0.4, "unknowns": ["количество"], "feedback": "ignored",
+    }, ensure_ascii=False)
+
+
+def test_distinct_photo_observations_are_immutable_and_aggregated(tmp_path: Path) -> None:
+    store, profile = MemoryStore(), uuid4()
+    brain = SequenceBrain([_analysis(["рис", "овощи"]), _analysis(["торт"]), _analysis(["масло"])])
+    coach = FoodCoach(store, brain)
+    start = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "", source_key="main", now=start, attachment=Attachment(tmp_path / "main.jpg", "image/jpeg", "основное"))
+    coach.handle(profile, "", source_key="dessert", now=start + timedelta(minutes=10), attachment=Attachment(tmp_path / "cake.jpg", "image/jpeg", "десерт"))
+    before = store.list(profile, "food", "meal")[0]
+    observations = [item["analysis"] for item in before.payload["photos"]]
+    assert observations[0]["foods"] == ["рис", "овощи"]
+    assert observations[1]["foods"] == ["торт"]
+    assert set(before.payload["analysis"]["foods"]) == {"рис", "овощи", "торт"}
+    assert brain.calls[-1][0]["meal"]["caption"] == "десерт"
+    coach.handle(profile, "ещё масло", source_key="oil", now=start + timedelta(minutes=11))
+    after = store.list(profile, "food", "meal")[0]
+    assert [item["analysis"] for item in after.payload["photos"]] == observations
+    assert set(after.payload["analysis"]["foods"]) >= {"рис", "овощи", "торт", "масло"}
+    assert len(after.payload["analysis_revisions"]) == 3
+
+
+def test_late_photo_binds_by_event_time_and_never_moves_anchor_back(tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    start = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "", source_key="a", now=start, attachment=_photo(tmp_path, "a.jpg"))
+    coach.handle(profile, "", source_key="b", now=start + timedelta(minutes=151), attachment=_photo(tmp_path, "b.jpg"))
+    newer = store.list(profile, "food", "meal")[0]
+    newer_before = dict(newer.payload)
+    coach.handle(profile, "", source_key="late", now=start + timedelta(minutes=10), attachment=_photo(tmp_path, "late.jpg"))
+    assert store.get(profile, newer.id).payload == newer_before  # type: ignore[union-attr]
+    older = min(store.list(profile, "food", "meal"), key=lambda item: item.at)
+    assert older.payload["latest_photo_at"] == (start + timedelta(minutes=10)).isoformat()
+
+    coach.handle(profile, "", source_key="pending", now=start + timedelta(minutes=50), attachment=_photo(tmp_path, "pending.jpg"))
+    coach.handle(profile, "", source_key="later-confirmed", now=start + timedelta(minutes=20), attachment=_photo(tmp_path, "later.jpg"))
+    anchor = store.get(profile, older.id).payload["latest_photo_at"]  # type: ignore[union-attr]
+    coach.handle(profile, "тот же", source_key="pending-confirm", now=start + timedelta(minutes=51))
+    assert store.get(profile, older.id).payload["latest_photo_at"] >= anchor  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("text", ["там рис", "Это рис?", "хочу суп"])
+def test_food_words_are_not_automatically_new_intake(text: str, tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    if text != "хочу суп":
+        coach.handle(profile, "", source_key="plate", now=now, attachment=_photo(tmp_path, "plate.jpg"))
+    before = len(store.list(profile, "food", "meal"))
+    coach.handle(profile, text, source_key="text", now=now + timedelta(minutes=1))
+    assert len(store.list(profile, "food", "meal")) == before
+
+
+def test_durable_comment_and_confirmation_replays_retry_next_day(tmp_path: Path) -> None:
+    store, profile = MemoryStore(), uuid4()
+    brain = SequenceBrain([_analysis(["рис"]), RuntimeError("offline"), _analysis(["рис", "масло"])])
+    coach = FoodCoach(store, brain)
+    now = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "", source_key="photo", now=now, attachment=_photo(tmp_path, "one.jpg"))
+    coach.handle(profile, "масло", source_key="comment", now=now + timedelta(minutes=1))
+    meal = store.list(profile, "food", "meal")[0]
+    assert meal.payload["analysis_status"] == "incomplete"
+    coach.handle(profile, "масло", source_key="comment", now=now + timedelta(days=1))
+    assert store.get(profile, meal.id).payload["analysis_status"] == "complete"  # type: ignore[union-attr]
+
+    brain.replies = [RuntimeError("offline"), _analysis(["торт"])]
+    coach.handle(profile, "", source_key="amb", now=now + timedelta(minutes=40), attachment=_photo(tmp_path, "amb.jpg"))
+    coach.handle(profile, "тот же", source_key="confirm", now=now + timedelta(minutes=41))
+    calls = len(brain.calls)
+    coach.handle(profile, "тот же", source_key="confirm", now=now + timedelta(days=1))
+    assert len(brain.calls) == calls + 1
+
+
+def test_weekly_quiet_hours_and_manual_shared_evidence() -> None:
+    store, brain, profile = MemoryStore(), Brain(RuntimeError("offline")), uuid4()
+    coach = FoodCoach(store, brain)
+    sunday = datetime(2026, 9, 6, 15, tzinfo=UTC)
+    coach.handle(profile, "/ел 12:00 обед: рис", source_key="meal", now=sunday.replace(hour=9))
+    assert coach.due(profile, sunday.replace(hour=20)) == []  # 23:00 Moscow
+    manual = coach.handle(profile, "/неделя", source_key="manual", now=sunday)
+    automatic = coach.due(profile, sunday)[0].text
+    for value in (manual, automatic):
+        assert "2026-09-06" in value
+        assert "разнообраз" in value.lower()
+        assert "нутриент" in value.lower()
