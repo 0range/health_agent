@@ -1,9 +1,12 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
 from health_agent.config import Settings
+from health_agent.db import session_scope
+from health_agent.models import Profile
 from health_agent.pilot.brain import PilotBrain
 from health_agent.pilot.storage import PilotStore
 
@@ -161,3 +164,53 @@ def test_shared_source_preferences_and_apple_data_do_not_leak_chats(clean_databa
     assert payload["apple_workout_candidates"][0]["potential_copy"] is True
     assert "food conversation" not in str(payload)
     assert "private original" not in str(payload)
+
+
+def test_sleep_context_has_own_food_facts_and_selected_framework_only(clean_database):
+    import json
+
+    store = PilotStore(clean_database)
+    profile, other = UUID(int=1), UUID(int=2)
+    with session_scope(clean_database) as session:
+        session.add(Profile(id=other, name="Other"))
+    now = datetime.now(UTC)
+    store.put(profile, "food", "meal", "own", {
+        "occurred_at": now.isoformat(), "category": "lunch",
+        "photo_path": "/private/photo.jpg", "original": "private own text",
+        "analysis": {"foods": ["рис"], "kcal": 300, "feedback": "private model text"},
+    })
+    store.put(other, "food", "meal", "other", {
+        "occurred_at": now.isoformat(), "original": "other profile secret",
+    })
+    store.put(profile, "food", "settings", "protocol", {
+        "interval_hours": 3.5, "allowed_interval_hours": [3, 3.5, 4],
+        "plate_rules": {"lunch": ["vegetables", "protein"]},
+        "preferences": ["без рыбы"], "uncertainties": ["порции"],
+        "private_notes": "must not leak",
+    })
+    settings = Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,))
+
+    sleep_client = Client()
+    PilotBrain(settings, profile, client=sleep_client, store=store, domain="sleep")(
+        "Sleep", {"message": "Как спал?"}
+    )
+    payload = json.loads(sleep_client.calls[0]["messages"][1]["content"][0]["text"])
+    history = payload["recorded_food_history"]
+    assert history["recorded_meal_count"] == 1
+    assert history["meals"][0]["foods"] == ["рис"]
+    assert "private" not in str(history) and "other profile secret" not in str(history)
+    framework = payload["selected_food_framework"]
+    assert framework["interval_hours"] == 3.5
+    assert framework["source"] == "user_selected"
+    assert framework["not_universal_medical_rules"] is True
+    assert "private_notes" not in str(framework)
+
+    training_client = Client()
+    PilotBrain(settings, profile, client=training_client, store=store, domain="training")(
+        "Training", {"message": "План"}
+    )
+    training_payload = json.loads(
+        training_client.calls[0]["messages"][1]["content"][0]["text"]
+    )
+    assert "recorded_food_history" not in training_payload
+    assert "selected_food_framework" not in training_payload
