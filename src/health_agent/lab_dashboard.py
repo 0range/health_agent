@@ -93,12 +93,17 @@ def _history_cte(
     *,
     legacy: bool = False,
     pre_registry_expansion: bool = False,
+    pre_partial_recovery: bool = False,
 ) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
     entries = []
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
+            if pre_partial_recovery and (
+                name == "monomeric_prolactin" or unit == "mU/L"
+            ):
+                continue
             if legacy and raw_unit == "пг/кл":
                 continue
             if pre_registry_expansion and (
@@ -119,6 +124,9 @@ def _history_cte(
                 + ")"
             )
     registry = ",\n".join(entries)
+    document_status = (
+        "= 'processed'" if pre_partial_recovery else "IN ('processed', 'needs_review')"
+    )
     return f"""-- {_OWNER} [{profile}]
 WITH registry(canonical_name, source_unit_key, unit, label) AS (VALUES {registry}),
 source_rows AS (
@@ -132,7 +140,7 @@ source_rows AS (
   JOIN registry r ON r.canonical_name = h.canonical_name
     AND r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')
   WHERE h.profile_id = '{profile}'
-    AND h.document_processing_status = 'processed'
+    AND h.document_processing_status {document_status}
     AND h.document_safe_error_code IS NULL
     AND h.result_date IS NOT NULL AND h.result_date <= CURRENT_DATE
     AND h.parsed_value BETWEEN -1e12 AND 1e12
@@ -159,6 +167,7 @@ def lab_card_specs(
     _legacy: bool = False,
     _russian_comparison: bool = True,
     _pre_registry_expansion: bool = False,
+    _pre_partial_recovery: bool = False,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     russian_comparison = _russian_comparison and not _legacy
@@ -175,6 +184,7 @@ def lab_card_specs(
             profile_id,
             legacy=_legacy,
             pre_registry_expansion=_pre_registry_expansion,
+            pre_partial_recovery=_pre_partial_recovery,
         )
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
@@ -205,6 +215,7 @@ LIMIT 1000""".format(
                 item,
                 legacy=_legacy,
                 pre_registry_expansion=_pre_registry_expansion,
+                pre_partial_recovery=_pre_partial_recovery,
             )
             + (
                 """SELECT result_date AS date,
@@ -237,6 +248,22 @@ FROM valid_rows ORDER BY result_date, document_id, page_number, id"""
         for item in series
     )
     return (detail, *charts)
+
+
+def _owned_query_versions(
+    profile_id: UUID, series: tuple[LabSeries, ...]
+) -> tuple[tuple[LabCardSpec, ...], ...]:
+    """Exact known generators only, including the pre-recovery registry/status."""
+    return tuple(
+        lab_card_specs(profile_id, series, _pre_partial_recovery=pre_partial, **flags)
+        for pre_partial in (False, True)
+        for flags in (
+            {},
+            {"_legacy": True},
+            {"_russian_comparison": False},
+            {"_pre_registry_expansion": True},
+        )
+    )
 
 
 def discover_lab_series(engine: Engine, profile_id: UUID) -> tuple[LabSeries, ...]:
@@ -330,14 +357,8 @@ def bootstrap_lab_dashboard(
         # Preflight every matching card before changing any cards or dashboard.
         cards = _rows(client, "/api/card")
         owned: list[dict[str, Any] | None] = []
-        legacy_specs = lab_card_specs(profile_id, series, _legacy=True)
-        deployed_specs = lab_card_specs(profile_id, series, _russian_comparison=False)
-        pre_registry_specs = lab_card_specs(
-            profile_id, series, _pre_registry_expansion=True
-        )
-        for spec, legacy_spec, deployed_spec, pre_registry_spec in zip(
-            specs, legacy_specs, deployed_specs, pre_registry_specs, strict=True
-        ):
+        query_versions = _owned_query_versions(profile_id, series)
+        for index, spec in enumerate(specs):
             candidates = [c for c in cards if c.get("name") == spec.name]
             if len(candidates) > 1:
                 raise ValueError("Lab card ownership collision")
@@ -351,10 +372,8 @@ def bootstrap_lab_dashboard(
                     or current.get("collection_id") != collection["id"]
                     or _native_query(current.get("dataset_query"))
                     not in {
-                        (database["id"], spec.query),
-                        (database["id"], legacy_spec.query),
-                        (database["id"], deployed_spec.query),
-                        (database["id"], pre_registry_spec.query),
+                        (database["id"], version[index].query)
+                        for version in query_versions
                     }
                 ):
                     raise ValueError("Lab card ownership collision")
@@ -484,20 +503,12 @@ def _detach_unselected_owned_cards(
         current = _require_entity(
             client.request("GET", f"/api/card/{card['id']}"), "card"
         )
-        expected = lab_card_specs(profile_id, (possible[name],))[1]
-        legacy_expected = lab_card_specs(profile_id, (possible[name],), _legacy=True)[1]
-        deployed_expected = lab_card_specs(
-            profile_id, (possible[name],), _russian_comparison=False
-        )[1]
+        query_versions = _owned_query_versions(profile_id, (possible[name],))
         if (
             current.get("name") == name
             and current.get("collection_id") == collection_id
             and _native_query(current.get("dataset_query"))
-            in {
-                (database_id, expected.query),
-                (database_id, legacy_expected.query),
-                (database_id, deployed_expected.query),
-            }
+            in {(database_id, version[1].query) for version in query_versions}
         ):
             retired.add(card["id"])
     if retired:

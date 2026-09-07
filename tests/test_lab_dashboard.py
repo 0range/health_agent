@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 import httpx
@@ -21,6 +22,7 @@ from health_agent.lab_dashboard import (
     lab_card_specs,
 )
 from health_agent.lab_extraction.registry import _ANALYTES
+from health_agent.metabase import LAB_HISTORY_QUERY
 from health_agent.models import (
     Document,
     DocumentPage,
@@ -166,6 +168,48 @@ def test_real_queries_filter_and_preserve_repeats(db_session: Session) -> None:
     assert len(detail) == 4
     assert {row["source_flag"] for row in detail} == {"H"}
     assert {row["comparison"] for row in detail} == {"В референсе"}
+
+
+@pytest.mark.parametrize("query_index", [0, 1, 2])
+def test_verified_history_survives_pending_sibling(
+    db_session: Session, query_index: int
+) -> None:
+    verified_id = add_row(db_session)
+    verified = db_session.get(LabObservation, verified_id)
+    assert verified is not None
+    document = db_session.get(Document, verified.document_id)
+    assert document is not None
+    queries = [spec.query for spec in lab_card_specs(PROFILE, (FERRITIN,))]
+    queries.append(LAB_HISTORY_QUERY)
+    query = text(queries[query_index])
+    before = db_session.execute(query).all()
+    assert len(before) == 1
+    if query_index < 2:
+        assert before[0].observation_id == verified_id
+    pending_id = add_row(db_session, status=ReviewStatus.NEEDS_REVIEW)
+    pending = db_session.get(LabObservation, pending_id)
+    assert pending is not None
+    pending.document_id = document.id
+    document.processing_status = "needs_review"
+    other = Profile(id=uuid4(), name="Other")
+    db_session.add(other)
+    db_session.flush()
+    for changes in (
+        {"status": ReviewStatus.REJECTED},
+        {"status": ReviewStatus.NEEDS_REVIEW},
+        {"profile_id": other.id},
+        {"date": None},
+        {"date": datetime.now(UTC).date() + timedelta(days=1)},
+        {"safe_error_code": "unsafe"},
+        {"processing_status": "pending"},
+    ):
+        add_row(db_session, **({"processing_status": "needs_review"} | changes))
+    db_session.flush()
+    after = db_session.execute(query).all()
+    assert after == before
+    if query_index < 2:
+        assert [row.observation_id for row in after] == [verified_id]
+        assert pending_id not in [row.observation_id for row in after]
 
 
 @pytest.mark.parametrize(
@@ -399,8 +443,14 @@ def test_other_profile_and_legacy_dashboard_are_untouched(
     assert str(UUID(int=2)) in fake.cards[1]["dataset_query"]["native"]["query"]
 
 
+@pytest.mark.parametrize(
+    "historical,edited", [(False, False), (True, False), (True, True)]
+)
 def test_disappearing_series_is_detached_not_deleted(
-    disposable_postgres: DisposablePostgres, db_session: Session
+    disposable_postgres: DisposablePostgres,
+    db_session: Session,
+    historical: bool,
+    edited: bool,
 ) -> None:
     observation_id = add_row(db_session, source_unit="ug/L", normalized_unit="ug/L")
     db_session.commit()
@@ -411,6 +461,17 @@ def test_disappearing_series_is_detached_not_deleted(
         settings, PROFILE, engine=engine, transport=transport
     )
     assert len(first.card_ids) == 2
+    if historical:
+        previous = lab_card_specs(
+            PROFILE,
+            (LabSeries("ferritin", "Ферритин", "ug/L"),),
+            _pre_partial_recovery=True,
+            _pre_registry_expansion=True,
+        )
+        for card, spec in zip(fake.cards, previous, strict=True):
+            card["dataset_query"]["native"]["query"] = spec.query
+    if edited:
+        fake.cards[1]["dataset_query"]["native"]["query"] += "\n-- user edit"
     row = db_session.get(LabObservation, observation_id)
     assert row is not None
     row.status = ReviewStatus.REJECTED
@@ -421,7 +482,7 @@ def test_disappearing_series_is_detached_not_deleted(
     assert len(second.card_ids) == 1
     assert len(fake.cards) == 2
     assert {c["card_id"] for c in fake.dashboards[0]["dashcards"]} == set(
-        second.card_ids
+        first.card_ids if edited else second.card_ids
     )
 
 
@@ -452,6 +513,72 @@ def test_exact_legacy_owned_queries_migrate_but_custom_sql_stays_blocked(
     fake.cards[1]["dataset_query"]["native"]["query"] += "\n-- user edit"
     with pytest.raises(ValueError, match="collision"):
         bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+
+
+@pytest.mark.parametrize(
+    "flags,digest",
+    [
+        ({}, "75e59b1bf565529dc2243ef706ad89af951daf61a741c0558456e2d22d4b7981"),
+        (
+            {"_legacy": True},
+            "dd4b6a1b38b3b6f2686aca5819702d7385ce364db622f688910ed25757bd797e",
+        ),
+        (
+            {"_russian_comparison": False},
+            "dea228986f6a19acc40603105630158bed14116a957acefe28f3c7d69062e2cb",
+        ),
+        (
+            {"_pre_registry_expansion": True},
+            "86bd57137a7803833a0018b4bb93e46f483a06ebb2c782ae7ba97d99f0ee2b07",
+        ),
+    ],
+)
+def test_exact_pre_partial_release_queries_upgrade_without_adopting_edits(
+    disposable_postgres: DisposablePostgres,
+    db_session: Session,
+    flags: dict[str, bool],
+    digest: str,
+) -> None:
+    # SHA-256 of detail SQL generated by both dashboard AND registry at 288344b.
+    # This pins the actual historical registry, not a version of today's SQL.
+    previous = lab_card_specs(PROFILE, (FERRITIN,), _pre_partial_recovery=True, **flags)
+    assert sha256(previous[0].query.encode()).hexdigest() == digest
+    chart_digest = (
+        "b3fe84b1a9c3c38f293f202d87aebb37c1d2a9979b6657d60e4a0c81e4499b07"
+        if flags.get("_legacy")
+        else "af3a871240b88b9c1df14106e9576d128d1777cc5caa5ccc6b54fb7b3b0d47e8"
+    )
+    assert sha256(previous[1].query.encode()).hexdigest() == chart_digest
+    add_row(db_session)
+    db_session.commit()
+    fake = NativeMetabase()
+    transport = httpx.MockTransport(fake.handle)
+    settings, engine = disposable_postgres.settings, disposable_postgres.engine
+    first = bootstrap_lab_dashboard(
+        settings, PROFILE, engine=engine, transport=transport
+    )
+    for card, spec in zip(fake.cards, previous, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+    second = bootstrap_lab_dashboard(
+        settings, PROFILE, engine=engine, transport=transport
+    )
+    assert second.card_ids == first.card_ids
+    assert [c["dataset_query"]["native"]["query"] for c in fake.cards] == [
+        spec.query for spec in lab_card_specs(PROFILE, (FERRITIN,))
+    ]
+    for card, spec in zip(fake.cards, previous, strict=True):
+        card["dataset_query"]["native"]["query"] = spec.query
+    fake.cards[-1]["dataset_query"]["native"]["query"] += "\n-- user edit"
+    before = deepcopy(fake.cards)
+    request_count = len(fake.requests)
+    with pytest.raises(ValueError, match="collision"):
+        bootstrap_lab_dashboard(settings, PROFILE, engine=engine, transport=transport)
+    assert fake.cards == before
+    assert not any(
+        request.method in {"POST", "PUT", "DELETE"}
+        and request.url.path.startswith("/api/card")
+        for request in fake.requests[request_count:]
+    )
 
 
 def test_exact_pre_registry_expansion_queries_migrate_but_custom_sql_stays_blocked(
