@@ -59,6 +59,7 @@ class CorosHTTPTransport:
         self._http = http_client or httpx.Client(timeout=30, follow_redirects=True)
         self._session_id: str | None = None
         self._request_id = 0
+        self._initialized = False
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, Any]:
         if name not in COROS_READ_TOOLS:
@@ -72,7 +73,7 @@ class CorosHTTPTransport:
         }
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
-        if self._request_id == 0:
+        if not self._initialized:
             initialized = self._post(
                 endpoint,
                 headers,
@@ -87,12 +88,32 @@ class CorosHTTPTransport:
                 raise CorosAuthError("COROS MCP initialization failed")
             if self._session_id:
                 headers["Mcp-Session-Id"] = self._session_id
+            self._notify_initialized(endpoint, headers)
+            self._initialized = True
         response = self._post(
             endpoint, headers, "tools/call", {"name": name, "arguments": arguments}
         )
         if "error" in response or not isinstance(response.get("result"), dict):
             raise CorosAuthError("COROS MCP tool call failed")
         return response["result"]  # type: ignore[return-value]
+
+    def _notify_initialized(self, endpoint: str, headers: dict[str, str]) -> None:
+        try:
+            response = self._http.post(
+                endpoint,
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                },
+            )
+        except httpx.HTTPError as error:
+            raise CorosAuthError("COROS MCP endpoint is unavailable") from error
+        if response.status_code not in (200, 202, 204):
+            raise CorosAuthError(
+                f"COROS MCP initialized notification returned status {response.status_code}"
+            )
 
     def _post(
         self,

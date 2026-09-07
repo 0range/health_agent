@@ -135,9 +135,10 @@ class TrainingCoach:
             answer = self._brain(_SYSTEM, payload)
         except (RuntimeError, ValueError, TypeError):
             answer = "Черновик недели: чередуйте лёгкую активность и отдых без заданного темпа. Какой объём тренировок для вас привычен сейчас?"
-        if sparse and "?" not in answer:
+        if sparse and (answer.count("?") != 1 or not answer.rstrip().endswith("?")):
             answer = (
-                answer.rstrip() + "\nКакой объём тренировок для вас привычен сейчас?"
+                answer.replace("?", ".").rstrip()
+                + "\nКакой объём тренировок для вас привычен сейчас?"
             )
         self._store.put(
             profile_id, _DOMAIN, "proposal", source_key, {"text": answer}, at=now
@@ -304,7 +305,7 @@ class TrainingCoach:
 def _training_goal(record: Record) -> bool:
     domain = record.payload.get("domain")
     hierarchy = record.payload.get("hierarchy")
-    return domain in (None, "training") or hierarchy in ("training", ["training"])
+    return domain == "training" or hierarchy in ("training", ["training"])
 
 
 def _activity_at(activity: dict[str, Any], fallback: datetime) -> datetime:
@@ -323,4 +324,10 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
-_SYSTEM = "You are a conservative training planning assistant. Use only supplied goals, user reports, accepted plans, and factual activities. Never invent fitness, race registration, exact event dates, pace goals, symptoms, or completion."
+_SYSTEM = (
+    "You are a conservative training planning assistant. Use only supplied goals, "
+    "user reports, accepted plans, and factual activities. Never invent fitness, "
+    "race registration, exact event dates, pace goals, symptoms, or completion. "
+    "Never diagnose, prescribe clinical treatment, or set medical targets. Treat "
+    "symptoms only as user reports and direct urgent concerns to appropriate care."
+)

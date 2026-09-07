@@ -118,6 +118,10 @@ def test_http_transport_initializes_and_calls_only_allowlisted_reads(tmp_path):
                     },
                 },
             )
+        if payload["method"] == "notifications/initialized":
+            assert "id" not in payload
+            assert request.headers["mcp-session-id"] == "session"
+            return httpx.Response(202)
         return httpx.Response(
             200,
             json={
@@ -136,9 +140,14 @@ def test_http_transport_initializes_and_calls_only_allowlisted_reads(tmp_path):
     assert result["structuredContent"]["activities"] == [{"id": "a1"}]
     assert mcp_requests[-1].headers["mcp-session-id"] == "session"
     assert mcp_requests[-1].headers["authorization"] == "Bearer access"
+    assert [json.loads(request.content)["method"] for request in mcp_requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+    ]
     with pytest.raises(ValueError, match="read tool"):
         transport.call_tool("generateTrainingPlan", {})
-    assert len(mcp_requests) == 2
+    assert len(mcp_requests) == 3
 
 
 def test_sse_mcp_response_is_decoded(tmp_path):

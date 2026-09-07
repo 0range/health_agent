@@ -137,6 +137,50 @@ def test_profiles_are_isolated_and_missing_data_is_explicit():
     assert coach.due(first, now) == []
 
 
+def test_only_explicit_training_goals_are_used_and_every_prompt_has_medical_boundary():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    store.put(
+        profile, "shared", "goal", "food", {"text": "Unrelated food goal"}, at=now
+    )
+    store.put(
+        profile,
+        "shared",
+        "goal",
+        "run",
+        {"domain": "training", "text": "Training goal"},
+        at=now,
+    )
+    coach = TrainingCoach(store, brain)
+
+    yearly = coach.handle(profile, "/год", source_key="g", now=now)
+    assert "Training goal" in yearly and "Unrelated" not in yearly
+    coach.handle(
+        profile,
+        "Назначь лечение боли и поставь медицинскую цель",
+        source_key="s",
+        now=now,
+    )
+    system, _ = brain.calls[-1]
+    assert "Never diagnose" in system
+    assert "treatment" in system
+    assert "medical targets" in system
+
+
+def test_sparse_plan_is_normalized_to_one_final_question():
+    store, profile = MemoryStore(), uuid4()
+    now = datetime(2026, 9, 7, 12, tzinfo=UTC)
+
+    def brain(system, payload, *, image_path=None):
+        return "Можно бегать? Или ходить?"
+
+    answer = TrainingCoach(store, brain).handle(
+        profile, "/план", source_key="p", now=now
+    )
+    assert answer.count("?") == 1
+    assert answer.endswith("?")
+
+
 def test_free_dialogue_replays_without_second_model_call_and_remembers_context():
     store, brain, profile = MemoryStore(), Brain(), uuid4()
     now = datetime(2026, 9, 7, 12, tzinfo=UTC)
