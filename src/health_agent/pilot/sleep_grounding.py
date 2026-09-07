@@ -12,33 +12,62 @@ _SLEEP = re.compile(
 )
 _CAUSE = re.compile(r"почему|причин|из-за|связ|инфекц|погод|why|cause", re.IGNORECASE)
 _FOLLOWUP = re.compile(
-    r"анализ|температур|да\b|нет\b|новые|а если|это|ещ[её]", re.IGNORECASE
+    r"^\s*(?:а\s+)?(?:это\b|если\b|ещ[её]\b|да\b|нет\b|есть новые анализы|"
+    r"новые анализы|температур|начал|спал|сплю|сонлив|устал|\d+\s*час)",
+    re.IGNORECASE,
 )
 _LAB = re.compile(
     r"анализ|инфекц|crp|wbc|срб|лейкоцит|гемоглобин|ферритин|lab", re.IGNORECASE
 )
-_HISTORY = re.compile(r"старые|старый|истори|прошл|раньше", re.IGNORECASE)
+_HISTORY = re.compile(
+    r"(?:стар\w*|прошлогодн\w*|историческ\w*)\s+(?:анализ|результат|данн)|"
+    r"(?:анализ|результат)\w*\s+за\s+20\d{2}",
+    re.IGNORECASE,
+)
 _RECOVERY = re.compile(
     r"sleep|recovery|hrv|resting.heart|сон|сна|восстанов|пульс.*поко", re.IGNORECASE
 )
 _RELEVANT_LAB = re.compile(
-    r"crp|wbc|hemoglobin|ferritin|tsh|срб|лейкоцит|гемоглобин|ферритин|ттг",
+    r"crp|wbc|white_blood_cells|hemoglobin|ferritin|tsh|срб|лейкоцит|гемоглобин|ферритин|ттг",
     re.IGNORECASE,
 )
 
 
 def effective_question(question: str, user_reports: list[dict[str, Any]]) -> str:
-    """Carry only a directly relevant previous user question into a short follow-up."""
+    """Follow a bounded chain of user replies; an explicit new question ends it."""
     previous = [
         str(row.get("text", "")) for row in user_reports if row.get("text") != question
     ]
-    if not _SLEEP.search(question) and _FOLLOWUP.search(question) and previous:
-        prior = previous[-1]
-        if _SLEEP.search(prior):
-            return (
-                f"Предыдущий вопрос пользователя: {prior}\nТекущий вопрос: {question}"
-            )
+    if _FOLLOWUP.search(question):
+        chain: list[str] = []
+        for prior in reversed(previous[-6:]):
+            chain.insert(0, prior)
+            if is_causal_question(prior):
+                return (
+                    "Предыдущие сообщения пользователя: "
+                    + "\n".join(chain)
+                    + f"\nТекущий вопрос: {question}"
+                )
+            if not _FOLLOWUP.search(prior):
+                break
     return question
+
+
+def _historical_request(question: str) -> bool:
+    current = question.rsplit("Текущий вопрос: ", 1)[-1]
+    return bool(
+        _HISTORY.search(current)
+        and re.search(
+            r"покажи|сравни|посмотри|разбери|как связ|что (?:было|показ)|какие",
+            current,
+            re.IGNORECASE,
+        )
+        and not re.search(
+            r"не\s+(?:нуж|смотр|учит|использ|отно)|нерелевант|неактуаль|без стар",
+            current,
+            re.IGNORECASE,
+        )
+    )
 
 
 def is_sleep_question(question: str) -> bool:
@@ -63,12 +92,22 @@ def focused_evidence(
     Historical questions can retrieve older facts, explicitly marked historical.
     Report prose and catalogue explanations never enter this evidence channel.
     """
-    historical = bool(_HISTORY.search(question))
+    historical = _historical_request(question)
     include_labs = bool(_LAB.search(question))
     facts: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     snapshot = health.get("health_snapshot", {})
-    signals = snapshot.get("signals", []) if isinstance(snapshot, dict) else []
+    # Wearable snapshot values are rolling aggregates timestamped at as_of,
+    # not individual measurements. Only raw dated wearable evidence is selectable.
+    signals = (
+        [
+            item
+            for item in snapshot.get("signals", [])
+            if isinstance(item, dict) and item.get("kind") == "lab"
+        ]
+        if isinstance(snapshot, dict)
+        else []
+    )
     observations = health.get("verified_observations", [])
     for item in [*observations, *signals]:
         if not isinstance(item, dict):
@@ -124,7 +163,7 @@ verified_health_context.facts. Не добавляй текст, диагноз�
 выбери null. Ответ для пользователя формирует приложение."""
 
 
-def render_causal_reply(raw: str, health: dict[str, Any]) -> str:
+def render_causal_reply(raw: str, health: dict[str, Any], question: str = "") -> str:
     """The model can select an existing observation, never supply medical prose."""
     selected = None
     try:
@@ -152,5 +191,10 @@ def render_causal_reply(raw: str, health: dict[str, Any]) -> str:
             f"{selected['metric']} — {selected['value']} {selected['unit']}. "
             "Это наблюдение само по себе не подтверждает и не исключает причину."
         )
-    reply += " Когда началась сонливость и сколько часов вы спали перед этим?"
+    if re.search(
+        r"начал|дн\w* назад|недел\w* назад", question, re.IGNORECASE
+    ) and re.search(r"\d+\s*час", question, re.IGNORECASE):
+        reply += " Сонливость мешает обычным дневным делам?"
+    else:
+        reply += " Когда началась сонливость и сколько часов вы спали перед этим?"
     return reply

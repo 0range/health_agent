@@ -139,12 +139,12 @@ class SleepCoach:
         try:
             reply = self.brain(CAUSAL_SYSTEM_PROMPT if causal else _SYSTEM_PROMPT, prompt)
             if causal:
-                reply = render_causal_reply(reply, prompt["verified_health_context"])
+                reply = render_causal_reply(reply, prompt["verified_health_context"], stripped)
             reply = _phone_length(reply.strip())
             if not reply:
                 raise ValueError("empty brain response")
         except Exception:  # noqa: BLE001 - provider boundary must degrade safely
-            reply = (render_causal_reply("", prompt["verified_health_context"])
+            reply = (render_causal_reply("", prompt["verified_health_context"], stripped)
                      if causal else self._fallback(profile_id, is_diary))
 
         self.store.put(
