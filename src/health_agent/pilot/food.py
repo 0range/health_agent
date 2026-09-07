@@ -22,21 +22,17 @@ _NUTRIENTS = (
 _QUIET_START = time(22, 0)
 _QUIET_END = time(7, 0)
 _USER_ZONE = ZoneInfo("Europe/Moscow")
-_DEFAULT_FEEDBACK = "Приём пищи сохранён; данных недостаточно для надёжной рекомендации."
-_UNSAFE_FEEDBACK = re.compile(
-    r"(?:у вас\s+(?:диабет|болезнь|диагноз)|это\s+(?:диабет|болезнь)|\bдиагноз\b|"
-    r"you have\s+(?:diabetes|a disease)|\bdiagnos(?:is|ed)\b|"
-    r"прекрат(?:ите|ить)\s+(?:лекарств|лечени)|stop\s+(?:medication|treatment)|"
-    r"(?:всем|всегда|никогда|универсальн).{0,30}(?:запрещ|нельзя|вред)|"
-    r"(?:everyone|always|never|universally).{0,30}(?:forbidden|harmful)|"
-    r"голода(?:йте|ть)|вызывайте рвоту|vomit|starv|обязательно|must\b)",
-    re.IGNORECASE,
-)
-_UNSUPPORTED_PRECISION = re.compile(r"(?<!\d)\d+[.,]\d{2,}(?!\d)")
-_RECOMMENDATION = re.compile(
-    r"\b(?:добавьте|уменьшите|исключите|замените|выберите|попробуйте|"
-    r"add|reduce|avoid|replace|choose|try)\b", re.IGNORECASE,
-)
+_COMPONENT_LABELS = {
+    "vegetables": "овощи", "protein": "источник белка", "grains": "крупы или хлеб",
+    "fruit": "фрукты", "dairy": "молочный продукт",
+}
+_COMPONENT_TERMS = {
+    "vegetables": ("овощ", "салат", "зелень", "томат", "огур", "капуст", "vegetable"),
+    "protein": ("мяс", "рыб", "яйц", "кур", "индей", "боб", "тофу", "protein"),
+    "grains": ("рис", "греч", "овся", "хлеб", "паст", "макарон", "grain"),
+    "fruit": ("фрукт", "яблок", "банан", "ягод", "fruit"),
+    "dairy": ("молок", "йогур", "кефир", "сыр", "творог", "dairy"),
+}
 
 
 class FoodCoach:
@@ -132,7 +128,10 @@ class FoodCoach:
                 image_path=Path(payload["photo_path"]) if payload["photo_path"] else None,
             )
             payload["analysis_raw"] = raw
-            payload["analysis"] = self._parse_analysis(raw, bool(payload["photo_path"]))
+            payload["analysis"] = self._parse_analysis(
+                raw, bool(payload["photo_path"]), str(payload["category"]),
+                self._protocol(profile_id),
+            )
             payload["analysis_error"] = None if payload["analysis"] is not None else "invalid_json"
         except Exception as exc:  # noqa: BLE001 - authorized model callable is a boundary
             payload["analysis_error"] = type(exc).__name__
@@ -201,11 +200,17 @@ class FoodCoach:
         unknown = len(meals) - known
         ordered = sorted(meals, key=lambda m: self._from_iso(m.payload["occurred_at"]))
         categories = ", ".join(str(m.payload.get("category", "meal")) for m in ordered)
-        intervals = [
-            (self._from_iso(current.payload["occurred_at"])
-             - self._from_iso(previous.payload["occurred_at"])).total_seconds() / 3600
-            for previous, current in pairwise(ordered)
-        ]
+        intervals = []
+        closed_days = set()
+        for previous, current in pairwise(ordered):
+            previous_at = self._from_iso(previous.payload["occurred_at"])
+            current_at = self._from_iso(current.payload["occurred_at"])
+            previous_day = previous_at.astimezone(_USER_ZONE).date()
+            current_day = current_at.astimezone(_USER_ZONE).date()
+            if previous.payload.get("category") == "dinner":
+                closed_days.add(previous_day)
+            if previous_day == current_day and previous_day not in closed_days:
+                intervals.append((current_at - previous_at).total_seconds() / 3600)
         adherent = sum(2.5 <= interval <= 4.5 for interval in intervals)
         adherence = (f"Интервалы в плане: {adherent} из {len(intervals)}."
                      if intervals else "Для оценки интервалов пока недостаточно записей.")
@@ -273,7 +278,9 @@ class FoodCoach:
         return "dinner"
 
     @staticmethod
-    def _parse_analysis(raw: str, photo: bool) -> dict[str, Any] | None:
+    def _parse_analysis(
+        raw: str, photo: bool, category: str = "", protocol: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         try:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
@@ -294,6 +301,10 @@ class FoodCoach:
         result["unknowns"] = ([item.strip() for item in unknowns
                                if isinstance(item, str) and item.strip()][:50]
                               if isinstance(unknowns, list) else [])
+        supplied_components = result.get("plate_components")
+        result["plate_components"] = ([item for item in supplied_components
+                                       if isinstance(item, str) and item in _COMPONENT_LABELS][:5]
+                                      if isinstance(supplied_components, list) else [])
         for key in _NUTRIENTS:
             number = result.get(key)
             if number is None:
@@ -309,8 +320,9 @@ class FoodCoach:
             result["confidence"] = None
         if photo and not result["portion_estimate"]:
             result["unknowns"].append("размер порции по фото неизвестен")
-        feedback = result.get("feedback")
-        result["feedback"] = FoodCoach._safe_feedback(feedback)
+        # Model prose is evidence for audit/replay, never directly user-visible.
+        result["feedback_untrusted"] = result.get("feedback")
+        result["feedback"] = FoodCoach._render_feedback(result, category, protocol or {})
         return result
 
     @staticmethod
@@ -329,17 +341,47 @@ class FoodCoach:
         return current >= start or current < end if start > end else start <= current < end
 
     @staticmethod
-    def _safe_feedback(value: Any) -> str:
-        if not isinstance(value, str):
-            return _DEFAULT_FEEDBACK
-        feedback = " ".join(value.split())
-        sentences = [part for part in re.split(r"[.!?]+", feedback) if part.strip()]
-        if (not feedback or len(feedback) > 280 or len(sentences) > 2
-                or _UNSAFE_FEEDBACK.search(feedback)
-                or _UNSUPPORTED_PRECISION.search(feedback)
-                or len(_RECOMMENDATION.findall(feedback)) > 1):
-            return _DEFAULT_FEEDBACK
-        return feedback
+    def _render_feedback(
+        analysis: dict[str, Any], category: str, protocol: dict[str, Any],
+    ) -> str:
+        components = FoodCoach._components(analysis)
+        if not components:
+            return "Не удалось надёжно определить состав и порцию; уточните ингредиенты и размер порции."
+        labels = [_COMPONENT_LABELS[item] for item in _COMPONENT_LABELS if item in components]
+        observation = f"В записи отмечены: {', '.join(labels)}."
+        expected = FoodCoach._expected_components(protocol, category)
+        missing = next((item for item in _COMPONENT_LABELS
+                        if item in expected and item not in components), None)
+        if missing is not None:
+            return f"{observation} По выбранному правилу можно добавить {_COMPONENT_LABELS[missing]}."
+        if analysis.get("portion_estimate") is None:
+            return f"{observation} Уточните размер порции для более полной записи."
+        return observation
+
+    @staticmethod
+    def _components(analysis: dict[str, Any]) -> set[str]:
+        supplied = analysis.get("plate_components")
+        components = ({item for item in supplied if item in _COMPONENT_LABELS}
+                      if isinstance(supplied, list) else set())
+        for food in analysis.get("foods", []):
+            lowered = food.lower()
+            components.update(name for name, terms in _COMPONENT_TERMS.items()
+                              if any(term in lowered for term in terms))
+        return components
+
+    @staticmethod
+    def _expected_components(protocol: dict[str, Any], category: str) -> set[str]:
+        rules = protocol.get("plate_rules")
+        selected = rules.get(category) if isinstance(rules, dict) else None
+        if isinstance(selected, list):
+            text = " ".join(str(item) for item in selected)
+        elif isinstance(selected, str):
+            text = selected
+        else:
+            return set()
+        lowered = text.lower()
+        return {name for name, terms in _COMPONENT_TERMS.items()
+                if name in lowered or any(term in lowered for term in terms)}
 
     @staticmethod
     def _positive_number(value: Any) -> float | None:
@@ -361,7 +403,8 @@ class FoodCoach:
     @staticmethod
     def _system_prompt() -> str:
         return (
-            "Return JSON only with foods, portion_estimate, nullable kcal, protein_g, fat_g, "
+            "Return JSON only with foods, plate_components (only vegetables, protein, grains, "
+            "fruit, dairy), portion_estimate, nullable kcal, protein_g, fat_g, "
             "carbs_g, saturated_fat_g, fiber_g, cholesterol_mg, confidence, unknowns, feedback. "
             "Never invent quantities. Missing nutrients are null. A photo portion is an estimate. "
             "Feedback is short and neutral: one plate observation and at most one optional change "

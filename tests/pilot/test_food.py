@@ -181,6 +181,8 @@ def test_replayed_old_correction_does_not_reanchor_newer_meal(setup: tuple[Memor
 
 @pytest.mark.parametrize("unsafe", [
     "У вас диабет. Срочно прекратите лекарства.",
+    "У вас рак.",
+    "Молочные продукты запрещены.",
     "Этот продукт всем всегда запрещён.",
     "Овощей 53.27 грамма; обязательно голодайте сутки.",
     "Очень длинный совет. " * 50,
@@ -195,7 +197,9 @@ def test_unsafe_or_overprecise_feedback_gets_bounded_fallback(
     answer = coach.handle(profile, "обед", source_key="unsafe", now=noon)
     assert len(answer) <= 280
     assert unsafe not in answer
-    assert store.list(profile, "food", "meal")[0].payload["analysis"]["feedback"] == answer
+    analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
+    assert analysis["feedback"] == answer
+    assert analysis["feedback_untrusted"] == unsafe
 
 
 def test_all_structured_fields_are_normalized_without_crash(setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime]) -> None:
@@ -229,3 +233,41 @@ def test_profiles_are_isolated(setup: tuple[MemoryStore, Brain, FoodCoach, UUID,
     coach.handle(profile, "/ел 12:00 обед", source_key="same-source", now=noon)
     assert coach.due(other, noon + timedelta(hours=3, minutes=30)) == []
     assert "нет" in coach.handle(other, "/сегодня", source_key="other-summary", now=noon).lower()
+
+
+def test_feedback_uses_controlled_plate_observation_and_protocol_change(
+    setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime],
+) -> None:
+    store, brain, coach, profile, noon = setup
+    store.put(profile, "food", "settings", "protocol", {
+        "plate_rules": {"lunch": ["vegetables", "protein"]},
+    })
+    value = json.loads(str(Brain().reply))
+    value["foods"] = ["салат"]
+    value["feedback"] = "Любой произвольный текст модели."
+    brain.reply = json.dumps(value, ensure_ascii=False)
+    answer = coach.handle(profile, "/ел 12:00 обед", source_key="controlled", now=noon)
+    assert answer == "В записи отмечены: овощи. По выбранному правилу можно добавить источник белка."
+    analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
+    assert analysis["feedback_untrusted"] == "Любой произвольный текст модели."
+
+
+def test_week_summary_excludes_overnight_and_post_dinner_adjacency(
+    setup: tuple[MemoryStore, Brain, FoodCoach, UUID, datetime],
+) -> None:
+    _, _, coach, profile, _ = setup
+    dinner = datetime(2026, 9, 7, 18, tzinfo=UTC)  # 21:00 Moscow
+    coach.handle(profile, "/ел 21:00 ужин", source_key="dinner-day-1", now=dinner)
+    after_dinner = dinner + timedelta(minutes=30)
+    coach.handle(profile, "/ел 21:30 перекус", source_key="after-dinner", now=after_dinner)
+    coach.handle(
+        profile, "/ел 22:00 перекус", source_key="second-after-dinner",
+        now=dinner + timedelta(hours=1),
+    )
+    breakfast = datetime(2026, 9, 8, 6, tzinfo=UTC)
+    coach.handle(profile, "/ел 09:00 завтрак", source_key="breakfast-day-2", now=breakfast)
+    lunch = breakfast + timedelta(hours=3, minutes=30)
+    coach.handle(profile, "/ел 12:30 обед", source_key="lunch-day-2", now=lunch)
+
+    summary = coach.handle(profile, "/неделя", source_key="week", now=lunch)
+    assert "1 из 1" in summary
