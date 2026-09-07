@@ -170,7 +170,8 @@ def test_food_journey_reminder_correction_restart_and_local_day_separation(
         now=next_day,
     )
     assert "Сохранено приёмов пищи: 1" in today
-    assert "Сохранено приёмов пищи: 2" in week
+    assert "Сохранено 2 приёмов за 2 дней" in week
+    assert "2026-09-07" in week and "2026-09-08" in week
     meals = PilotStore(clean_database).list(DEFAULT_PROFILE_ID, "food", "meal")
     corrected = next(meal for meal in meals if meal.source_key == "food-lunch")
     assert corrected.payload["occurred_at"] == "2026-09-07T10:00:00+00:00"

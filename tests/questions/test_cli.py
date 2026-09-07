@@ -93,6 +93,7 @@ def test_question_status_does_not_report_a_nonexistent_profile_as_ready(monkeypa
 
 
 def test_telegram_run_handles_interrupt_and_never_prints_credential(monkeypatch) -> None:
+    monkeypatch.setenv("PILOT_ENABLED", "false")
     token = "123:telegram-secret"
 
     class Poller:
@@ -116,6 +117,7 @@ def test_telegram_run_handles_interrupt_and_never_prints_credential(monkeypatch)
 
 
 def test_telegram_run_reports_only_a_safe_code_for_runtime_error(monkeypatch) -> None:
+    monkeypatch.setenv("PILOT_ENABLED", "false")
     secret = "telegram-private-path-or-token"
 
     class Poller:
@@ -137,6 +139,21 @@ def test_telegram_run_reports_only_a_safe_code_for_runtime_error(monkeypatch) ->
     assert result.stdout == "status=running\n"
     assert "status=blocked error=telegram_runtime_failed" in result.output
     assert secret not in result.output
+
+
+def test_telegram_run_selects_pilot_without_starting_real_services(monkeypatch) -> None:
+    from health_agent.config import Settings
+    from health_agent.pilot import runtime
+
+    calls = []
+    monkeypatch.setattr(
+        cli_module, "Settings", lambda: Settings(_env_file=None, pilot_enabled=True)
+    )
+    monkeypatch.setattr(runtime, "run_pilot", lambda settings, domain, profile: calls.append((domain, profile)))
+    result = CliRunner().invoke(app, ["telegram", "run"])
+
+    assert result.exit_code == 0
+    assert calls == [("sleep", UUID(PROFILE_ID))]
 
 
 def test_question_result_error_exits_without_exposing_request(monkeypatch) -> None:
