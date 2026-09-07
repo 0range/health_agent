@@ -117,6 +117,7 @@ class FoodCoach:
                 "occurred_at": occurred.isoformat(), "captured_at": now.isoformat(),
                 "category": category, "category_source": "labelled_heuristic",
                 "analysis": None, "analysis_raw": None, "analysis_error": None,
+                "analysis_status": "pending",
             }
             existing = self._store.put(
                 profile_id, "food", "meal", source_key, payload, at=occurred,
@@ -128,6 +129,10 @@ class FoodCoach:
 
     def _analyse(self, profile_id: UUID, meal: Record) -> Record:
         payload = dict(meal.payload)
+        payload["analysis"] = None
+        payload["analysis_raw"] = None
+        payload["analysis_error"] = None
+        payload["analysis_status"] = "pending"
         try:
             raw = self._brain(
                 self._system_prompt(),
@@ -144,8 +149,12 @@ class FoodCoach:
                 self._protocol(profile_id), payload.get("user_portion"),
             )
             payload["analysis_error"] = None if payload["analysis"] is not None else "invalid_json"
+            payload["analysis_status"] = ("complete" if payload["analysis"] is not None
+                                          else "incomplete")
         except Exception as exc:  # noqa: BLE001 - authorized model callable is a boundary
+            payload["analysis"] = None
             payload["analysis_error"] = type(exc).__name__
+            payload["analysis_status"] = "incomplete"
         return self._store.patch(profile_id, meal.id, payload)
 
     def _correct(self, profile_id: UUID, text: str, source_key: str, now: datetime) -> str:
@@ -190,8 +199,21 @@ class FoodCoach:
         previous = self._by_source(profile_id, "portion_correction", source_key)
         if previous is not None:
             meal = self._store.get(profile_id, str(previous.payload["meal_id"]))
-            return (self._feedback(meal.payload) if meal and meal.payload.get("analysis")
-                    else "Порция уже сохранена; анализ сейчас недоступен.")
+            if meal is None:
+                return "Порция сохранена, но связанный приём пищи не найден."
+            complete = (meal.payload.get("analysis_status") == "complete"
+                        or (meal.payload.get("analysis") is not None
+                            and meal.payload.get("analysis_error") is None))
+            if complete:
+                return self._feedback(meal.payload)
+            payload = dict(meal.payload)
+            payload["user_portion"] = previous.payload["portion"]
+            payload["portion_analysis_source_key"] = source_key
+            persisted = self._store.patch(profile_id, meal.id, payload)
+            updated = self._analyse(profile_id, persisted)
+            if updated.payload.get("analysis_status") != "complete":
+                return "Порция сохранена; повторный анализ сейчас недоступен."
+            return self._feedback(updated.payload)
         portion = text[len("/порция"):].strip()
         if not portion or len(portion) > 100:
             return "Укажите порцию, например: /порция 200 г."
@@ -203,11 +225,18 @@ class FoodCoach:
             {"meal_id": meal.id, "portion": portion}, at=now,
         )
         payload = dict(meal.payload)
+        payload["previous_analysis"] = payload.get("analysis")
+        payload["previous_analysis_raw"] = payload.get("analysis_raw")
         payload["user_portion"] = correction.payload["portion"]
         payload["portion_corrected_at"] = now.isoformat()
+        payload["portion_analysis_source_key"] = source_key
+        payload["analysis"] = None
+        payload["analysis_raw"] = None
+        payload["analysis_error"] = None
+        payload["analysis_status"] = "pending"
         persisted = self._store.patch(profile_id, meal.id, payload)
         updated = self._analyse(profile_id, persisted)
-        if updated.payload.get("analysis") is None:
+        if updated.payload.get("analysis_status") != "complete":
             return "Порция сохранена; повторный анализ сейчас недоступен."
         return self._feedback(updated.payload)
 

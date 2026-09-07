@@ -332,3 +332,52 @@ def test_portion_correction_reanalyses_same_meal_and_photo_idempotently(tmp_path
     ) == answer
     assert len(brain.calls) == calls
     assert len(store.list(profile, "food", "meal")) == 1
+
+
+def test_failed_portion_reanalysis_retries_bound_old_meal_after_new_meal(tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    first_at = datetime(2026, 9, 7, 6, tzinfo=UTC)
+    photo = Attachment(tmp_path / "breakfast.jpg", "image/jpeg", "завтрак")
+    coach.handle(profile, "", source_key="first-meal", now=first_at, attachment=photo)
+    first = next(r for r in store.list(profile, "food", "meal") if r.source_key == "first-meal")
+    previous_analysis = first.payload["analysis"]
+    previous_raw = first.payload["analysis_raw"]
+
+    brain.reply = RuntimeError("vision offline")
+    failure = coach.handle(
+        profile, "/порция 200 г", source_key="portion-retry", now=first_at + timedelta(minutes=5),
+    )
+    failed = store.get(profile, first.id)
+    assert failed is not None
+    assert "недоступ" in failure.lower()
+    assert failed.payload["analysis"] is None
+    assert failed.payload["analysis_status"] == "incomplete"
+    assert failed.payload["previous_analysis"] == previous_analysis
+    assert failed.payload["previous_analysis_raw"] == previous_raw
+
+    second_at = first_at + timedelta(hours=4)
+    brain.reply = Brain().reply
+    coach.handle(profile, "/ел 13:00 обед", source_key="newer-meal", now=second_at)
+    newer = next(r for r in store.list(profile, "food", "meal") if r.source_key == "newer-meal")
+    newer_before = dict(newer.payload)
+    calls_before_retry = len(brain.calls)
+
+    answer = coach.handle(
+        profile, "/порция 200 г", source_key="portion-retry", now=second_at,
+    )
+    retried = store.get(profile, first.id)
+    assert retried is not None
+    assert retried.payload["analysis"] is not None
+    assert retried.payload["analysis_status"] == "complete"
+    assert retried.payload["occurred_at"] == first.payload["occurred_at"]
+    assert retried.payload["user_portion"] == "200 г"
+    assert store.get(profile, newer.id).payload == newer_before  # type: ignore[union-attr]
+    assert len(brain.calls) == calls_before_retry + 1
+    assert brain.calls[-1][1] == photo.path
+
+    calls_after_success = len(brain.calls)
+    assert coach.handle(
+        profile, "/порция 200 г", source_key="portion-retry", now=second_at,
+    ) == answer
+    assert len(brain.calls) == calls_after_success
