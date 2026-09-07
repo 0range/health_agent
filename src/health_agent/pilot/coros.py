@@ -245,6 +245,11 @@ def _activity_list(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _parse_sport_records(text: str) -> list[dict[str, Any]]:
+    if re.fullmatch(
+        r"No sport records found from \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}\.",
+        text,
+    ):
+        return []
     heading = re.match(
         r"^Sport Records — (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2}) \((\d+) records\)\n===\n",
         text,

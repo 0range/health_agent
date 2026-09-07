@@ -110,3 +110,26 @@ def test_live_error_or_anomalous_text_is_not_silently_empty():
         CorosReadClient(ErrorShape()).activities(
             datetime(2026, 8, 8, tzinfo=UTC), datetime(2026, 9, 7, tzinfo=UTC)
         )
+
+
+def test_exact_live_empty_message_returns_empty_but_near_miss_raises():
+    class EmptyShape:
+        text = '"No sport records found from 2010-01-01 to 2010-01-31."'
+
+        def call_tool(self, name, arguments):
+            return {"content": [{"type": "text", "text": self.text}], "isError": False}
+
+    source = EmptyShape()
+    client = CorosReadClient(source)
+    assert (
+        client.activities(
+            datetime(2010, 1, 1, tzinfo=UTC), datetime(2010, 1, 31, tzinfo=UTC)
+        )
+        == []
+    )
+
+    source.text = '"No sport records currently available."'
+    with pytest.raises(ValueError, match="invalid heading"):
+        client.activities(
+            datetime(2010, 1, 1, tzinfo=UTC), datetime(2010, 1, 31, tzinfo=UTC)
+        )
