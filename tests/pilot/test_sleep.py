@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -131,7 +132,7 @@ def test_question_does_not_consume_prompt_and_pre_delivery_message_is_not_reply(
         "sleep",
         "notice",
         "morning:2026-09-07",
-        {"text": "Как спалось?", "delivery_at": delivered.isoformat()},
+        {"text": "Как спалось?", "delivered_at": delivered.isoformat()},
         at=delivered,
     )
 
@@ -156,6 +157,38 @@ def test_question_does_not_consume_prompt_and_pre_delivery_message_is_not_reply(
         now=datetime(2026, 9, 7, 6, 30, tzinfo=UTC),
     )
     assert store.list(profile, "sleep", "diary")[0].source_key == "answer"
+
+
+def test_unrelated_statements_and_late_checkin_do_not_consume_morning_prompt() -> None:
+    store, profile = MemoryStore(), uuid4()
+    coach = SleepCoach(store, FakeBrain())
+    delivered = datetime(2026, 9, 7, 6, 0, tzinfo=UTC)
+    store.put(
+        profile,
+        "sleep",
+        "notice",
+        "morning:2026-09-07",
+        {"delivered_at": delivered.isoformat()},
+        at=delivered - timedelta(minutes=5),
+    )
+
+    coach.handle(profile, "Сегодня принимаю магний", source_key="magnesium", now=delivered)
+    coach.handle(profile, "У меня болит колено", source_key="knee", now=delivered)
+    coach.handle(
+        profile,
+        "Спал плохо",
+        source_key="too-late",
+        now=delivered + timedelta(hours=3, seconds=1),
+    )
+    assert store.list(profile, "sleep", "diary") == []
+
+    coach.handle(
+        profile,
+        "Чувствую себя разбитым",
+        source_key="wellbeing",
+        now=delivered + timedelta(hours=3),
+    )
+    assert store.list(profile, "sleep", "diary")[0].source_key == "wellbeing"
 
 
 def test_read_only_diary_profile_isolation_and_missing_voice_transcription() -> None:
@@ -190,6 +223,60 @@ def test_weekly_notice_needs_three_entries_and_on_demand_summary_is_truthful() -
     empty_profile = uuid4()
     summary = coach.handle(empty_profile, "/итоги", source_key="summary", now=NOW)
     assert "нет записей" in summary.lower()
+
+
+def test_weekly_reflection_requires_real_entry_ids_and_labels_hypotheses() -> None:
+    store, profile = MemoryStore(), uuid4()
+    sunday = datetime(2026, 9, 13, 16, 0, tzinfo=UTC)
+    for index in range(3):
+        store.put(
+            profile,
+            "sleep",
+            "diary",
+            f"d{index}",
+            {"text": f"отчёт {index}"},
+            at=NOW + timedelta(days=index),
+        )
+    ids = [row.id for row in store.list(profile, "sleep", "diary")]
+    brain = FakeBrain(
+        json.dumps(
+            {
+                "observations": [{"text": "Три пользовательских отчёта", "entry_ids": ids}],
+                "hypotheses": [{"text": "Режим мог иметь значение", "entry_ids": ids[:1]}],
+                "next_question": "Что отличало наиболее бодрое утро?",
+            },
+            ensure_ascii=False,
+        )
+    )
+    reply = SleepCoach(store, brain).handle(
+        profile, "/итоги", source_key="structured", now=sunday
+    )
+    assert "Наблюдение:" in reply
+    assert "Гипотеза (не установленная причина):" in reply
+    assert "Что отличало" in reply
+    weekly_entries = brain.calls[-1][1]["weekly_entries"]
+    assert {row["id"] for row in weekly_entries} == set(ids)
+
+
+def test_weekly_invalid_or_unknown_ids_get_deterministic_useful_fallback() -> None:
+    store, profile = MemoryStore(), uuid4()
+    sunday = datetime(2026, 9, 13, 16, 0, tzinfo=UTC)
+    for index in range(3):
+        store.put(profile, "sleep", "diary", f"d{index}", {"text": "сон"}, at=NOW)
+    invalid = json.dumps(
+        {
+            "observations": [{"text": "Выдуманная связь", "entry_ids": ["unknown"]}],
+            "hypotheses": [],
+            "next_question": "",
+        }
+    )
+    reply = SleepCoach(store, FakeBrain(invalid)).handle(
+        profile, "/итоги", source_key="invalid", now=sunday
+    )
+    assert reply.startswith("За 07.09–07.09: 3 записи.")
+    assert "не удалось связать" in reply.lower()
+    assert "Что отличало" in reply
+    assert "Выдуманная связь" not in reply
 
 
 def test_health_context_and_goals_are_context_not_claims_and_fallback_saves() -> None:

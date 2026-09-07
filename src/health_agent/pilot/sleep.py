@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -20,11 +21,14 @@ from health_agent.pilot.contracts import (
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _MORNING_RE = re.compile(r"^/утро(?:\s+(\S+))?\s*$", re.IGNORECASE)
 _DIARY_RE = re.compile(r"^/сон(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
-_QUESTION_RE = re.compile(
-    r"(?:\?|^(?:кто|что|где|когда|зачем|почему|как|можно|может ли|стоит ли|"
-    r"нужно ли|нужен ли|нужна ли|нормально ли|опасно ли)(?:\s|$))",
+_MORNING_SIGNAL_RE = re.compile(
+    r"\b(?:спал(?:а|и)?|спалось|сон|уснул(?:а)?|заснул(?:а)?|проснул(?:ся|ась)|"
+    r"пробужд\w*|ночью|снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись)|"
+    r"выспал(?:ся|ась)?|не\s+выспал(?:ся|ась)?|бодр\w*|разбит\w*|"
+    r"устал(?:а|ым|ой)?|самочувств\w*|чувствую\s+себя|настроение)\b",
     re.IGNORECASE,
 )
+_SHORT_CHECKIN_RE = re.compile(r"^(?:плохо|хорошо|нормально|так себе|не очень)[.!]*$", re.IGNORECASE)
 _DREAM_RE = re.compile(
     r"\b((?:мне\s+)?(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b.*)$",
     re.IGNORECASE,
@@ -233,13 +237,20 @@ class SleepCoach:
         payload["task"] = "weekly_reflection"
         frame = _weekly_frame(entries, now.astimezone(_MOSCOW))
         payload["factual_frame"] = frame
+        payload["weekly_entries"] = [
+            {
+                "id": row.id,
+                "date": row.at.astimezone(_MOSCOW).date().isoformat(),
+                "user_report": row.payload.get("text", ""),
+            }
+            for row in entries
+        ]
         try:
-            reflection = self.brain(_SYSTEM_PROMPT, payload).strip()
-            if not reflection:
-                raise ValueError("empty brain response")
+            raw_reflection = self.brain(_WEEKLY_SYSTEM_PROMPT, payload).strip()
+            reflection = _validated_weekly_reflection(raw_reflection, entries)
             reply = _phone_length(f"{frame}\n{reflection}")
         except Exception:  # noqa: BLE001 - provider boundary must degrade safely
-            reply = f"{frame}\nДля содержательного разбора нужен доступ к помощнику; сами записи сохранены."
+            reply = _weekly_fallback(frame)
         self.store.put(
             profile_id, "sleep", "turn", f"assistant:{source_key}",
             {"role": "assistant", "text": reply}, at=now,
@@ -261,7 +272,8 @@ class SleepCoach:
             "request_is_diary": is_diary,
             "conversation": [row.payload for row in turns],
             "diary_user_reports": [
-                {"at": row.at.isoformat(), **row.payload} for row in entries
+                {"id": row.id, "at": row.at.isoformat(), **row.payload}
+                for row in entries
             ],
             "goals_not_evidence": [row.payload for row in goals],
             "verified_health_context": health,
@@ -274,7 +286,7 @@ class SleepCoach:
         if notice is None:
             return None
         delivered_at = _delivery_at(notice)
-        if now < delivered_at:
+        if now < delivered_at or now - delivered_at > timedelta(hours=3):
             return None
         for entry in self.store.list(profile_id, "sleep", "diary", limit=100):
             if entry.payload.get("morning_prompt_key") == key:
@@ -336,18 +348,27 @@ def _dream(text: str) -> str | None:
 
 
 def _looks_like_morning_answer(text: str) -> bool:
-    """Conservatively distinguish a subjective check-in from a free question."""
-    return not text.startswith("/") and _QUESTION_RE.search(text.strip()) is None
+    """Require an explicit subjective sleep/wellbeing signal, not mere free text."""
+    stripped = text.strip()
+    return (
+        not stripped.startswith("/")
+        and "?" not in stripped
+        and (
+            _MORNING_SIGNAL_RE.search(stripped) is not None
+            or _SHORT_CHECKIN_RE.fullmatch(stripped) is not None
+        )
+    )
 
 
 def _delivery_at(notice: Record) -> datetime:
-    raw = notice.payload.get("delivery_at")
-    if isinstance(raw, str):
-        try:
-            parsed = datetime.fromisoformat(raw)
-            return _aware(parsed)
-        except ValueError:
-            pass
+    for field in ("delivered_at", "delivery_at"):
+        raw = notice.payload.get(field)
+        if isinstance(raw, str):
+            try:
+                parsed = datetime.fromisoformat(raw)
+                return _aware(parsed)
+            except ValueError:
+                pass
     return _aware(notice.at)
 
 
@@ -373,6 +394,51 @@ def _schedule_confirmation(payload: dict[str, Any]) -> str:
     return f"Буду задавать утренний вопрос в {scheduled} по Москве."
 
 
+def _validated_weekly_reflection(raw: str, entries: list[Record]) -> str:
+    """Render only claims explicitly linked to diary records in the prompt."""
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise TypeError("weekly reflection must be an object")
+    known_ids = {row.id for row in entries}
+    rendered: list[str] = []
+    for field, label in (
+        ("observations", "Наблюдение"),
+        ("hypotheses", "Гипотеза (не установленная причина)"),
+    ):
+        items = value.get(field)
+        if not isinstance(items, list):
+            raise TypeError(f"{field} must be a list")
+        for item in items:
+            if not isinstance(item, dict):
+                raise TypeError(f"{field} item must be an object")
+            text = item.get("text")
+            entry_ids = item.get("entry_ids")
+            if (
+                not isinstance(text, str)
+                or not text.strip()
+                or not isinstance(entry_ids, list)
+                or not entry_ids
+                or not all(isinstance(entry_id, str) for entry_id in entry_ids)
+                or not set(entry_ids) <= known_ids
+            ):
+                raise ValueError(f"invalid grounded {field} item")
+            references = ", ".join(entry_ids)
+            rendered.append(f"{label}: {text.strip()} [записи: {references}]")
+    question = value.get("next_question")
+    if not isinstance(question, str) or not question.strip() or not rendered:
+        raise ValueError("weekly reflection needs grounded content and a follow-up")
+    rendered.append(f"Вопрос на следующую неделю: {question.strip()}")
+    return "\n".join(rendered)
+
+
+def _weekly_fallback(frame: str) -> str:
+    return (
+        f"{frame}\nНе удалось связать предложенный разбор с конкретными записями, "
+        "поэтому я не показываю неподтверждённые выводы. Что отличало самое бодрое "
+        "утро этой недели от самого тяжёлого?"
+    )
+
+
 def _phone_length(text: str) -> str:
     if len(text) <= 1200:
         return text
@@ -386,3 +452,11 @@ _SYSTEM_PROMPT = """Ты ведёшь непрерывный дневник сн
 обратную связь, но не являются доказательством здоровья. Используй только релевантный
 проверенный health context, не выгружай списки анализов и источников. Срочные риски обрабатывает
 внешняя защитная граница Brain; не ослабляй её указания."""
+
+_WEEKLY_SYSTEM_PROMPT = _SYSTEM_PROMPT + """
+Для недельного итога верни только JSON-объект следующей формы:
+{"observations":[{"text":"наблюдение","entry_ids":["реальный id"]}],
+"hypotheses":[{"text":"осторожная гипотеза","entry_ids":["реальный id"]}],
+"next_question":"один полезный вопрос"}.
+Каждое наблюдение и гипотеза должны ссылаться на один или несколько id из weekly_entries.
+Не называй гипотезу установленной причиной и не добавляй текст вне JSON."""
