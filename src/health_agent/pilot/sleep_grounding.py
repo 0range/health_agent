@@ -16,6 +16,15 @@ _FOLLOWUP = re.compile(
     r"новые анализы|температур|начал|спал|сплю|сонлив|устал|\d+\s*час)",
     re.IGNORECASE,
 )
+_CONTINUITY_TOPICS = re.compile(
+    r"инфекц|погод|анализ|температур|темрератур|начал|спал|сплю|сонлив|устал",
+    re.IGNORECASE,
+)
+_NEW_TOPIC = re.compile(
+    r"что (?:означает|такое|значит)|как (?:лечить|принимать)|"
+    r"расскажи|объясни|другой вопрос|сменим тему",
+    re.IGNORECASE,
+)
 _LAB = re.compile(
     r"анализ|инфекц|crp|wbc|срб|лейкоцит|гемоглобин|ферритин|lab", re.IGNORECASE
 )
@@ -38,7 +47,7 @@ def effective_question(question: str, user_reports: list[dict[str, Any]]) -> str
     previous = [
         str(row.get("text", "")) for row in user_reports if row.get("text") != question
     ]
-    if _FOLLOWUP.search(question):
+    if _continues_topic(question):
         chain: list[str] = []
         for prior in reversed(previous[-6:]):
             chain.insert(0, prior)
@@ -48,9 +57,17 @@ def effective_question(question: str, user_reports: list[dict[str, Any]]) -> str
                     + "\n".join(chain)
                     + f"\nТекущий вопрос: {question}"
                 )
-            if not _FOLLOWUP.search(prior):
+            if not _continues_topic(prior):
                 break
     return question
+
+
+def _continues_topic(text: str) -> bool:
+    # Topic-related reports/corrections can appear anywhere in a sentence.
+    # Standalone requests for explanations or a new topic take precedence.
+    if _NEW_TOPIC.search(text):
+        return False
+    return bool(_FOLLOWUP.search(text) or _CONTINUITY_TOPICS.search(text))
 
 
 def _historical_request(question: str) -> bool:

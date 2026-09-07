@@ -279,3 +279,32 @@ def test_production_lab_identity_and_aggregate_not_redated_as_measurement():
     assert facts[0]["unit"] == "10^9/L"
     assert all(f["value"] != "6.5" for f in facts)
     assert facts[1]["observed_at"] == "2026-09-05T06:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "followup",
+    [
+        "Ну анализы год назад точно нерелевантны, но есть же новые. И нет, темрературы и тд нету",
+        "А сейчас инфекция возможна?",
+        "Может, дело всё-таки в погоде?",
+        "Кстати, температуры нет, новые анализы есть",
+    ],
+)
+@pytest.mark.parametrize("intermediate", [False, True])
+def test_real_question_and_relevant_unanchored_followups_stay_causal(followup, intermediate):
+    brain, profile = FakeBrain("это не инфекция"), uuid4()
+    coach = SleepCoach(MemoryStore(), brain, health_context=lambda _p, _q: context())
+    coach.handle(
+        profile,
+        "А почему вот я себя чувствую уставшим последние несколько дней и спать хочу сильнее обычного? Это погода влияет? Или может я инфекцию какую-то так переношу?",
+        source_key="original",
+        now=NOW,
+    )
+    if intermediate:
+        coach.handle(
+            profile, "есть новые анализы, температуры нет", source_key="second", now=NOW
+        )
+    reply = coach.handle(profile, followup, source_key="third", now=NOW)
+    assert brain.calls[-1][1]["causal_reply"] is True
+    assert "это не инфекция" not in reply
+    assert "historical_marker_sentinel" not in json.dumps(brain.calls[-1][1])
