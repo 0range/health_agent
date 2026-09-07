@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Every persisted candidate passes existing strict validation after existing source-name whitespace restoration. Never repair numeric tokens/units/references/excerpts or auto-verify.
-- Preserve originals/page text/dates/review decisions, profile boundaries, profile lock and document-before-job lock order, lifetime 3 cloud attempts, 40 candidates per page across versions, daily default20 and current usage. No migration or queue identity bump.
+- Preserve originals/page text/dates/review decisions, profile boundaries, profile lock and document-before-job lock order, lifetime 3 cloud attempts, 40 candidates per page across versions, daily default20 and current usage. No queue identity bump. Task2 has one necessary constraint-only migration to permit immutable v2 evidence; no new tables/services.
 - Partial pages remain needs_attention/cloud_partial_output; never silently complete a page from partial or cached salvage.
 - No provider call, credential read, fake reservation or attempt/budget reset in cached import. Unknown outcomes require existing explicit acknowledgment; this workflow cannot bypass them.
 - Existing strict extractor.extract() returns tuple and remains all-or-nothing; support legacy injected cloud fakes unchanged. Runtime can prefer extract_partial() when present.
@@ -50,13 +50,15 @@ assert len(result.candidates) == 1 and result.rejected_count == 1
 
 ## Task 2: Proven gridded lab layout with a non-first header
 
-**Files:** src/health_agent/pdf_lab_geometry.py, src/health_agent/lab_extraction/registry.py, tests/test_pdf_lab_geometry.py, tests/test_pdf_evidence.py, docs/pdf-lab-geometry.md. Disjoint from Task1 implementation; parallel allowed by user. No cloud/service/panel/schema changes.
+**Files:** src/health_agent/pdf_lab_geometry.py, src/health_agent/lab_extraction/registry.py, tests/test_pdf_lab_geometry.py, tests/test_pdf_evidence.py, docs/pdf-lab-geometry.md. Necessary constraint integration: src/health_agent/models.py, alembic/versions/0017_pdf_evidence_v2.py, tests/test_schema.py, tests/test_medical_workflow_composition.py. Disjoint from Task1 implementation; parallel allowed by user. No cloud/service/panel changes.
 
 **Context:** Read-only actual original shows a drawn five-column grid, but PyMuPDF combines the report heading and signature into the same table. The exact laboratory header is row2 rather than row0. Existing parser discards all rows. Pure geometry probe132pages found4supported and0newrows: repeating existingrepair is insufficient. No PHI in fixtures; generate syntheticPDF with Cyrillic-capable font, merged preamble and footer, exact headings only copied as format labels.
 
 **Interfaces:** keep extract_lab_geometry/pdf_evidence APIs. Recognize complete header `("Параметр", "Значение", "Ед. измер.", "Реф.значение", "Представление")` mapping `(name,result,unit,reference,comment)`. `_grid_rows` can locate one exact complete supported header after merged preamble rows; require unambiguous header and aligned ordered physical cell columns, reject incompatible/multiple mappings; do not interpret merged preamble/footer/narrative as rows. Preserve old supported formats unchanged. Source representation column stored as comment only: no inference of H/L/* from `[-*-]` or `[---]*`. For newly supported layout use explicit geometry method `pdf_table_v2` so immutable stored v1 evidence is never overwritten; pages using only original supportedlayouts retain v1 method. Required mapped cells and numeric/unit validation remain strict.
 
 Registry exactaliases only: total `prolactin` additionally `Пролактин / Prolactin`; distinct new `monomeric_prolactin` aliases `Пролактин мономерный (пост ПЭГ)|Пролактин мономерный (пост-ПЭГ)|Monomeric prolactin`, never collapse total/monomeric/macro. For both add separate literal unit family `mU/L` with alias `мЕд/л`; do NOT silently merge this new family with mIU/L/uIU/mL or mass units. Monomeric also accepts existing explicit mIU/L/uIU/mL/ng/mL unitfamilies without conversion. Preserve source names/units. No inferdates from signature or blankcollectionlabel; new rows NEEDS_REVIEW.
+
+Second visually proven gridded format from historicalbloodreport: exactheader afterexistingwhitespacefold `("Показатель", "Результат", "Ед. изм.", "Референсные пределы", "Комментарий")`, same `(name,result,unit,reference,comment)` mapping, v2method. Original referenceheader wraps newline, no semanticrenaming. Supportmultiple separate validtables ononepage, while rejectcompetingheaders withinthesamephysicaltable. Numeric tokens with attachedflag remainrejected byexistingrule; no newflagstripping. Add one synthetic fixture for this second exactheader; arbitrarycolumn/wordvariants remainunsupported.
 
 - [ ] RED synthetic grid with2mergedpreamble rows, supportedRussianheader, two arbitrary plausible syntheticnumericrows and mergedfooter; assert2source-proven rows, correctfieldmapping,commentnotflag, exactsourcehash, v2method. Existing firstheader fixtures stillv1.
 ```python
@@ -66,4 +68,21 @@ assert normalize_registered("prolactin", "123", "мЕд/л")[1] == "mU/L"
 ```
 - [ ] Add negative synthetic missing/duplicate/misorderedheaders, mergedrequiredcells, competingheaders and footer numerictext; no guessedrowownership. Keep unknown/incompatibleunit rows rejected. Implement only exactlayout/aliases, no broadOCR/parser redesign.
 - [ ] DisposablePG persistence via existingpersist_pdf_evidence: twoNEEDS_REVIEW rows attachedv2PageEvidence; repeatedruninserts0, oldpage_textanddatesunchanged, noverification; preserveexistingv1evidence. Syntheticonly.
+- [ ] Existing ck_page_evidence_method allows onlyv1, proven by failingPGtest. Extend modelconstraint to v1/v2 and add0017after0016changing onlythatcheck. Upgradepreservesrows, downgraderefusesifanyv2evidenceexists (no delete/provenanceloss),otherwise restorev1constraint. Update exactschema-head assertions in the two namedtests, preservingoriginaldowngradeguards. Testup/downretention and refusals.
 - [ ] GREEN `.venv/bin/pytest -q tests/test_pdf_lab_geometry.py tests/test_pdf_evidence.py tests/lab_extraction/test_local.py` (locate actual registry testfile ifnamedotherwise), Ruffchangedfiles,mypy sourcepdfgeometry/registry. Commitownedonly; report RED/GREEN and concerns to task-2-report.md; no liveops.
+
+## Task 3: Preserve verified chart history during partial recovery
+
+**Files:** src/health_agent/lab_dashboard.py, src/health_agent/metabase.py, tests/test_lab_dashboard.py, tests/test_metabase.py, docs/lab-dashboard.md. No queue/registry/schema/Sheets/question edits. Userapprovedpartialrecovery requirespreviousverifiedhistory remainvisible; this is a discovered downstream integration dependency, notnewfeature.
+
+**Context:** Read `.superpowers/sdd/2026-09-07-partial-lab-recovery/verified-visibility-risk.md`. Existing `_history_cte` and legacyLAB_HISTORY_QUERY exclude documentstatusneeds_review evenifindividualrowverified. New pendingrows triggerthisstatus and hidepreviousvalidfacts. Sheets/questions alreadyuseperrowreviewandneednochange.
+
+**Interfaces:** Queries allow `document_processing_status IN ('processed','needs_review')` but remain exclusivelyverified_lab_history and retain profile/sourceerror/date/value/unit/reference safetychecks. No newverification or pretenddocumentprocessed. SavedMetabasequeriesownedbyexactsignature mustupdatefromknownpre-changegeneratedquery withoutacceptingedited/unownedcards. Add narrowlydefinedpre-partial querygeneration flag or helper for old processed-only predicate AND pre-Task2registry (exclude monomeric_prolactin and mU/L entries); Task2registrynewentriesotherwisechangeeverygeneratedqueryandbreakownershipadoption. Includeknownold-current/legacy/preregistry forms asneeded inreconciliationandretiredcardownership. Do notnormalizearbitrarySQLoradoptbyname.
+
+- [ ] RED disposablePG mixedreviewdoc verifiedA+pendingB: chart/detail SQL returnsAonly beforeandafterdocneeds_review transition; pending/rejected/foreignprofile/missingfuturedate/sourceerror remainexcluded. Existingquestion/Sheetsreadersunchanged. ExtendactualSQLfixtures, notstring-onlyassertions.
+```python
+assert [r.observation_id for r in chart_rows_after_pending_sibling] == [verified_id]
+assert pending_id not in [r.observation_id for r in chart_rows_after_pending_sibling]
+```
+- [ ] RED fakeMetabase knownoldownedquery canupgrade todesirednewquery withsamecardid, savedusereditedquery refusedbeforecardmutation; oldregistrypredicate handlingmatchespreviousrelease288344bexactquery. Addlegacyquerynegativeeligibility tests asappropriate. Implementminimalquerypredicate and exactknownversionallowlist.
+- [ ] GREEN `.venv/bin/pytest -q tests/test_lab_dashboard.py tests/test_metabase.py`, Ruffchangedfiles,mypy lab_dashboard/metabase. Commitownedonly; report actualRED/GREEN task-3-report.md; no liveMetabase/productionchanges. Rootwill reconcileownedsavedqueries afterreview and check visibleoldidsretained.
