@@ -103,3 +103,39 @@ clean
 ```
 
 Self-review: replay-first dispatch was checked for comments, photo confirmations, and text confirmations; event-time grouping was checked against the review's 12:00/15:00/12:10 sequence; immutable observations were checked after comment reanalysis; cached weekly output remains stable after provider failure and is suppressed during quiet hours. `/время` remains the documented current start-time correction and was intentionally not expanded in this round. No known remaining concern in the six requested findings.
+
+## Fix round 2 — three remaining Important findings
+
+Base: `5f43917`.
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food_journey.py -k 'explicit_text_meal_is_a_boundary or question_containing_intake or weekly_long_food'
+```
+
+Result before fixes: 3 failed. The photo after an intervening explicit text meal remained on the older photo meal; a question containing `поел` created a meal and called the model; an outage fallback with eight valid long food names was 1,979 characters.
+
+GREEN changes:
+
+- Event-time meal selection now considers all actual meals, including explicit text meals. A first photo enriches the current text-only meal and establishes its immutable original photo path instead of reviving an older photo meal or creating a third meal.
+- Clear questions are classified before ordinary intake verbs. Current-plate questions still attach to an eligible current meal, while general questions remain routed to main Health Agent.
+- Weekly food examples receive an explicit shared character budget. The final renderer independently enforces 1,200 characters while reserving the complete incomplete-log caveat and useful next-step suffix. Model suggestions are appended only when the whole result fits; no blind final slicing is used.
+
+Final verification:
+
+```text
+.venv/bin/pytest -q tests/pilot/test_food.py tests/pilot/test_food_journey.py tests/pilot/test_photo_first_acceptance.py
+45 passed (five unrelated SWIG deprecation warnings)
+
+.venv/bin/ruff check src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+All checks passed!
+
+.venv/bin/mypy src/health_agent/pilot/food.py tests/pilot/test_food.py tests/pilot/test_food_journey.py
+Success: no issues found in 3 source files
+
+git diff --check
+clean
+```
+
+Self-review checked the exact 12:00 photo → 12:10 `поел суп` → 12:20 photo sequence, a no-context `Почему я поел и хочу спать?` question (zero meals and zero model calls), and both manual/automatic provider-failure reflections with projected 200-character food values. The previously accepted replay, quiet-hours, and aggregation areas were not reopened. No known concerns remain in this round.

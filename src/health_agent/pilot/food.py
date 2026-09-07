@@ -95,13 +95,15 @@ class FoodCoach:
             or self._by_source(profile_id, "text_confirmation", source_key) is not None
         ):
             return self._confirm_text(profile_id, source_key, now)
+        candidate = self._comment_candidate(profile_id, now)
+        if self._is_question(command):
+            if candidate is not None and self._plate_question(command):
+                return self._comment(profile_id, candidate, command, source_key, now)
+            return "С общими вопросами лучше обратиться в основной Health Agent. Здесь я сохраняю питание."
         if self._clear_meal(command):
             return self._meal(profile_id, command, source_key, now, None)
-        candidate = self._comment_candidate(profile_id, now)
-        if candidate is not None and (not self._is_question(command) or self._plate_question(command)):
+        if candidate is not None:
             return self._comment(profile_id, candidate, command, source_key, now)
-        if self._is_question(command):
-            return "С общими вопросами лучше обратиться в основной Health Agent. Здесь я сохраняю питание."
         self._store.put(profile_id, "food", "pending_text", source_key, {"text": command}, at=now)
         return "Это новый приём пищи? Напишите «новый», если хотите сохранить его как приём."
 
@@ -189,9 +191,8 @@ class FoodCoach:
             return self._analysis_reply(updated)
 
         latest = self._photo_candidate(profile_id, now)
-        if latest is None or not latest.payload.get("latest_photo_at"):
+        if latest is None:
             return self._start_photo_meal(profile_id, text, source_key, now, attachment)
-        gap = now - self._from_iso(str(latest.payload["latest_photo_at"]))
         photo_payload = {
             "path": str(attachment.path), "caption": attachment.caption,
             "event_at": now.isoformat(), "candidate_meal_id": latest.id,
@@ -200,6 +201,9 @@ class FoodCoach:
         photo = self._store.put(
             profile_id, "food", "photo", source_key, photo_payload, at=now,
         )
+        if not latest.payload.get("latest_photo_at"):
+            return self._attach_photo(profile_id, latest, photo)
+        gap = now - self._from_iso(str(latest.payload["latest_photo_at"]))
         if gap < timedelta(minutes=40):
             return self._attach_photo(profile_id, latest, photo)
         if gap > timedelta(minutes=150):
@@ -239,6 +243,9 @@ class FoodCoach:
         latest_anchor = max(previous_anchor, event_at)
         payload = dict(meal.payload)
         payload["photos"] = [*payload.get("photos", []), self._photo_item(photo)]
+        if not payload.get("photo_path"):
+            payload["photo_path"] = str(photo.payload["path"])
+            payload["caption"] = str(photo.payload.get("caption", ""))
         payload["latest_photo_at"] = latest_anchor.isoformat()
         payload["ended_at"] = (latest_anchor + timedelta(minutes=20)).isoformat()
         payload["end_source"] = "last_photo_plus_20m"
@@ -601,7 +608,7 @@ class FoodCoach:
         history = build_food_history(self._store, profile_id, now, days=7)
         if history["recorded_meal_count"] == 0:
             return "Сохранённых приёмов пищи нет; соблюдение плана неизвестно."
-        fallback = self._weekly_facts(history, self._protocol(profile_id))
+        fallback = self._bounded_weekly(self._weekly_facts(history, self._protocol(profile_id)))
         text = fallback
         try:
             suggestion = self._brain(
@@ -612,10 +619,24 @@ class FoodCoach:
                 image_path=None,
             ).strip()
             if self._safe_weekly_suggestion(suggestion):
-                text = f"{fallback} Возможная идея: {suggestion}"[:1200]
+                addition = f" Возможная идея: {suggestion}"
+                if len(fallback) + len(addition) <= 1200:
+                    text = fallback + addition
         except Exception:  # noqa: BLE001 - stable factual fallback at provider boundary
             text = fallback
         return text
+
+    @staticmethod
+    def _bounded_weekly(value: str) -> str:
+        if len(value) <= 1200:
+            return value
+        suffix = (
+            " Это только записи, а не полный рацион; пропуски не означают голодание. "
+            "Следующий шаг: продолжать отмечать приёмы фото и короткими уточнениями."
+        )
+        head = value.removesuffix(suffix).rstrip()
+        budget = 1200 - len(suffix) - 2
+        return f"{head[:budget].rstrip()}…{suffix}"
 
     @staticmethod
     def _safe_weekly_suggestion(value: str) -> bool:
@@ -661,8 +682,17 @@ class FoodCoach:
         known = ", ".join(f"{key}={count}" for key, count in nutrient_counts.items())
         foods = sorted({food for meal in history["meals"] for food in meal["foods"]}, key=str.casefold)
         variety = f"Разнообразие по записям: {len(foods)} позиций"
-        if foods:
-            variety += f" ({', '.join(foods[:8])})"
+        examples: list[str] = []
+        example_length = 0
+        for food in foods:
+            remaining = 160 - example_length
+            if remaining <= 0:
+                break
+            sample = food[:remaining]
+            examples.append(sample)
+            example_length += len(sample) + 2
+        if examples:
+            variety += f" ({', '.join(examples)})"
         rules = protocol.get("plate_rules")
         if isinstance(rules, dict) and rules:
             eligible = 0
@@ -695,12 +725,11 @@ class FoodCoach:
     def _photo_candidate(self, profile_id: UUID, event_at: datetime) -> Record | None:
         candidates = [
             meal for meal in self._store.list(profile_id, "food", "meal")
-            if meal.payload.get("latest_photo_at")
-            and self._from_iso(str(meal.payload["latest_photo_at"])) <= event_at
+            if self._from_iso(str(meal.payload["occurred_at"])) <= event_at
         ]
         if not candidates:
             return None
-        return max(candidates, key=lambda meal: self._from_iso(str(meal.payload["latest_photo_at"])))
+        return max(candidates, key=lambda meal: self._from_iso(str(meal.payload["occurred_at"])))
 
     def _pending_text(self, profile_id: UUID) -> Record | None:
         return next((item for item in self._store.list(profile_id, "food", "pending_text")

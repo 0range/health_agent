@@ -300,3 +300,50 @@ def test_weekly_quiet_hours_and_manual_shared_evidence() -> None:
         assert "2026-09-06" in value
         assert "разнообраз" in value.lower()
         assert "нутриент" in value.lower()
+
+
+def test_explicit_text_meal_is_a_boundary_for_following_photo(tmp_path: Path) -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    coach = FoodCoach(store, brain)
+    start = datetime(2026, 9, 7, 9, tzinfo=UTC)
+    coach.handle(profile, "", source_key="breakfast", now=start, attachment=_photo(tmp_path, "first.jpg"))
+    coach.handle(profile, "поел суп", source_key="lunch", now=start + timedelta(minutes=10))
+    lunch = store.list(profile, "food", "meal")[0]
+    coach.handle(
+        profile, "", source_key="lunch-photo", now=start + timedelta(minutes=20),
+        attachment=_photo(tmp_path, "soup.jpg"),
+    )
+    assert len(store.list(profile, "food", "meal")) == 2
+    assert store.get(profile, lunch.id).payload["photo_path"].endswith("soup.jpg")  # type: ignore[union-attr]
+    breakfast = min(store.list(profile, "food", "meal"), key=lambda item: item.at)
+    assert len(breakfast.payload["photos"]) == 1
+
+
+def test_question_containing_intake_verb_does_not_create_meal() -> None:
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    reply = FoodCoach(store, brain).handle(
+        profile, "Почему я поел и хочу спать?", source_key="question",
+        now=datetime(2026, 9, 7, 9, tzinfo=UTC),
+    )
+    assert "Health Agent" in reply
+    assert not store.list(profile, "food", "meal")
+    assert not brain.calls
+
+
+def test_weekly_long_food_names_fit_limit_and_keep_caveat_and_next_step() -> None:
+    store, profile = MemoryStore(), uuid4()
+    brain = Brain(RuntimeError("offline"))
+    coach = FoodCoach(store, brain)
+    sunday = datetime(2026, 9, 6, 15, tzinfo=UTC)
+    long_foods = [f"продукт-{index}-" + "я" * 180 for index in range(8)]
+    analysis = json.loads(_analysis(long_foods))
+    store.put(profile, "food", "meal", "long", {
+        "occurred_at": sunday.isoformat(), "category": "dinner", "analysis": analysis,
+    }, at=sunday)
+    for text in (
+        coach.handle(profile, "/неделя", source_key="manual-long", now=sunday),
+        coach.due(profile, sunday)[0].text,
+    ):
+        assert len(text) <= 1200
+        assert "Это только записи" in text
+        assert "Следующий шаг" in text
