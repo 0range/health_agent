@@ -91,6 +91,37 @@ def test_fixed_projection_numbers_end_estimate_and_no_private_leak_or_mutation()
     assert repr(payload) == before
 
 
+@pytest.mark.parametrize(
+    ("ended_at", "end_source"),
+    [
+        ("2026-09-07T10:20:00+03:00", None),
+        ("2026-09-07T10:20:00+03:00", "comment_time"),
+        ("malformed", "last_photo_plus_20m"),
+        (None, "last_photo_plus_20m"),
+    ],
+)
+def test_end_estimate_is_only_exposed_as_a_validated_pair(
+    ended_at: str | None, end_source: str | None
+) -> None:
+    store, profile = MemoryStore(), uuid4()
+    store.put(
+        profile,
+        "food",
+        "meal",
+        "m",
+        meal(
+            "2026-09-07T10:00:00+03:00",
+            ended_at=ended_at,
+            end_source=end_source,
+        ),
+    )
+    projected = build_food_history(
+        store, profile, datetime(2026, 9, 7, 8, tzinfo=UTC)
+    )["meals"][0]
+    assert "ended_at" not in projected
+    assert "end_source" not in projected
+
+
 def test_empty_invalid_profiles_bounds_and_truncation() -> None:
     store, own, other = MemoryStore(), uuid4(), uuid4()
     now = datetime(2026, 9, 7, 10, tzinfo=UTC)

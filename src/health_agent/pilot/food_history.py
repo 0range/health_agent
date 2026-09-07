@@ -104,9 +104,11 @@ def _project(meal: Record) -> dict[str, Any]:
     }
     ended_at = meal.payload.get("ended_at")
     end_source = meal.payload.get("end_source")
-    if _parse_aware(ended_at) is not None:
+    if (
+        _parse_aware(ended_at) is not None
+        and end_source == "last_photo_plus_20m"
+    ):
         projected["ended_at"] = ended_at
-    if isinstance(end_source, str) and end_source == "last_photo_plus_20m":
         projected["end_source"] = end_source
     return projected
 

@@ -31,3 +31,23 @@
 - An `ended_at` estimate may be later than query time and remains explicitly labelled
   `last_photo_plus_20m`; comments are not consulted.
 - No runtime, FoodCoach, provider, credential, real-data, or restart changes were made.
+
+## Review fix round 1
+
+Base before fix: `643d80e` (reviewed Task 2 commit: `c153fa0`).
+
+- Framework intervals now require finite, non-boolean numbers within the existing
+  supported 2.5–4.5 hour protocol range. Invalid values are omitted without changing
+  bounded user preferences.
+- `ended_at` and `end_source` are now projected only together: the timestamp must be
+  timezone-aware and the source must exactly equal `last_photo_plus_20m`.
+- Added focused malformed numeric and end-provenance regression cases.
+
+Verification after fixes:
+
+- `.venv/bin/pytest -q tests/pilot/test_food_history.py tests/pilot/test_brain.py`
+  - `26 passed in 2.29s`
+- `.venv/bin/ruff check src/health_agent/pilot/food_history.py src/health_agent/pilot/brain.py tests/pilot/test_food_history.py tests/pilot/test_brain.py`
+  - `All checks passed!`
+- `.venv/bin/mypy src/health_agent/pilot/food_history.py src/health_agent/pilot/brain.py tests/pilot/test_food_history.py tests/pilot/test_brain.py`
+  - `Success: no issues found in 4 source files`

@@ -214,3 +214,20 @@ def test_sleep_context_has_own_food_facts_and_selected_framework_only(clean_data
     )
     assert "recorded_food_history" not in training_payload
     assert "selected_food_framework" not in training_payload
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [float("nan"), float("inf"), -1, 0, 2.49, 4.51, 10**100, True, "3.5"],
+)
+def test_selected_food_framework_rejects_unsupported_intervals(invalid):
+    from health_agent.pilot.brain import _selected_food_framework
+
+    framework = _selected_food_framework({
+        "interval_hours": invalid,
+        "allowed_interval_hours": [3, invalid, 4.5],
+        "preferences": ["keep user preference"],
+    })
+    assert framework["interval_hours"] is None
+    assert framework["allowed_interval_hours"] == [3, 4.5]
+    assert framework["preferences"] == ["keep user preference"]

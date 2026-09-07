@@ -2,6 +2,7 @@
 
 import base64
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -247,12 +248,21 @@ def _selected_food_framework(protocol: Any) -> dict[str, Any]:
         return [item.strip()[:200] for item in raw
                 if isinstance(item, str) and item.strip()][:30]
 
-    interval = value.get("interval_hours")
-    interval = interval if isinstance(interval, (int, float)) and not isinstance(interval, bool) else None
+    def supported_interval(raw: Any) -> int | float | None:
+        if (
+            isinstance(raw, bool)
+            or not isinstance(raw, (int, float))
+            or not math.isfinite(float(raw))
+            or not 2.5 <= raw <= 4.5
+        ):
+            return None
+        return raw
+
+    interval = supported_interval(value.get("interval_hours"))
     allowed = value.get("allowed_interval_hours")
     allowed_intervals = (
-        [item for item in allowed[:30]
-         if isinstance(item, (int, float)) and not isinstance(item, bool)]
+        [valid for item in allowed[:30]
+         if (valid := supported_interval(item)) is not None]
         if isinstance(allowed, list) else []
     )
     raw_rules = value.get("plate_rules")
