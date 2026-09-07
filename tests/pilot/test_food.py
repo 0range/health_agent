@@ -93,7 +93,7 @@ def test_photo_replay_is_idempotent_and_persists_before_failed_analysis(tmp_path
     photo = Attachment(tmp_path / "meal.jpg", "image/jpeg", "обед")
     assert "сохран" in coach.handle(profile, "", source_key="photo-1", now=now, attachment=photo).lower()
     assert len(store.list(profile, "food", "meal")) == 1
-    assert coach.due(profile, now + timedelta(hours=3, minutes=30))
+    assert coach.due(profile, now + timedelta(hours=3, minutes=50))
 
     brain.reply = Brain().reply
     coach.handle(profile, "", source_key="photo-1", now=now, attachment=photo)
@@ -316,7 +316,7 @@ def test_live_vision_component_dict_is_normalized_without_false_fruit_change(
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
     assert analysis["plate_components"] == ["grains", "fruit"]
     assert "добавить фрукты" not in answer.lower()
-    assert "/порция 200 г" in answer
+    assert "неизвест" in answer.lower()
 
 
 def test_portion_correction_reanalyses_same_meal_and_photo_idempotently(tmp_path: Path) -> None:
@@ -333,7 +333,7 @@ def test_portion_correction_reanalyses_same_meal_and_photo_idempotently(tmp_path
     }, ensure_ascii=False)
     coach.handle(profile, "", source_key="photo-meal", now=now, attachment=photo)
     meal_before = store.list(profile, "food", "meal")[0]
-    due_before = coach.due(profile, now + timedelta(hours=3, minutes=30))[0].key
+    due_before = coach.due(profile, now + timedelta(hours=3, minutes=50))[0].key
 
     brain.reply = Brain().reply
     answer = coach.handle(
@@ -345,7 +345,7 @@ def test_portion_correction_reanalyses_same_meal_and_photo_idempotently(tmp_path
     assert meal_after.payload["user_portion"] == "200 г"
     assert brain.calls[-1][0]["meal"]["portion"] == "200 г"
     assert brain.calls[-1][1] == photo.path
-    assert coach.due(profile, now + timedelta(hours=3, minutes=30))[0].key == due_before
+    assert coach.due(profile, now + timedelta(hours=3, minutes=50))[0].key == due_before
     calls = len(brain.calls)
     assert coach.handle(
         profile, "/порция 200 г", source_key="portion-fix", now=now + timedelta(minutes=5),
