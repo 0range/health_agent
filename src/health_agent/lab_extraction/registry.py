@@ -97,7 +97,7 @@ _ANALYTES = (
     ("magnesium", "Magnesium|Магний", "mmol/L|mg/dL"),
     ("phosphate", "Phosphate|Phosphorus|Фосфор|Фосфаты", "mmol/L|mg/dL"),
     ("crp", "CRP|C-reactive protein|С-реактивный белок|СРБ", "mg/L|mg/dL"),
-    ("tsh", "TSH|ТТГ|Тиреотропный гормон", "mIU/L|uIU/mL"),
+    ("tsh", "TSH|ТТГ|Тиреотропный гормон", "mIU/L|uIU/mL|mU/L"),
     ("free_t4", "Free T4|FT4|Т4 свободный|Тироксин свободный", "pmol/L|ng/dL"),
     ("free_t3", "Free T3|FT3|Т3 свободный", "pmol/L|pg/mL"),
     (
@@ -152,7 +152,7 @@ _ANALYTES = (
     ("immature_granulocytes", "", "%"),
     ("platelet_large_cell_ratio", "", "%"),
     ("reticulocytes_absolute", "", "10^9/L"),
-    ("salivary_cortisol", "", "ng/mL"),
+    ("salivary_cortisol", "", "ng/mL|nmol/L"),
     ("fsh", "", "mIU/mL"),
     ("lh", "", "mIU/mL"),
     ("shbg", "", "nmol/L"),
@@ -164,6 +164,29 @@ _ANALYTES = (
     ("atherogenic_index", "", "1"),
     ("urine_ph", "", "1"),
     ("urine_specific_gravity", "", "1"),
+    ("homa_ir", "", "1"),
+    ("urine_transitional_epithelial_cells", "", "cells/uL"),
+    ("urine_renal_epithelial_cells", "", "cells/uL"),
+    ("urine_hyaline_casts", "", "cells/uL"),
+    ("normoblasts", "", "cells/100cells"),
+    ("pancreatic_amylase", "", "U/L"),
+    ("semen_volume", "", "mL"),
+    ("semen_ph", "", "pH"),
+    ("semen_viscosity", "", "cm"),
+    ("semen_liquefaction_time", "", "min"),
+    ("semen_white_blood_cells", "", "cells/mL"),
+    ("sperm_concentration", "", "10^6/mL"),
+    ("total_sperm_count", "", "10^6"),
+    ("sperm_total_motility", "", "%"),
+    ("sperm_progressive_motility", "", "%"),
+    ("sperm_nonprogressive_motility", "", "%"),
+    ("sperm_immotile", "", "%"),
+    ("sperm_normal_morphology", "", "%"),
+    ("sperm_abnormal_morphology", "", "%"),
+    ("sperm_head_defects", "", "%"),
+    ("sperm_neck_defects", "", "%"),
+    ("sperm_tail_defects", "", "%"),
+    ("spermatogenic_cells", "", "cells/100sperm"),
 )
 
 _UNIT_ALIASES = {
@@ -252,7 +275,7 @@ def bounded_decimal(raw: str) -> Decimal:
 
 
 _DIMENSIONLESS_WITHOUT_SOURCE_UNIT = frozenset(
-    {"atherogenic_index", "urine_ph", "urine_specific_gravity"}
+    {"atherogenic_index", "urine_ph", "urine_specific_gravity", "homa_ir"}
 )
 
 

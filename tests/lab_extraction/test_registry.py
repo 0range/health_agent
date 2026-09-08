@@ -132,3 +132,65 @@ def test_completed_canonical_identity_preserves_exact_unit(name, unit):
 )
 def test_completed_source_labels_still_unmapped(source):
     assert canonical_name(source).startswith("unmapped_")
+
+
+@pytest.mark.parametrize(
+    "name,unit",
+    [
+        ("homa_ir", "1"),
+        ("urine_transitional_epithelial_cells", "cells/uL"),
+        ("urine_renal_epithelial_cells", "cells/uL"),
+        ("urine_hyaline_casts", "cells/uL"),
+        ("normoblasts", "cells/100cells"),
+        ("pancreatic_amylase", "U/L"),
+        ("semen_volume", "mL"),
+        ("semen_ph", "pH"),
+        ("semen_viscosity", "cm"),
+        ("semen_liquefaction_time", "min"),
+        ("semen_white_blood_cells", "cells/mL"),
+        ("sperm_concentration", "10^6/mL"),
+        ("total_sperm_count", "10^6"),
+        ("sperm_total_motility", "%"),
+        ("sperm_progressive_motility", "%"),
+        ("sperm_nonprogressive_motility", "%"),
+        ("sperm_immotile", "%"),
+        ("sperm_normal_morphology", "%"),
+        ("sperm_abnormal_morphology", "%"),
+        ("sperm_head_defects", "%"),
+        ("sperm_neck_defects", "%"),
+        ("sperm_tail_defects", "%"),
+        ("spermatogenic_cells", "cells/100sperm"),
+    ],
+)
+def test_supplemental_canonical_identity_preserves_exact_unit(name, unit):
+    assert canonical_name(name) == name
+    assert normalize_registered(name, "1.25", unit) == (Decimal("1.25"), unit)
+
+
+@pytest.mark.parametrize(
+    "name,unit",
+    [("salivary_cortisol", "nmol/L"), ("tsh", "mU/L")],
+)
+def test_supplemental_unit_families_preserve_literal_values(name, unit):
+    assert normalize_registered(name, "1.25", unit) == (Decimal("1.25"), unit)
+
+
+def test_only_supplemental_homa_accepts_a_missing_source_unit():
+    assert normalize_registered("homa_ir", "1.25", None) == (Decimal("1.25"), "1")
+    with pytest.raises(ValueError, match="unsupported_lab_normalization"):
+        normalize_registered("sperm_head_defects", "1.25", None)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "HOMA-IR",
+        "Переходный эпителий",
+        "Нормобласты",
+        "Амилаза панкреатическая",
+        "Объем эякулята",
+        "Дефекты головки",
+    ],
+)
+def test_supplemental_human_source_names_stay_unmapped(source):
+    assert canonical_name(source).startswith("unmapped_")

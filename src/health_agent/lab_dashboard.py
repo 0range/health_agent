@@ -109,7 +109,33 @@ _REVIEWED_ANALYTE_LABELS = {
     "urine_ph": "pH мочи",
     "urine_specific_gravity": "Удельный вес мочи",
 }
+_SUPPLEMENTAL_ANALYTE_LABELS = {
+    "homa_ir": "Индекс HOMA-IR",
+    "urine_transitional_epithelial_cells": "Переходный эпителий (моча)",
+    "urine_renal_epithelial_cells": "Почечный эпителий (моча)",
+    "urine_hyaline_casts": "Гиалиновые цилиндры (моча)",
+    "normoblasts": "Нормобласты",
+    "pancreatic_amylase": "Амилаза панкреатическая",
+    "semen_volume": "Объём эякулята",
+    "semen_ph": "pH эякулята",
+    "semen_viscosity": "Вязкость эякулята",
+    "semen_liquefaction_time": "Время разжижения эякулята",
+    "semen_white_blood_cells": "Лейкоциты (эякулят)",
+    "sperm_concentration": "Концентрация сперматозоидов",
+    "total_sperm_count": "Общее количество сперматозоидов",
+    "sperm_total_motility": "Общая подвижность сперматозоидов",
+    "sperm_progressive_motility": "Прогрессивная подвижность сперматозоидов",
+    "sperm_nonprogressive_motility": "Непрогрессивная подвижность сперматозоидов",
+    "sperm_immotile": "Неподвижные сперматозоиды",
+    "sperm_normal_morphology": "Нормальные формы сперматозоидов",
+    "sperm_abnormal_morphology": "Аномальные формы сперматозоидов",
+    "sperm_head_defects": "Дефекты головки, % среди аномальных форм",
+    "sperm_neck_defects": "Дефекты шейки, % среди аномальных форм",
+    "sperm_tail_defects": "Дефекты хвоста, % среди аномальных форм",
+    "spermatogenic_cells": "Клетки сперматогенеза",
+}
 _LABELS.update(_REVIEWED_ANALYTE_LABELS)
+_LABELS.update(_SUPPLEMENTAL_ANALYTE_LABELS)
 _COMPLETION_ANALYTES = frozenset(
     {
         "amylase",
@@ -165,6 +191,7 @@ def _history_cte(
     pre_partial_recovery: bool = False,
     pre_reviewed_analytes: bool = False,
     pre_completion: bool = False,
+    pre_supplement: bool = False,
 ) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
@@ -178,6 +205,12 @@ def _history_cte(
     )
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
+            if (pre_supplement or old_join) and (
+                name in _SUPPLEMENTAL_ANALYTE_LABELS
+                or (name == "tsh" and unit == "mU/L")
+                or (name == "salivary_cortisol" and unit == "nmol/L")
+            ):
+                continue
             if (pre_reviewed_analytes or pre_partial_recovery) and (
                 name in _REVIEWED_ANALYTE_LABELS or unit in {"uU/mL", "cells/uL"}
             ):
@@ -217,7 +250,11 @@ def _history_cte(
         else "(r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')\n"
         "      OR (h.source_unit IS NULL AND h.normalized_unit = '1' "
         "AND r.unit = '1' AND h.canonical_name IN "
-        "('atherogenic_index', 'urine_ph', 'urine_specific_gravity')))"
+        + (
+            "('atherogenic_index', 'urine_ph', 'urine_specific_gravity')))"
+            if pre_supplement
+            else "('atherogenic_index', 'urine_ph', 'urine_specific_gravity', 'homa_ir')))"
+        )
     )
     return f"""-- {_OWNER} [{profile}]
 WITH registry(canonical_name, source_unit_key, unit, label) AS (VALUES {registry}),
@@ -262,6 +299,7 @@ def lab_card_specs(
     _pre_partial_recovery: bool = False,
     _pre_reviewed_analytes: bool = False,
     _pre_completion: bool = False,
+    _pre_supplement: bool = False,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     russian_comparison = _russian_comparison and not _legacy
@@ -281,6 +319,7 @@ def lab_card_specs(
             pre_partial_recovery=_pre_partial_recovery,
             pre_reviewed_analytes=_pre_reviewed_analytes,
             pre_completion=_pre_completion,
+            pre_supplement=_pre_supplement,
         )
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
@@ -314,6 +353,7 @@ LIMIT 1000""".format(
                 pre_partial_recovery=_pre_partial_recovery,
                 pre_reviewed_analytes=_pre_reviewed_analytes,
                 pre_completion=_pre_completion,
+                pre_supplement=_pre_supplement,
             )
             + (
                 """SELECT result_date AS date,
@@ -356,6 +396,7 @@ def _owned_query_versions(
         lab_card_specs(profile_id, series, **version, **flags)
         for version in (
             {},
+            {"_pre_supplement": True},
             {"_pre_completion": True},
             {"_pre_reviewed_analytes": True},
             {"_pre_partial_recovery": True},

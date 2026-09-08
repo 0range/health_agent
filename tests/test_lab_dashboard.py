@@ -96,7 +96,7 @@ def test_dimensionless_join_is_narrow_and_pre_completion_sql_is_exact() -> None:
     assert "h.normalized_unit = '1'" in current[0].query
     assert "r.unit = '1'" in current[0].query
     assert (
-        "h.canonical_name IN ('atherogenic_index', 'urine_ph', 'urine_specific_gravity')"
+        "h.canonical_name IN ('atherogenic_index', 'urine_ph', 'urine_specific_gravity', 'homa_ir')"
         in current[0].query
     )
     assert "h.source_unit IS NULL" not in previous[0].query
@@ -108,13 +108,59 @@ def test_dimensionless_join_is_narrow_and_pre_completion_sql_is_exact() -> None:
     assert lab_dashboard._visualization(current[1])["graph.y_axis.title_text"] == ""
 
 
+def test_supplemental_labels_and_pre_supplement_sql_are_exact() -> None:
+    current = lab_card_specs(PROFILE, ())[0].query
+    definitions = {name: aliases for name, aliases, _ in _ANALYTES}
+    for name, label in lab_dashboard._SUPPLEMENTAL_ANALYTE_LABELS.items():
+        assert definitions[name] == ""
+        assert label != name
+        assert name in current and label in current
+    for name in ("sperm_head_defects", "sperm_neck_defects", "sperm_tail_defects"):
+        assert (
+            "среди аномальных форм" in lab_dashboard._SUPPLEMENTAL_ANALYTE_LABELS[name]
+        )
+
+    hashes = {
+        "current": (
+            "687d0f1f32ece91e7f1cd44bca0911c3190b76e32e6cd3d28009e5fef54c76ca",
+            "6387e73b96237b494fc15a653ef83d35f7a980f6a09582d23c8b6337c6a28dd0",
+        ),
+        "_legacy": (
+            "c8c70ea2aa08bbf6d50f98022699ca17abcd853d422375a06bba7ce11b8043b2",
+            "b0d5db6fef153c1e5211e2d8cb0e5178378357c154ffbdfd55f3b802092ae174",
+        ),
+        "_russian_comparison": (
+            "4055b4b6f098fdd0a522252e211883d1ca4f52e26c981ed2985dc8f45f2ec371",
+            "6387e73b96237b494fc15a653ef83d35f7a980f6a09582d23c8b6337c6a28dd0",
+        ),
+        "_pre_registry_expansion": (
+            "fdaf1ed411d1c7964864ae425d3779fd4a74268abe4ce0fb6a3451e6bd814737",
+            "aacf91d14063f2961074bc189e68f378c026f90fc07987716634e721d71ebba3",
+        ),
+    }
+    for flag, expected in hashes.items():
+        kwargs = {} if flag == "current" else {flag: flag != "_russian_comparison"}
+        previous = lab_card_specs(PROFILE, (FERRITIN,), _pre_supplement=True, **kwargs)
+        assert "homa_ir" not in previous[0].query
+        assert (
+            tuple(sha256(spec.query.encode()).hexdigest() for spec in previous)
+            == expected
+        )
+    baseline = lab_card_specs(PROFILE, (FERRITIN,), _pre_supplement=True)[0].query
+    assert "h.source_unit IS NULL" in baseline
+    assert "('atherogenic_index', 'urine_ph', 'urine_specific_gravity')" in baseline
+
+
+@pytest.mark.parametrize(
+    "canonical_name,label", [("urine_ph", "pH мочи"), ("homa_ir", "Индекс HOMA-IR")]
+)
 def test_dimensionless_chart_includes_only_permitted_null_units(
-    db_session: Session,
+    db_session: Session, canonical_name: str, label: str
 ) -> None:
     permitted = add_row(
         db_session,
-        canonical_name="urine_ph",
-        source_name="pH мочи",
+        canonical_name=canonical_name,
+        source_name=label,
         source_value="6.0",
         parsed_value=Decimal("6.0"),
         source_unit=None,
@@ -141,7 +187,7 @@ def test_dimensionless_chart_includes_only_permitted_null_units(
         normalized_value=Decimal("6.5"),
         normalized_unit="mmol/L",
     )
-    query = lab_card_specs(PROFILE, (LabSeries("urine_ph", "pH мочи", "1"),))[1].query
+    query = lab_card_specs(PROFILE, (LabSeries(canonical_name, label, "1"),))[1].query
     rows = db_session.execute(text(query)).mappings().all()
     assert [row["observation_id"] for row in rows] == [permitted]
 

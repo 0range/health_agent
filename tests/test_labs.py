@@ -213,7 +213,7 @@ def test_normalization_rejects_similar_but_unsupported_bootstrap_units(
 
 
 @pytest.mark.parametrize(
-    "name", ["atherogenic_index", "urine_ph", "urine_specific_gravity"]
+    "name", ["atherogenic_index", "urine_ph", "urine_specific_gravity", "homa_ir"]
 )
 def test_explicit_dimensionless_results_accept_a_missing_source_unit(name: str) -> None:
     assert normalize_lab_result(name, "6.0", None) == (Decimal("6.0"), "1")
@@ -222,6 +222,16 @@ def test_explicit_dimensionless_results_accept_a_missing_source_unit(name: str) 
 def test_other_results_still_reject_a_missing_source_unit() -> None:
     with pytest.raises(UnsupportedNormalization, match="missing source unit"):
         normalize_lab_result("glucose", "6.0", None)
+
+
+@pytest.mark.parametrize(
+    "name,unit",
+    [("salivary_cortisol", "nmol/L"), ("tsh", "mU/L")],
+)
+def test_supplemental_distinct_unit_families_keep_literal_values(
+    name: str, unit: str
+) -> None:
+    assert normalize_lab_result(name, "1.25", unit) == (Decimal("1.25"), unit)
 
 
 def test_prolactin_micro_international_units_remain_distinct_from_mass_units() -> None:
