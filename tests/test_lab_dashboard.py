@@ -93,6 +93,7 @@ def test_dimensionless_join_is_narrow_and_pre_completion_sql_is_exact() -> None:
         _pre_completion=True,
     )
     assert "h.source_unit IS NULL" in current[0].query
+    assert "h.normalized_unit = '1'" in current[0].query
     assert "r.unit = '1'" in current[0].query
     assert (
         "h.canonical_name IN ('atherogenic_index', 'urine_ph', 'urine_specific_gravity')"
@@ -129,6 +130,16 @@ def test_dimensionless_chart_includes_only_permitted_null_units(
         source_unit=None,
         normalized_value=Decimal("6.0"),
         normalized_unit="1",
+    )
+    add_row(
+        db_session,
+        canonical_name="urine_ph",
+        source_name="pH мочи",
+        source_value="6.5",
+        parsed_value=Decimal("6.5"),
+        source_unit=None,
+        normalized_value=Decimal("6.5"),
+        normalized_unit="mmol/L",
     )
     query = lab_card_specs(PROFILE, (LabSeries("urine_ph", "pH мочи", "1"),))[1].query
     rows = db_session.execute(text(query)).mappings().all()

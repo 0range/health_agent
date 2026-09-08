@@ -215,7 +215,8 @@ def _history_cte(
         "r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')"
         if old_join
         else "(r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')\n"
-        "      OR (h.source_unit IS NULL AND r.unit = '1' AND h.canonical_name IN "
+        "      OR (h.source_unit IS NULL AND h.normalized_unit = '1' "
+        "AND r.unit = '1' AND h.canonical_name IN "
         "('atherogenic_index', 'urine_ph', 'urine_specific_gravity')))"
     )
     return f"""-- {_OWNER} [{profile}]

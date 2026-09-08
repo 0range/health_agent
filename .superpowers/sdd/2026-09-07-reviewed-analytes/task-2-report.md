@@ -41,3 +41,25 @@ Results: Ruff `All checks passed!`; mypy `Success: no issues found in 3 source f
 ### Self-review and concerns
 
 The pre-completion detail SQL hash is pinned to the actual generator at `b2f11bb`: `07728b38ff401276ea4ef65480dcd2c8ca5398713b75d645ff3012bedb4e2583`. All earlier flags select the old join and omit Task 2 identities. Edited-query refusal remains covered by the existing ownership tests. Literal `source_unit=None` is preserved on approval while `normalized_unit='1'`; other missing units remain unsupported. No live database or Metabase calls were made; root retains the requested live SQL check and full-suite run.
+
+### Round 1 review fix
+
+Added the required `h.normalized_unit = '1'` predicate inside the new NULL-source-unit join branch. The SQL regression now includes a permitted `urine_ph` identity with an inconsistent `normalized_unit='mmol/L'` and proves it is excluded while the consistent row remains included.
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/test_lab_dashboard.py -k dimensionless_chart_includes_only_permitted_null_units
+```
+
+Result before the fix: `1 failed, 38 deselected`; the inconsistent stored unit appeared in the chart.
+
+GREEN/check command:
+
+```text
+.venv/bin/pytest -q tests/test_lab_dashboard.py
+.venv/bin/ruff check src/health_agent/lab_dashboard.py tests/test_lab_dashboard.py
+.venv/bin/mypy src/health_agent/lab_dashboard.py
+```
+
+Results: `39 passed, 5 warnings`; Ruff `All checks passed!`; mypy `Success: no issues found in 1 source file`.
