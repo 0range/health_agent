@@ -36,3 +36,22 @@ assert normalize_registered('urine_white_blood_cells','1.25','cells/uL')[1] == '
 - [ ] Implement canonical-onlydefinitions and explicitreadablelabels. Source rawmapping/unit behavior mustremainunchanged foroldPDFs: compare registrycanonical_name/known_unit/normalize outcomes relevantprivateexamplelabels before/after in synthetic tests; canonical-only additions don'tmake oldrawrowseligible.
 - [ ] RED exact saved release6e3921cquery compatibility, retaining existing pinned288344bvariants. Add finite pre-reviewed-analytes query version that excludes these newIDs anduU/mL/cells/uL, and pre-partial versions mustexcludeallpostpartialadditions. Activeandretiredownedqueries upgrade safely; editedqueries stillrefused. Test samecardIDs; no vagueSQLnormalization.
 - [ ] GREEN focusedregistry/dashboard tests,Ruff/mypychangedfiles; report actualRED/GREEN and commitownedonly. Root performs individualsourcecorrections afterreview, fullsuite+finalreview+liveMetabasereconciliation thenpush.
+
+## Task 2: Complete visually reconciled numeric identities
+
+**Files:** src/health_agent/lab_extraction/registry.py, src/health_agent/labs.py, src/health_agent/lab_dashboard.py; focused registry, labs, importer and dashboard tests. No source aliases, PDF changes, migrations, live writes or model calls.
+
+**Interfaces:** Keep existing review APIs. Extend explicit canonical normalization with amylase:U/L; pdw:fL|%; rdw_sd:fL; macrocytes:%; microcytes:%; immature_granulocytes:%; platelet_large_cell_ratio:%; reticulocytes_absolute:10^9/L; salivary_cortisol:ng/mL; fsh:mIU/mL; lh:mIU/mL; shbg:nmol/L; creatine_kinase:U/L; vldl_cholesterol:mmol/L; non_hdl_cholesterol:mmol/L; dhea_sulfate:ug/dL; anti_tpo:IU/mL. Empty source aliases and separate human labels, as Task 1.
+
+**Dimensionless representation:** atherogenic_index, urine_ph, urine_specific_gravity have canonical unit `1` (an internal dimensionless marker), but preserve literal source_unit=None. Only these three explicit canonical IDs accept None in normalize_registered/normalize_lab_result. All other missing-unit results still fail. This narrow exception does not add any raw source name alias. Dashboard join supports NULL source units only for these IDs and normalized_unit='1'; display no invented physical unit. Preserve all historic exact owned SQL variants, including current acf4823/pre-completion SQL, using a finite pre-completion flag; never adopt manually edited queries. All earlier-version flags exclude these Task 2 identities and reconstruct the old join exactly.
+
+- [ ] RED: normalization of each pair, distinct PDW units/saliva, original names still unmapped, no changes to existing raw parser outcomes.
+```python
+assert normalize_registered('salivary_cortisol', '1.25', 'ng/mL') == (Decimal('1.25'), 'ng/mL')
+assert normalize_lab_result('urine_ph', '6.0', None) == (Decimal('6.0'), '1')
+with pytest.raises(ValueError):
+    normalize_registered('glucose', '6.0', None)
+```
+- [ ] RED: existing approve_observation on explicit canonical dimensionless candidate preserves source_unit=None, stores normalized_unit='1'; unrelated missing-unit candidates stay unverified. Add synthetic tests without PHI.
+- [ ] Implement minimal definitions, normalization guard and chart join; retain exact old saved query ownership and chart IDs. Tests assert old query hashes/fixtures and edited-query refusal, unit separation, NULL dimensionless chart inclusion only for permitted IDs. Root checks actual SQL against live DB after review.
+- [ ] GREEN focused changed-module tests, Ruff/mypy; record RED/GREEN and commit owned files only. Root owns private source manifest application and final full-suite run.
