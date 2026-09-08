@@ -42,6 +42,29 @@ _DREAM_RE = re.compile(
     r"\b((?:мне\s+)?(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b.*)$",
     re.IGNORECASE,
 )
+_STANDALONE_SLEEP_RE = re.compile(
+    r"\b(?:спал(?:а|и)?|спалось|просыпал(?:ся|ась)|проснул(?:ся|ась)|"
+    r"уснул(?:а)?|заснул(?:а)?|выспал(?:ся|ась)|не\s+выспал(?:ся|ась)|"
+    r"ночью(?:\s+\S+){0,5}\s+вставал(?:а)?|"
+    r"вставал(?:а)?(?:\s+\S+){0,5}\s+ночью)\b",
+    re.IGNORECASE,
+)
+_PERSONAL_DREAM_RE = re.compile(
+    r"\b(?:мне\s+)?(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b",
+    re.IGNORECASE,
+)
+_QUESTION_WORDING_RE = re.compile(
+    r"^(?:а\s+)?(?:почему|зачем|как|когда|где|что|кто|можно\s+ли|"
+    r"может\s+ли|стоит\s+ли|нужно\s+ли|правда\s+ли)\b",
+    re.IGNORECASE,
+)
+_THIRD_PERSON_RE = re.compile(
+    r"\b(?:мой|моя|мои|моего|моей)\b|"
+    r"\b(?:он|она|они|ему|ей|друг|подруга|муж|жена|сын|дочь|реб[её]нок|"
+    r"мама|папа|брат|сестра|коллега)\b",
+    re.IGNORECASE,
+)
+_SAVED_PREFIX = "Запись сна сохранена."
 
 
 class SleepCoach:
@@ -112,7 +135,24 @@ class SleepCoach:
             if _looks_like_morning_answer(stripped)
             else None
         )
-        is_diary = explicit_diary or morning_key is not None
+        standalone_diary = _looks_like_standalone_diary(stripped)
+        if standalone_diary:
+            recent_turns = list(
+                reversed(self.store.list(profile_id, "sleep", "turn", limit=12))
+            )
+            recent_reports = [
+                {"text": row.payload.get("text", "")}
+                for row in recent_turns
+                if row.payload.get("role") == "user"
+            ]
+            standalone_diary = not is_causal_question(
+                effective_question(stripped, recent_reports)
+            )
+        is_diary = (
+            explicit_diary
+            or morning_key is not None
+            or standalone_diary
+        )
         if explicit_diary and not entry_text:
             return "После /сон добавьте текст записи — пустую запись я не сохраняю."
 
@@ -127,12 +167,9 @@ class SleepCoach:
                 profile_id, "sleep", "diary", source_key, payload, at=now
             )
 
-        durable_is_diary = bool(
-            self.store.list(profile_id, "sleep", "diary", limit=100)
-            and any(
-                row.source_key == source_key
-                for row in self.store.list(profile_id, "sleep", "diary", limit=100)
-            )
+        durable_is_diary = any(
+            row.source_key == source_key
+            for row in self.store.list(profile_id, "sleep", "diary", limit=100)
         )
         prompt = self._prompt_payload(profile_id, stripped, durable_is_diary, now)
         causal = bool(prompt.get("causal_reply"))
@@ -140,12 +177,16 @@ class SleepCoach:
             reply = self.brain(CAUSAL_SYSTEM_PROMPT if causal else _SYSTEM_PROMPT, prompt)
             if causal:
                 reply = render_causal_reply(reply, prompt["verified_health_context"], stripped)
-            reply = _phone_length(reply.strip())
+            reply = reply.strip()
             if not reply:
                 raise ValueError("empty brain response")
         except Exception:  # noqa: BLE001 - provider boundary must degrade safely
             reply = (render_causal_reply("", prompt["verified_health_context"], stripped)
-                     if causal else self._fallback(profile_id, is_diary))
+                     if causal else self._fallback(profile_id, durable_is_diary))
+
+        if durable_is_diary and not reply.startswith(_SAVED_PREFIX):
+            reply = f"{_SAVED_PREFIX} {reply}"
+        reply = _phone_length(reply)
 
         self.store.put(
             profile_id,
@@ -390,6 +431,22 @@ def _looks_like_morning_answer(text: str) -> bool:
             _MORNING_SIGNAL_RE.search(stripped) is not None
             or _SHORT_CHECKIN_RE.fullmatch(stripped) is not None
         )
+    )
+
+
+def _looks_like_standalone_diary(text: str) -> bool:
+    """Recognize conservative personal sleep reports outside a morning prompt."""
+    stripped = text.strip()
+    if (
+        stripped.startswith("/")
+        or "?" in stripped
+        or _QUESTION_WORDING_RE.search(stripped) is not None
+        or _THIRD_PERSON_RE.search(stripped) is not None
+    ):
+        return False
+    return (
+        _STANDALONE_SLEEP_RE.search(stripped) is not None
+        or _PERSONAL_DREAM_RE.search(stripped) is not None
     )
 
 

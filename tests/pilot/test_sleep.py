@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
+
 from health_agent.pilot.contracts import Attachment, Record
 from health_agent.pilot.sleep import SleepCoach
 
@@ -76,6 +78,129 @@ class FakeBrain:
 
 
 NOW = datetime(2026, 9, 7, 6, 30, tzinfo=UTC)  # 09:30 Moscow
+
+
+def test_standalone_sleep_report_is_saved_confirmed_and_replayed() -> None:
+    store, brain, profile = MemoryStore(), FakeBrain("Спасибо, учту это."), uuid4()
+    coach = SleepCoach(store, brain)
+
+    first = coach.handle(
+        profile,
+        "Сегодня тяжело просыпался. Ночью вставал два раза.",
+        source_key="synthetic:1",
+        now=NOW,
+    )
+
+    entries = store.list(profile, "sleep", "diary")
+    assert len(entries) == 1
+    assert entries[0].payload["text"] == "Сегодня тяжело просыпался. Ночью вставал два раза."
+    assert "morning_prompt_key" not in entries[0].payload
+    assert first == "Запись сна сохранена. Спасибо, учту это."
+    assert coach.handle(
+        profile,
+        "Сегодня отлично спал",
+        source_key="synthetic:1",
+        now=NOW,
+    ) == first
+    assert len(store.list(profile, "sleep", "diary")) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Почему я плохо сплю?",
+        "Почему я плохо сплю",
+        "Сон важен для здоровья",
+        "Мой друг плохо спал",
+        "Сегодня болит колено",
+        "/неизвестно спал плохо",
+        "Спи сегодня хорошо",
+    ],
+)
+def test_non_diary_free_text_is_not_saved_or_confirmed(text: str) -> None:
+    store, profile = MemoryStore(), uuid4()
+    reply = SleepCoach(store, FakeBrain("Обычный ответ.")).handle(
+        profile, text, source_key=f"negative:{text}", now=NOW
+    )
+
+    assert store.list(profile, "sleep", "diary") == []
+    assert not reply.startswith("Запись сна сохранена.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Спал плохо",
+        "Часто просыпался ночью",
+        "Ночью вставал два раза",
+        "Сегодня выспался",
+        "Мне приснился поезд",
+    ],
+)
+def test_personal_sleep_forms_are_standalone_diary(text: str) -> None:
+    store, profile = MemoryStore(), uuid4()
+    reply = SleepCoach(store, FakeBrain("Принято.")).handle(
+        profile, text, source_key=f"positive:{text}", now=NOW
+    )
+
+    assert store.list(profile, "sleep", "diary")[0].payload["text"] == text
+    assert reply.startswith("Запись сна сохранена.")
+
+
+def test_standalone_report_keeps_morning_binding_when_notice_exists() -> None:
+    store, profile = MemoryStore(), uuid4()
+    store.put(
+        profile,
+        "sleep",
+        "notice",
+        "morning:2026-09-07",
+        {"text": "Как спалось?"},
+        at=NOW,
+    )
+
+    SleepCoach(store, FakeBrain()).handle(
+        profile, "Спал плохо", source_key="morning-answer", now=NOW
+    )
+
+    assert (
+        store.list(profile, "sleep", "diary")[0].payload["morning_prompt_key"]
+        == "morning:2026-09-07"
+    )
+
+
+def test_standalone_report_is_confirmed_once_when_provider_fails() -> None:
+    def unavailable(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("provider down")
+
+    store, profile = MemoryStore(), uuid4()
+    reply = SleepCoach(store, unavailable).handle(
+        profile, "Сегодня выспался", source_key="provider-failure", now=NOW
+    )
+
+    assert reply.count("Запись сна сохранена.") == 1
+    assert store.list(profile, "sleep", "diary")
+
+
+def test_standalone_retry_persists_original_durable_text() -> None:
+    store, profile = MemoryStore(), uuid4()
+    store.put(
+        profile,
+        "sleep",
+        "turn",
+        "user:standalone-retry",
+        {"role": "user", "text": "Ночью вставал два раза"},
+        at=NOW,
+    )
+
+    SleepCoach(store, FakeBrain()).handle(
+        profile,
+        "Сегодня отлично выспался",
+        source_key="standalone-retry",
+        now=NOW,
+    )
+
+    entry = store.list(profile, "sleep", "diary")[0]
+    assert entry.payload["text"] == "Ночью вставал два раза"
 
 
 def test_diary_is_durable_continuous_and_retry_is_idempotent() -> None:
@@ -153,7 +278,9 @@ def test_question_does_not_consume_prompt_and_pre_delivery_message_is_not_reply(
         source_key="delayed",
         now=datetime(2026, 9, 7, 6, 10, tzinfo=UTC),
     )
-    assert store.list(profile, "sleep", "diary") == []
+    standalone = store.list(profile, "sleep", "diary")[0]
+    assert standalone.source_key == "delayed"
+    assert "morning_prompt_key" not in standalone.payload
 
     coach.handle(
         profile,
@@ -161,7 +288,9 @@ def test_question_does_not_consume_prompt_and_pre_delivery_message_is_not_reply(
         source_key="answer",
         now=datetime(2026, 9, 7, 6, 30, tzinfo=UTC),
     )
-    assert store.list(profile, "sleep", "diary")[0].source_key == "answer"
+    answer = store.list(profile, "sleep", "diary")[0]
+    assert answer.source_key == "answer"
+    assert answer.payload["morning_prompt_key"] == "morning:2026-09-07"
 
 
 def test_unrelated_statements_and_late_checkin_do_not_consume_morning_prompt() -> None:
@@ -185,7 +314,9 @@ def test_unrelated_statements_and_late_checkin_do_not_consume_morning_prompt() -
         source_key="too-late",
         now=delivered + timedelta(hours=3, seconds=1),
     )
-    assert store.list(profile, "sleep", "diary") == []
+    standalone = store.list(profile, "sleep", "diary")[0]
+    assert standalone.source_key == "too-late"
+    assert "morning_prompt_key" not in standalone.payload
 
     coach.handle(
         profile,
@@ -193,7 +324,14 @@ def test_unrelated_statements_and_late_checkin_do_not_consume_morning_prompt() -
         source_key="wellbeing",
         now=delivered + timedelta(hours=3),
     )
-    assert store.list(profile, "sleep", "diary")[0].source_key == "wellbeing"
+    answer = next(
+        row
+        for row in store.list(profile, "sleep", "diary")
+        if row.source_key == "wellbeing"
+    )
+    assert answer is not None
+    assert answer.source_key == "wellbeing"
+    assert answer.payload["morning_prompt_key"] == "morning:2026-09-07"
 
 
 def test_read_only_diary_profile_isolation_and_missing_voice_transcription() -> None:
