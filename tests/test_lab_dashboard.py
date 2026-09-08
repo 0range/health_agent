@@ -477,6 +477,10 @@ def test_discovery_bound_with_all_registered_pairs(
     db_session.commit()
     series = discover_lab_series(disposable_postgres.engine, PROFILE)
     assert len(series) == 80
+    discovered = {(item.canonical_name, item.unit) for item in series}
+    assert ("vitamin_b12", "pg/mL") in discovered
+    assert ("vitamin_d", "ng/mL") in discovered
+    assert all(not item.canonical_name.startswith("unmapped_") for item in series)
     priorities = {
         (item.canonical_name, item.unit): index
         for index, item in enumerate(DEFAULT_SERIES)

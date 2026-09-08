@@ -63,3 +63,25 @@ GREEN/check command:
 ```
 
 Results: `39 passed, 5 warnings`; Ruff `All checks passed!`; mypy `Success: no issues found in 1 source file`.
+
+### Live integration priority-chart correction
+
+Removed the premature `LIMIT 80` from the registry-bounded distinct-series discovery query. Discovery now sees every eligible registered analyte/unit pair, applies `DEFAULT_SERIES` priority in Python, and retains the existing final `_MAX_SERIES` cap of 80. The synthetic all-pairs test now explicitly requires available vitamin B12 and vitamin D priority series and verifies no unmapped identity is invented.
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/test_lab_dashboard.py -k discovery_bound_with_all_registered_pairs
+```
+
+Result before the fix: `1 failed, 38 deselected`; `vitamin_b12:pg/mL` was absent from the capped discovery result.
+
+GREEN/check command:
+
+```text
+.venv/bin/pytest -q tests/test_lab_dashboard.py
+.venv/bin/ruff check src/health_agent/lab_dashboard.py tests/test_lab_dashboard.py
+.venv/bin/mypy src/health_agent/lab_dashboard.py
+```
+
+Results: `39 passed, 5 warnings`; Ruff `All checks passed!`; mypy `Success: no issues found in 1 source file`.

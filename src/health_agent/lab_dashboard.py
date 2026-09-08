@@ -373,7 +373,7 @@ def discover_lab_series(engine: Engine, profile_id: UUID) -> tuple[LabSeries, ..
     query = (
         _history_cte(profile_id)
         + """SELECT DISTINCT canonical_name, label, chart_unit
-FROM valid_rows ORDER BY canonical_name, chart_unit LIMIT 80"""
+FROM valid_rows ORDER BY canonical_name, chart_unit"""
     )
     with engine.connect() as connection:
         rows = connection.execute(text(query)).all()
