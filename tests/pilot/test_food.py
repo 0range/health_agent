@@ -223,7 +223,7 @@ def test_unsafe_or_overprecise_feedback_gets_bounded_fallback(
     assert len(answer) <= 280
     assert unsafe not in answer
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
-    assert analysis["feedback"] == answer
+    assert answer.startswith(analysis["feedback"])
     assert analysis["feedback_untrusted"] == unsafe
 
 
@@ -272,7 +272,7 @@ def test_feedback_uses_controlled_plate_observation_and_protocol_change(
     value["feedback"] = "Любой произвольный текст модели."
     brain.reply = json.dumps(value, ensure_ascii=False)
     answer = coach.handle(profile, "/ел 12:00 обед", source_key="controlled", now=noon)
-    assert answer == "В записи отмечены: овощи. По выбранному правилу можно добавить источник белка."
+    assert answer.startswith("В записи отмечены: овощи. По выбранному правилу можно добавить источник белка.")
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
     assert analysis["feedback_untrusted"] == "Любой произвольный текст модели."
 

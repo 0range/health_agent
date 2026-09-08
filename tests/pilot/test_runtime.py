@@ -226,7 +226,8 @@ def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
 
     assert service.process_update(update(20, "Обед: рис и овощи", photo=True)).terminal
 
-    assert gateway.sent[-1][1] == "В записи отмечены: овощи, крупы или хлеб."
+    assert gateway.sent[-1][1].startswith("В записи отмечены: овощи, крупы или хлеб.")
+    assert "15:50" in gateway.sent[-1][1]
     assert len(client.calls) == 1
     attachment = store.list(DEFAULT_PROFILE_ID, "food", "attachment")[0]
     meal = store.list(DEFAULT_PROFILE_ID, "food", "meal")[0]
@@ -437,3 +438,34 @@ def test_goal_hierarchy_changes_only_target_and_isolates(clean_database):
         source_key="foreign",
         now=NOW + timedelta(seconds=1),
     )
+
+
+def test_main_bot_question_route_saves_sleep_without_morning_prompt(tmp_path, clean_database):
+    from health_agent.pilot.sleep import SleepCoach
+    from health_agent.telegram.types import HealthQuestion, MessageContext
+
+    store = PilotStore(clean_database)
+
+    def offline_brain(system, payload, *, image_path=None):
+        raise RuntimeError('offline')
+
+    def questions():
+        return PilotQuestions(
+            PilotActions(SleepCoach(store, offline_brain), store, 'sleep', DEFAULT_PROFILE_ID),
+            PrivateReplyStore(tmp_path / 'sleep-replies'),
+        )
+
+    context = MessageContext(111, DEFAULT_PROFILE_ID, 101, 101, 1, 10, NOW, NOW + timedelta(minutes=3))
+    question = HealthQuestion(context, 'Сегодня тяжеловато просыпался. Ночью вставал один раз.')
+    reply = questions().answer(question)
+    assert reply.startswith('Запись сна сохранена.')
+    assert questions().answer(question) == reply  # restart and update replay
+    entries = store.list(DEFAULT_PROFILE_ID, 'sleep', 'diary')
+    assert len(entries) == 1
+    assert entries[0].payload['text'] == question.text
+    assert entries[0].at == NOW  # original Telegram time, not delayed processing time
+    assert not store.list(DEFAULT_PROFILE_ID, 'sleep', 'notice')
+    # A Telegram update is immutable: use a fresh update for the diary command.
+    from dataclasses import replace
+    diary = questions().answer(HealthQuestion(replace(context, update_id=11, message_id=2), '/дневник'))
+    assert question.text in diary

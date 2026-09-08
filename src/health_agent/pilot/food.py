@@ -125,9 +125,7 @@ class FoodCoach:
     def _meal_notice(self, profile_id: UUID, meal: Record, now: datetime) -> Notice | None:
         anchor = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
         protocol = self._protocol(profile_id)
-        configured = self._positive_number(protocol.get("interval_hours"))
-        hours = configured if configured is not None and 2.5 <= configured <= 4.5 else 3.5
-        target = anchor + timedelta(hours=hours)
+        target = self._meal_target(meal.payload, protocol)
         expires = anchor + timedelta(hours=4.5)
         control = self._latest_control(profile_id, meal.id)
         if control is not None:
@@ -150,7 +148,7 @@ class FoodCoach:
     ) -> str:
         existing = self._by_source(profile_id, "meal", source_key)
         if existing is not None and existing.payload.get("analysis") is not None:
-            return self._feedback(existing.payload)
+            return self._feedback(profile_id, existing)
         if existing is None:
             occurred, cleaned, valid = self._extract_time(text, now)
             if not valid:
@@ -168,9 +166,7 @@ class FoodCoach:
                 profile_id, "food", "meal", source_key, payload, at=occurred,
             )
         updated = self._analyse(profile_id, existing)
-        if updated.payload.get("analysis") is None:
-            return "Приём пищи сохранён; анализ сейчас недоступен. Напоминание продолжит работать."
-        return self._feedback(updated.payload)
+        return self._analysis_reply(profile_id, updated)
 
     def _photo(
         self, profile_id: UUID, text: str, source_key: str, now: datetime,
@@ -184,11 +180,11 @@ class FoodCoach:
             if meal is None:
                 return "Фото сохранено, но связанный приём пищи не найден."
             if meal.payload.get("analysis_status") == "complete":
-                return self._feedback(meal.payload)
+                return self._feedback(profile_id, meal)
             updated = self._analyse(
                 profile_id, meal, image_path=Path(str(saved.payload["path"])),
             )
-            return self._analysis_reply(updated)
+            return self._analysis_reply(profile_id, updated)
 
         latest = self._photo_candidate(profile_id, now)
         if latest is None:
@@ -236,7 +232,7 @@ class FoodCoach:
             "analysis_raw": None, "analysis_error": None, "analysis_status": "pending",
         }, at=occurred)
         self._store.patch(profile_id, photo.id, {**photo.payload, "meal_id": meal.id, "status": "confirmed"})
-        return self._analysis_reply(self._analyse(profile_id, meal, image_path=attachment.path))
+        return self._analysis_reply(profile_id, self._analyse(profile_id, meal, image_path=attachment.path))
 
     def _attach_photo(self, profile_id: UUID, meal: Record, photo: Record) -> str:
         event_at = self._from_iso(str(photo.payload["event_at"]))
@@ -254,7 +250,7 @@ class FoodCoach:
         persisted = self._store.patch(profile_id, meal.id, payload)
         self._store.patch(profile_id, photo.id, {**photo.payload, "meal_id": meal.id, "status": "confirmed"})
         return self._analysis_reply(
-            self._analyse(profile_id, persisted, image_path=Path(str(photo.payload["path"])))
+            profile_id, self._analyse(profile_id, persisted, image_path=Path(str(photo.payload["path"])))
         )
 
     def _confirm_photo(self, profile_id: UUID, decision: str, source_key: str, now: datetime) -> str:
@@ -269,7 +265,7 @@ class FoodCoach:
                 )
                 image = Path(str(photo.payload["path"])) if photo is not None else None
                 meal = self._analyse(profile_id, meal, image_path=image)
-            return self._analysis_reply(meal)
+            return self._analysis_reply(profile_id, meal)
         photo = self._pending_photo(profile_id)
         if photo is None:
             return "Не нашёл фото, которое ждёт уточнения."
@@ -303,15 +299,15 @@ class FoodCoach:
             if bound is None:
                 return "Комментарий сохранён, но связанный приём пищи не найден."
             if bound.payload.get("analysis_status") == "complete":
-                return self._feedback(bound.payload)
-            return self._analysis_reply(self._analyse(profile_id, bound, comment=saved))
+                return self._feedback(profile_id, bound)
+            return self._analysis_reply(profile_id, self._analyse(profile_id, bound, comment=saved))
         text = str(saved.payload["text"])
         payload = dict(meal.payload)
         payload["previous_analysis"] = payload.get("analysis")
         if re.search(r"\b(?:порци|примерно|около)\b", text.lower()):
             payload["user_portion"] = text[:100]
         persisted = self._store.patch(profile_id, meal.id, payload)
-        return self._analysis_reply(self._analyse(profile_id, persisted, comment=saved))
+        return self._analysis_reply(profile_id, self._analyse(profile_id, persisted, comment=saved))
 
     def _confirm_text(self, profile_id: UUID, source_key: str, now: datetime) -> str:
         previous = self._by_source(profile_id, "text_confirmation", source_key)
@@ -321,7 +317,7 @@ class FoodCoach:
                 return "Подтверждение сохранено."
             if meal.payload.get("analysis_status") != "complete":
                 meal = self._analyse(profile_id, meal)
-            return self._analysis_reply(meal)
+            return self._analysis_reply(profile_id, meal)
         pending = self._pending_text(profile_id)
         if pending is None:
             return "Не нашёл описание, которое ждёт уточнения."
@@ -343,11 +339,8 @@ class FoodCoach:
                 "event_at": photo.payload["event_at"], "analysis": None,
                 "analysis_raw": None}
 
-    @staticmethod
-    def _analysis_reply(meal: Record) -> str:
-        if meal.payload.get("analysis") is None:
-            return "Приём пищи сохранён; анализ сейчас недоступен. Напоминание продолжит работать."
-        return FoodCoach._feedback(meal.payload)
+    def _analysis_reply(self, profile_id: UUID, meal: Record) -> str:
+        return self._feedback(profile_id, meal)
 
     def _analyse(
         self, profile_id: UUID, meal: Record, image_path: Path | None = None,
@@ -410,8 +403,11 @@ class FoodCoach:
             if derived is not None:
                 observations = [item["analysis"] for item in payload.get("photos", [])
                                 if isinstance(item.get("analysis"), dict)]
+                # A single-photo correction replaces the interpretation; immutable
+                # photo evidence remains available in photos and analysis_revisions.
                 payload["analysis"] = self._aggregate_analysis(
-                    [*observations, derived], str(payload["category"]),
+                    [derived] if len(payload.get("photos", [])) <= 1 else [*observations, derived],
+                    str(payload["category"]),
                     self._protocol(profile_id), payload.get("user_portion"),
                 )
                 payload["analysis_revisions"] = [*payload.get("analysis_revisions", []), {
@@ -513,7 +509,7 @@ class FoodCoach:
                         or (meal.payload.get("analysis") is not None
                             and meal.payload.get("analysis_error") is None))
             if complete:
-                return self._feedback(meal.payload)
+                return self._feedback(profile_id, meal)
             payload = dict(meal.payload)
             payload["user_portion"] = previous.payload["portion"]
             payload["portion_analysis_source_key"] = source_key
@@ -521,7 +517,7 @@ class FoodCoach:
             updated = self._analyse(profile_id, persisted)
             if updated.payload.get("analysis_status") != "complete":
                 return "Порция сохранена; повторный анализ сейчас недоступен."
-            return self._feedback(updated.payload)
+            return self._feedback(profile_id, updated)
         portion = text[len("/порция"):].strip()
         if not portion or len(portion) > 100:
             return "Укажите порцию, например: /порция 200 г."
@@ -546,7 +542,7 @@ class FoodCoach:
         updated = self._analyse(profile_id, persisted)
         if updated.payload.get("analysis_status") != "complete":
             return "Порция сохранена; повторный анализ сейчас недоступен."
-        return self._feedback(updated.payload)
+        return self._feedback(profile_id, updated)
 
     def _control(self, profile_id: UUID, action: str, source_key: str, now: datetime) -> str:
         meal = self._latest_meal(profile_id)
@@ -892,9 +888,49 @@ class FoodCoach:
         result["feedback"] = FoodCoach._render_feedback(result, category, protocol or {})
         return result
 
+    def _feedback(self, profile_id: UUID, meal: Record) -> str:
+        payload = meal.payload
+        analysis = payload.get("analysis")
+        if isinstance(analysis, dict):
+            # Render from current validated fields, including older saved analyses.
+            reply = self._render_feedback(
+                analysis, str(payload.get("category", "")), self._protocol(profile_id),
+            )
+            kcal = analysis.get("kcal")
+            if (isinstance(kcal, (int, float)) and not isinstance(kcal, bool)
+                    and math.isfinite(kcal) and kcal >= 0):
+                reply += f" Калорийность: примерно {kcal:g} ккал."
+            else:
+                reply += " Калорийность пока неизвестна."
+        else:
+            reply = "Приём пищи сохранён; анализ сейчас недоступен."
+        return reply + "\n" + self._next_meal_text(profile_id, meal)
+
     @staticmethod
-    def _feedback(payload: dict[str, Any]) -> str:
-        return str(payload["analysis"]["feedback"])
+    def _meal_target(payload: dict[str, Any], protocol: dict[str, Any]) -> datetime:
+        anchor = FoodCoach._from_iso(str(payload.get("ended_at", payload["occurred_at"])))
+        configured = FoodCoach._positive_number(protocol.get("interval_hours"))
+        hours = configured if configured is not None and 2.5 <= configured <= 4.5 else 3.5
+        return anchor + timedelta(hours=hours)
+
+    def _next_meal_text(self, profile_id: UUID, meal: Record) -> str:
+        payload = meal.payload
+        if payload.get("category") == "dinner":
+            return "Следующий приём — завтрак после пробуждения; время пока не задано."
+        protocol = self._protocol(profile_id)
+        target = self._meal_target(payload, protocol)
+        control = self._latest_control(profile_id, meal.id)
+        if control is not None:
+            if control.payload.get("action") == "skip":
+                return "Интервал пропущен; время следующего приёма пока не задано."
+            if control.payload.get("action") == "snooze":
+                target = self._from_iso(str(control.payload["until"]))
+        text = f"Следующий приём по вашему плану — около {target.astimezone(_USER_ZONE):%H:%M} (Москва)."
+        if not self._reminders_enabled(profile_id):
+            return text + " Напоминания выключены."
+        if self._quiet(target, protocol):
+            return text + " Это тихие часы; напоминание в это время не придёт."
+        return text
 
     @staticmethod
     def _quiet(now: datetime, protocol: dict[str, Any]) -> bool:
@@ -930,10 +966,31 @@ class FoodCoach:
         supplied = analysis.get("plate_components")
         components = ({item for item in supplied if item in _COMPONENT_LABELS}
                       if isinstance(supplied, list) else set())
+        plant_dairy = False
+        animal_dairy = False
         for food in analysis.get("foods", []):
             lowered = food.lower()
+            # Classify each ingredient separately so a plant drink does not mask
+            # a real dairy ingredient elsewhere on the same plate.
+            plant_terms = (
+                r"(?:кокосов|миндальн|овсян?|соев|рисов|растительн)\w*"
+            )
+            plant = bool(re.search(
+                rf"{plant_terms}\s+(?:молок|молоч|напит|йогур)"
+                rf"|(?:молоко|йогурт)\s+из\s+(?:кокос|миндал|овс|со[ий])"
+                r"|(?:coconut|almond|oat|soy|rice)\s+(?:milk|yogurt)"
+                r"|безмолоч|plant.based|dairy.free", lowered,
+            ))
+            dairy_term = any(term in lowered for term in (*_COMPONENT_TERMS["dairy"], "milk", "yogurt", "cheese"))
+            plant_dairy |= plant and dairy_term
+            animal_dairy |= dairy_term and not plant
             components.update(name for name, terms in _COMPONENT_TERMS.items()
-                              if any(term in lowered for term in terms))
+                              if any(term in lowered for term in terms)
+                              and not (name == "dairy" and plant))
+        if plant_dairy and not animal_dairy:
+            components.discard("dairy")
+        if animal_dairy:
+            components.add("dairy")
         return components
 
     @staticmethod
@@ -974,7 +1031,16 @@ class FoodCoach:
             "these exact strings: [\"vegetables\", \"protein\", \"grains\", \"fruit\", "
             "\"dairy\"]. Also return foods, portion_estimate, nullable kcal, protein_g, fat_g, "
             "carbs_g, saturated_fat_g, fiber_g, cholesterol_mg, confidence, unknowns, feedback. "
-            "Never invent quantities. Missing nutrients are null. A photo portion is an estimate. "
+            "Estimate approximate kcal and nutrients for the visible serving from the photo and "
+            "caption even without weighed portions. Use ordinary serving-size assumptions, state "
+            "them in unknowns, and describe the estimated portion in Russian. Numeric nutrients "
+            "must be JSON numbers rounded to at most one decimal; confidence is a number 0..1. "
+            "Use null only when the food or quantity cannot be reasonably estimated; never claim "
+            "an assumed weight is measured. Cooking duration (e.g. oats 20 minutes) is not a weight. "
+            "Coconut/almond/oat/soy milk and plant-based yogurt are NOT dairy. "
+            "User corrections override previous interpretations. For a single photo return the "
+            "entire corrected meal, not just the comment ingredient. Preserve unrelated ingredients. "
+            "For multiple photos consider previous observations; do not count repeat views twice. "
             "Feedback is short and neutral: one plate observation and at most one optional change "
             "relative to the supplied current protocol. Do not call meal timing a physiological law "
             "or claim yolks or dairy are universally forbidden."
