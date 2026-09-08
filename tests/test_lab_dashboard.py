@@ -85,6 +85,56 @@ def test_reviewed_labels_are_display_only_and_old_queries_exclude_new_families()
         assert unit in current and unit not in previous and unit not in pre_partial
 
 
+def test_dimensionless_join_is_narrow_and_pre_completion_sql_is_exact() -> None:
+    current = lab_card_specs(PROFILE, (LabSeries("urine_ph", "pH мочи", "1"),))
+    previous = lab_card_specs(
+        PROFILE,
+        (LabSeries("ferritin", "Ферритин", "ng/mL"),),
+        _pre_completion=True,
+    )
+    assert "h.source_unit IS NULL" in current[0].query
+    assert "r.unit = '1'" in current[0].query
+    assert (
+        "h.canonical_name IN ('atherogenic_index', 'urine_ph', 'urine_specific_gravity')"
+        in current[0].query
+    )
+    assert "h.source_unit IS NULL" not in previous[0].query
+    assert (
+        sha256(previous[0].query.encode()).hexdigest()
+        == "07728b38ff401276ea4ef65480dcd2c8ca5398713b75d645ff3012bedb4e2583"
+    )
+    assert " — 1 " not in current[1].name
+    assert lab_dashboard._visualization(current[1])["graph.y_axis.title_text"] == ""
+
+
+def test_dimensionless_chart_includes_only_permitted_null_units(
+    db_session: Session,
+) -> None:
+    permitted = add_row(
+        db_session,
+        canonical_name="urine_ph",
+        source_name="pH мочи",
+        source_value="6.0",
+        parsed_value=Decimal("6.0"),
+        source_unit=None,
+        normalized_value=Decimal("6.0"),
+        normalized_unit="1",
+    )
+    add_row(
+        db_session,
+        canonical_name="glucose",
+        source_name="Глюкоза",
+        source_value="6.0",
+        parsed_value=Decimal("6.0"),
+        source_unit=None,
+        normalized_value=Decimal("6.0"),
+        normalized_unit="1",
+    )
+    query = lab_card_specs(PROFILE, (LabSeries("urine_ph", "pH мочи", "1"),))[1].query
+    rows = db_session.execute(text(query)).mappings().all()
+    assert [row["observation_id"] for row in rows] == [permitted]
+
+
 def add_row(session: Session, **changes: object) -> UUID:
     document = Document(
         profile_id=changes.pop("profile_id", PROFILE),

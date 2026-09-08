@@ -170,7 +170,12 @@ def normalize_lab_result(
 ) -> tuple[Decimal, str]:
     """Normalize only explicitly supported analyte/unit pairs."""
     if source_unit is None:
-        raise UnsupportedNormalization("Unsupported normalization: missing source unit")
+        try:
+            return normalize_registered(canonical_name, raw_value, None)
+        except ValueError:
+            raise UnsupportedNormalization(
+                "Unsupported normalization: missing source unit"
+            ) from None
     unit_key = source_unit.strip().casefold().replace("μ", "µ")
     normalization = _UNIT_NORMALIZATIONS.get((canonical_name, unit_key))
     if normalization is None:

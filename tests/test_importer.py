@@ -72,9 +72,9 @@ def test_import_uses_shared_registry_and_preserves_qualified_source(
         pdf.save(path)
 
     report = import_document(session, vault, path, "local:shared-layout")
-    observation = session.query(LabObservation).filter_by(
-        document_id=report.document_id
-    ).one()
+    observation = (
+        session.query(LabObservation).filter_by(document_id=report.document_id).one()
+    )
 
     assert report.candidate_count == 1
     assert observation.canonical_name == "glucose"
@@ -199,6 +199,25 @@ def test_approve_rejects_unbounded_legacy_candidate(
     assert observation.status is ReviewStatus.NEEDS_REVIEW
     assert observation.normalized_value is None
     assert observation.review_item.decision is None
+
+
+def test_approve_preserves_missing_source_unit_for_explicit_dimensionless_candidate(
+    session, vault, synthetic_lab_pdf
+):
+    report = import_document(session, vault, synthetic_lab_pdf, None)
+    observation = session.get_one(Document, report.document_id).observations[0]
+    observation.canonical_name = "urine_ph"
+    observation.source_value = "6.0"
+    observation.parsed_value = Decimal("6.0")
+    observation.source_unit = None
+    session.flush()
+
+    approve_observation(session, observation.id)
+
+    assert observation.status is ReviewStatus.VERIFIED
+    assert observation.source_unit is None
+    assert observation.normalized_value == Decimal("6.0")
+    assert observation.normalized_unit == "1"
 
 
 def test_approval_moves_value_into_verified_view(

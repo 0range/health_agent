@@ -94,3 +94,41 @@ def test_insulin_international_units_stay_separate():
         Decimal("1.25"),
         "uU/mL",
     )
+
+
+@pytest.mark.parametrize(
+    "name,unit",
+    [
+        ("amylase", "U/L"),
+        ("pdw", "fL"),
+        ("pdw", "%"),
+        ("rdw_sd", "fL"),
+        ("macrocytes", "%"),
+        ("microcytes", "%"),
+        ("immature_granulocytes", "%"),
+        ("platelet_large_cell_ratio", "%"),
+        ("reticulocytes_absolute", "10^9/L"),
+        ("salivary_cortisol", "ng/mL"),
+        ("fsh", "mIU/mL"),
+        ("lh", "mIU/mL"),
+        ("shbg", "nmol/L"),
+        ("creatine_kinase", "U/L"),
+        ("vldl_cholesterol", "mmol/L"),
+        ("non_hdl_cholesterol", "mmol/L"),
+        ("dhea_sulfate", "ug/dL"),
+        ("anti_tpo", "IU/mL"),
+        ("atherogenic_index", "1"),
+        ("urine_ph", "1"),
+        ("urine_specific_gravity", "1"),
+    ],
+)
+def test_completed_canonical_identity_preserves_exact_unit(name, unit):
+    assert canonical_name(name) == name
+    assert normalize_registered(name, "1.25", unit) == (Decimal("1.25"), unit)
+
+
+@pytest.mark.parametrize(
+    "source", ["Амилаза", "Кортизол в слюне", "Индекс атерогенности"]
+)
+def test_completed_source_labels_still_unmapped(source):
+    assert canonical_name(source).startswith("unmapped_")

@@ -144,6 +144,26 @@ _ANALYTES = (
     ("urine_squamous_epithelial_cells", "", "cells/uL"),
     ("urine_white_blood_cells", "", "cells/uL"),
     ("urine_red_blood_cells", "", "cells/uL"),
+    ("amylase", "", "U/L"),
+    ("pdw", "", "fL|%"),
+    ("rdw_sd", "", "fL"),
+    ("macrocytes", "", "%"),
+    ("microcytes", "", "%"),
+    ("immature_granulocytes", "", "%"),
+    ("platelet_large_cell_ratio", "", "%"),
+    ("reticulocytes_absolute", "", "10^9/L"),
+    ("salivary_cortisol", "", "ng/mL"),
+    ("fsh", "", "mIU/mL"),
+    ("lh", "", "mIU/mL"),
+    ("shbg", "", "nmol/L"),
+    ("creatine_kinase", "", "U/L"),
+    ("vldl_cholesterol", "", "mmol/L"),
+    ("non_hdl_cholesterol", "", "mmol/L"),
+    ("dhea_sulfate", "", "ug/dL"),
+    ("anti_tpo", "", "IU/mL"),
+    ("atherogenic_index", "", "1"),
+    ("urine_ph", "", "1"),
+    ("urine_specific_gravity", "", "1"),
 )
 
 _UNIT_ALIASES = {
@@ -162,6 +182,8 @@ _UNIT_ALIASES = {
     "U/L": "ед/л|ед./л|u/l|iu/l|ме/л",
     "mIU/L": "мме/л",
     "mU/L": "мЕд/л",
+    "mIU/mL": "",
+    "IU/mL": "",
     "uIU/mL": "µiu/ml|μiu/ml|мкме/мл",
     "10^9/L": ("10^9/л|10*9/л|10⁹/л|10⁹/l|10*9/l|тыс/мкл|*10^9/л|10*9/литр|10^9/литр"),
     "10^12/L": "10^12/л|10*12/л|10¹²/л|10¹²/l|10*12/l",
@@ -229,7 +251,16 @@ def bounded_decimal(raw: str) -> Decimal:
     return result
 
 
-def normalize_registered(name: str, raw: str, unit: str) -> tuple[Decimal, str]:
+_DIMENSIONLESS_WITHOUT_SOURCE_UNIT = frozenset(
+    {"atherogenic_index", "urine_ph", "urine_specific_gravity"}
+)
+
+
+def normalize_registered(name: str, raw: str, unit: str | None) -> tuple[Decimal, str]:
+    if unit is None:
+        if name in _DIMENSIONLESS_WITHOUT_SOURCE_UNIT:
+            return bounded_decimal(raw), "1"
+        raise ValueError("unsupported_lab_normalization")
     canonical_unit = _UNITS.get(unit_key(unit))
     if canonical_unit is None or canonical_unit not in _ALLOWED.get(name, ()):
         raise ValueError("unsupported_lab_normalization")

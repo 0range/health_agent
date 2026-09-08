@@ -88,8 +88,52 @@ _REVIEWED_ANALYTE_LABELS = {
     "urine_squamous_epithelial_cells": "Плоский эпителий (моча)",
     "urine_white_blood_cells": "Лейкоциты (моча)",
     "urine_red_blood_cells": "Эритроциты (моча)",
+    "amylase": "Амилаза",
+    "pdw": "Ширина распределения тромбоцитов",
+    "rdw_sd": "Ширина распределения эритроцитов (SD)",
+    "macrocytes": "Макроциты",
+    "microcytes": "Микроциты",
+    "immature_granulocytes": "Незрелые гранулоциты",
+    "platelet_large_cell_ratio": "Коэффициент больших тромбоцитов",
+    "reticulocytes_absolute": "Ретикулоциты (абсолютное число)",
+    "salivary_cortisol": "Кортизол (слюна)",
+    "fsh": "ФСГ",
+    "lh": "ЛГ",
+    "shbg": "ГСПГ",
+    "creatine_kinase": "Креатинкиназа",
+    "vldl_cholesterol": "Холестерин ЛПОНП",
+    "non_hdl_cholesterol": "Холестерин не-ЛПВП",
+    "dhea_sulfate": "ДГЭА-сульфат",
+    "anti_tpo": "Антитела к ТПО",
+    "atherogenic_index": "Индекс атерогенности",
+    "urine_ph": "pH мочи",
+    "urine_specific_gravity": "Удельный вес мочи",
 }
 _LABELS.update(_REVIEWED_ANALYTE_LABELS)
+_COMPLETION_ANALYTES = frozenset(
+    {
+        "amylase",
+        "pdw",
+        "rdw_sd",
+        "macrocytes",
+        "microcytes",
+        "immature_granulocytes",
+        "platelet_large_cell_ratio",
+        "reticulocytes_absolute",
+        "salivary_cortisol",
+        "fsh",
+        "lh",
+        "shbg",
+        "creatine_kinase",
+        "vldl_cholesterol",
+        "non_hdl_cholesterol",
+        "dhea_sulfate",
+        "anti_tpo",
+        "atherogenic_index",
+        "urine_ph",
+        "urine_specific_gravity",
+    }
+)
 _MAX_SERIES = 80
 _OWNER = "health-agent:lab-history:v1"
 _PRE_REGISTRY_EXPANSION_UNITS = frozenset(
@@ -120,15 +164,25 @@ def _history_cte(
     pre_registry_expansion: bool = False,
     pre_partial_recovery: bool = False,
     pre_reviewed_analytes: bool = False,
+    pre_completion: bool = False,
 ) -> str:
     """Use the registry itself, not a second hand-maintained unit allowlist."""
     profile = _profile(profile_id)
     entries = []
+    old_join = (
+        pre_completion
+        or pre_reviewed_analytes
+        or pre_partial_recovery
+        or pre_registry_expansion
+        or legacy
+    )
     for name, _, units in _ANALYTES:
         for raw_unit, unit in sorted(_UNITS.items()):
             if (pre_reviewed_analytes or pre_partial_recovery) and (
                 name in _REVIEWED_ANALYTE_LABELS or unit in {"uU/mL", "cells/uL"}
             ):
+                continue
+            if old_join and name in _COMPLETION_ANALYTES:
                 continue
             if pre_partial_recovery and (
                 name == "monomeric_prolactin" or unit == "mU/L"
@@ -157,6 +211,13 @@ def _history_cte(
     document_status = (
         "= 'processed'" if pre_partial_recovery else "IN ('processed', 'needs_review')"
     )
+    unit_join = (
+        "r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')"
+        if old_join
+        else "(r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')\n"
+        "      OR (h.source_unit IS NULL AND r.unit = '1' AND h.canonical_name IN "
+        "('atherogenic_index', 'urine_ph', 'urine_specific_gravity')))"
+    )
     return f"""-- {_OWNER} [{profile}]
 WITH registry(canonical_name, source_unit_key, unit, label) AS (VALUES {registry}),
 source_rows AS (
@@ -168,7 +229,7 @@ source_rows AS (
   FROM verified_lab_history h
   JOIN lab_observations o ON o.id = h.id
   JOIN registry r ON r.canonical_name = h.canonical_name
-    AND r.source_unit_key = replace(lower(btrim(h.source_unit)), 'μ', 'µ')
+    AND {unit_join}
   WHERE h.profile_id = '{profile}'
     AND h.document_processing_status {document_status}
     AND h.document_safe_error_code IS NULL
@@ -199,6 +260,7 @@ def lab_card_specs(
     _pre_registry_expansion: bool = False,
     _pre_partial_recovery: bool = False,
     _pre_reviewed_analytes: bool = False,
+    _pre_completion: bool = False,
 ) -> tuple[LabCardSpec, ...]:
     profile = _profile(profile_id)
     russian_comparison = _russian_comparison and not _legacy
@@ -217,6 +279,7 @@ def lab_card_specs(
             pre_registry_expansion=_pre_registry_expansion,
             pre_partial_recovery=_pre_partial_recovery,
             pre_reviewed_analytes=_pre_reviewed_analytes,
+            pre_completion=_pre_completion,
         )
         + """SELECT result_date AS date, label AS analyte,
   canonical_name, source_name, source_value, source_unit, reference_text, source_flag,
@@ -241,7 +304,7 @@ LIMIT 1000""".format(
     )
     charts = tuple(
         LabCardSpec(
-            f"{item.label} — {item.unit} [{profile}]",
+            f"{item.label}{'' if item.unit == '1' else f' — {item.unit}'} [{profile}]",
             _history_cte(
                 profile_id,
                 item,
@@ -249,6 +312,7 @@ LIMIT 1000""".format(
                 pre_registry_expansion=_pre_registry_expansion,
                 pre_partial_recovery=_pre_partial_recovery,
                 pre_reviewed_analytes=_pre_reviewed_analytes,
+                pre_completion=_pre_completion,
             )
             + (
                 """SELECT result_date AS date,
@@ -271,12 +335,12 @@ FROM valid_rows ORDER BY result_date, document_id, page_number, id"""
             ),
             ("result", "reference_low", "reference_high"),
             "line",
-            f"{item.label}, {item.unit}: вся история без усреднения за день. "
+            f"{item.label}{'' if item.unit == '1' else f', {item.unit}'}: вся история без усреднения за день. "
             "Пустой график означает: нет подтверждённых датированных значений. "
             "Границы — напечатанный двухсторонний референс источника, не диагноз. "
             "Точные строки и происхождение — в таблице «Анализы — исходные данные» "
             "на этом дашборде. Единицы не конвертируются.",
-            item.unit,
+            "" if item.unit == "1" else item.unit,
         )
         for item in series
     )
@@ -291,6 +355,7 @@ def _owned_query_versions(
         lab_card_specs(profile_id, series, **version, **flags)
         for version in (
             {},
+            {"_pre_completion": True},
             {"_pre_reviewed_analytes": True},
             {"_pre_partial_recovery": True},
         )
@@ -528,7 +593,9 @@ def _detach_unselected_owned_cards(
     """Keep the active history bounded as discovery changes; never delete cards."""
     names = {spec.name for spec in selected}
     possible = {
-        f"{_LABELS[name]} — {unit} [{profile_id}]": LabSeries(name, _LABELS[name], unit)
+        f"{_LABELS[name]}{'' if unit == '1' else f' — {unit}'} [{profile_id}]": LabSeries(
+            name, _LABELS[name], unit
+        )
         for name, _, units in _ANALYTES
         for unit in units.split("|")
     }
