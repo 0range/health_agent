@@ -57,3 +57,20 @@ with pytest.raises(ValueError):
 - [ ] GREEN focused changed-module tests, Ruff/mypy; record RED/GREEN and commit owned files only. Root owns private source manifest application and final full-suite run.
 
 **Live integration correction:** Expanded real history has 87 analyte/unit series. Existing SQL discovery LIMIT 80 was applied before DEFAULT_SERIES prioritization, dropping requested B12 and vitamin D charts. Preserve the 80-chart cap, but discover all eligible distinct registry pairs before prioritizing DEFAULT_SERIES and then limiting. Add a regression with more than 80 series showing available B12/vitamin D retained; unsupported/missing series are not invented. No cap increase or new dashboard structure.
+
+## Task 3: Normalize the final source-audited supplemental numeric rows
+
+**Files:** registry.py, lab_dashboard.py, focused registry/dashboard/labs tests. No PDF parser, schema, service or live writes. Preserve concurrent sleep changes.
+
+**Interfaces and explicit source-backed pairs:** additive canonical-only names with empty aliases: homa_ir:1 (allow source_unit=None only for this additional known dimensionless index); urine_transitional_epithelial_cells:cells/uL; urine_renal_epithelial_cells:cells/uL; urine_hyaline_casts:cells/uL; normoblasts:cells/100cells; pancreatic_amylase:U/L; semen_volume:mL; semen_ph:pH; semen_viscosity:cm; semen_liquefaction_time:min; semen_white_blood_cells:cells/mL; sperm_concentration:10^6/mL; total_sperm_count:10^6; sperm_total_motility:%; sperm_progressive_motility:%; sperm_nonprogressive_motility:%; sperm_immotile:%; sperm_normal_morphology:%; sperm_abnormal_morphology:%; sperm_head_defects:%; sperm_neck_defects:%; sperm_tail_defects:%; spermatogenic_cells:cells/100sperm. Russian labels for head/neck/tail must specify percentages among abnormal forms. Do not merge them with overall morphology.
+
+Add distinct allowed families to existing canonical identities: salivary_cortisol additionally nmol/L (no conversion to ng/mL); tsh additionally mU/L (literal activity units, never convert to mIU/L). This is explicitly an additive normalization approval; preserve all source-name/unit aliases and persisted parser evidence, do not reprocess old PDFs. No new _UNIT_ALIASES: root versions each source spelling through reviewed correction lineage. The source-blank eosinophil row and density integers are not grounds for guessed units/scaling; no such changes in this task.
+
+- [ ] RED synthetic tests for each new pair, HOMA None accepted and unrelated None rejected, salivary and TSH distinct unit families unchanged numeric values, new raw human source names unmapped.
+```python
+assert normalize_registered('homa_ir', '1.25', None) == (Decimal('1.25'), '1')
+assert normalize_registered('tsh', '1.25', 'mU/L') == (Decimal('1.25'), 'mU/L')
+assert normalize_registered('sperm_head_defects', '1.25', '%')[0] == Decimal('1.25')
+```
+- [ ] Implement exact pairs/labels and extend NULL-unit chart branch solely to homa_ir while preserving normalized_unit='1'. Keep all previous finite SQL ownership variants, add exact pre-supplement variant reproducing a84412b; older flags exclude supplemental names and newly allowed TSH mU/L/salivary nmol/L pairs, and use original three-ID NULL join. Pin a84412b SQL hash from git in regression. No edited-card adoption or cap increase.
+- [ ] GREEN focused registry/labs/dashboard tests plus Ruff/mypy; commit owned only, report actual RED/GREEN. Root applies already visually verified rows with unchanged literal values and lineage-preserved unit spellings, then full final suite, independent combined review, deployment and GitHub push.
