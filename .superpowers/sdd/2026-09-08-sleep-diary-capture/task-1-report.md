@@ -50,3 +50,20 @@ Success: no issues found in 2 source files
 - Empty voice transcription remains unsaved.
 
 No PHI was added to tests or tracked files.
+
+## Round 1 review fix
+
+Review identified that substring-based verb matching could accept arbitrary third-person subjects and commands. The classifier now requires the sleep or dream form to lead an implicit first-person report or follow an explicit first-person/limited temporal-adverbial frame. Directive framing is rejected before classification. Synthetic regressions cover `Петя плохо спал`, `Запиши, что я спал плохо`, and `Расскажи, почему я плохо спал`; the unambiguous implicit-person `Плохо спал` remains accepted.
+
+```text
+$ .venv/bin/pytest -q tests/pilot/test_sleep.py tests/pilot/test_sleep_grounding.py tests/pilot/test_runtime.py
+74 passed, 5 warnings in 1.94s
+
+$ .venv/bin/ruff check src/health_agent/pilot/sleep.py tests/pilot/test_sleep.py
+All checks passed!
+
+$ .venv/bin/mypy src/health_agent/pilot/sleep.py tests/pilot/test_sleep.py
+Success: no issues found in 2 source files
+```
+
+The same pre-existing SWIG import deprecation warnings remained visible. No full-suite or live write/provider check was run.

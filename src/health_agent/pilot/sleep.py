@@ -43,14 +43,16 @@ _DREAM_RE = re.compile(
     re.IGNORECASE,
 )
 _STANDALONE_SLEEP_RE = re.compile(
-    r"\b(?:спал(?:а|и)?|спалось|просыпал(?:ся|ась)|проснул(?:ся|ась)|"
+    r"^(?:я\s+)?(?:(?:сегодня|вчера|этой\s+ночью|ночью|утром|часто|редко|"
+    r"плохо|хорошо|тяжело|легко|долго|мало|крепко|беспокойно|нормально)\s+){0,4}"
+    r"(?:спал(?:а|и)?|спалось|просыпал(?:ся|ась)|проснул(?:ся|ась)|"
     r"уснул(?:а)?|заснул(?:а)?|выспал(?:ся|ась)|не\s+выспал(?:ся|ась)|"
-    r"ночью(?:\s+\S+){0,5}\s+вставал(?:а)?|"
-    r"вставал(?:а)?(?:\s+\S+){0,5}\s+ночью)\b",
+    r"вставал(?:а)?)\b",
     re.IGNORECASE,
 )
 _PERSONAL_DREAM_RE = re.compile(
-    r"\b(?:мне\s+)?(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b",
+    r"^(?:(?:сегодня|вчера|этой\s+ночью|ночью)\s+)?(?:мне\s+)?"
+    r"(?:снил(?:ся|ась|ось|ись)|приснил(?:ся|ась|ось|ись))\b",
     re.IGNORECASE,
 )
 _QUESTION_WORDING_RE = re.compile(
@@ -58,10 +60,8 @@ _QUESTION_WORDING_RE = re.compile(
     r"может\s+ли|стоит\s+ли|нужно\s+ли|правда\s+ли)\b",
     re.IGNORECASE,
 )
-_THIRD_PERSON_RE = re.compile(
-    r"\b(?:мой|моя|мои|моего|моей)\b|"
-    r"\b(?:он|она|они|ему|ей|друг|подруга|муж|жена|сын|дочь|реб[её]нок|"
-    r"мама|папа|брат|сестра|коллега)\b",
+_DIRECTIVE_RE = re.compile(
+    r"^(?:запиши|расскажи|скажи|объясни|ответь|помоги|подскажи)\b",
     re.IGNORECASE,
 )
 _SAVED_PREFIX = "Запись сна сохранена."
@@ -441,7 +441,7 @@ def _looks_like_standalone_diary(text: str) -> bool:
         stripped.startswith("/")
         or "?" in stripped
         or _QUESTION_WORDING_RE.search(stripped) is not None
-        or _THIRD_PERSON_RE.search(stripped) is not None
+        or _DIRECTIVE_RE.search(stripped) is not None
     ):
         return False
     return (

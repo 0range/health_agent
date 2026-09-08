@@ -115,6 +115,9 @@ def test_standalone_sleep_report_is_saved_confirmed_and_replayed() -> None:
         "Сегодня болит колено",
         "/неизвестно спал плохо",
         "Спи сегодня хорошо",
+        "Петя плохо спал",
+        "Запиши, что я спал плохо",
+        "Расскажи, почему я плохо спал",
     ],
 )
 def test_non_diary_free_text_is_not_saved_or_confirmed(text: str) -> None:
@@ -131,6 +134,7 @@ def test_non_diary_free_text_is_not_saved_or_confirmed(text: str) -> None:
     "text",
     [
         "Спал плохо",
+        "Плохо спал",
         "Часто просыпался ночью",
         "Ночью вставал два раза",
         "Сегодня выспался",
