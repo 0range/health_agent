@@ -30,6 +30,10 @@ class WhoopOAuthScopesError(WhoopOAuthError):
     """A refreshed grant no longer contains every required WHOOP scope."""
 
 
+class WhoopOAuthTemporaryError(WhoopOAuthError):
+    """The grant was not rejected; a later synchronization can retry."""
+
+
 class WhoopOAuth:
     def __init__(
         self,
@@ -107,11 +111,28 @@ class WhoopOAuth:
         try:
             response = self._http.post(TOKEN_URL, data=data)
         except httpx.HTTPError as error:
-            raise WhoopOAuthError(
+            raise WhoopOAuthTemporaryError(
                 "WHOOP token endpoint is temporarily unavailable"
             ) from error
         if response.status_code != 200:
-            raise WhoopOAuthError(
+            # A timeout, HTML gateway/challenge, rate limit or server failure is
+            # not evidence that the user revoked the grant. Never persist a
+            # reauthorization requirement for those temporary failures.
+            try:
+                error_payload = response.json()
+            except ValueError:
+                error_payload = None
+            rejected = (
+                response.status_code in {400, 401, 403}
+                and isinstance(error_payload, dict)
+                and isinstance(error_payload.get("error"), str)
+                and error_payload["error"] in {
+                    "invalid_grant", "invalid_client", "unauthorized_client",
+                    "invalid_scope", "access_denied",
+                }
+            )
+            error_type = WhoopOAuthError if rejected else WhoopOAuthTemporaryError
+            raise error_type(
                 f"WHOOP token endpoint returned status {response.status_code}"
             )
         try:
@@ -126,11 +147,11 @@ class WhoopOAuth:
                 scopes = tuple(str(item) for item in raw_scopes)
             token_type = str(payload.get("token_type", "bearer"))
         except (KeyError, TypeError, ValueError) as error:
-            raise WhoopOAuthError(
+            raise WhoopOAuthTemporaryError(
                 "WHOOP token endpoint returned an invalid response"
             ) from error
         if not access_token or not refresh_token or expires_in <= 0:
-            raise WhoopOAuthError("WHOOP token endpoint returned an invalid response")
+            raise WhoopOAuthTemporaryError("WHOOP token endpoint returned an invalid response")
         return WhoopToken(
             access_token=access_token,
             refresh_token=refresh_token,

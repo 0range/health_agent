@@ -30,7 +30,9 @@ class WorkflowSnapshot:
 
 
 class DatabaseWorkflowAdapter:
-    def __init__(self, sessions: Callable[[], AbstractContextManager[Session]], publication=None) -> None:
+    def __init__(
+        self, sessions: Callable[[], AbstractContextManager[Session]], publication=None
+    ) -> None:
         self._sessions = sessions
         self._publication = publication
 
@@ -47,9 +49,18 @@ class DatabaseWorkflowAdapter:
         connection = "Calendar не настроен. Публикация только по явному выбору."
         if self._publication is not None:
             from health_agent.google_calendar.composition import CalendarStatusReader
-            calendar = tuple((visit.public_code, self._publication.snapshot(profile_id, visit.public_code).status) for visit in visits)
+
+            calendar = tuple(
+                (
+                    visit.public_code,
+                    self._publication.snapshot(profile_id, visit.public_code).status,
+                )
+                for visit in visits
+            )
             try:
-                connection = CalendarStatusReader(self._publication).cards(profile_id)[0].detail
+                connection = (
+                    CalendarStatusReader(self._publication).cards(profile_id)[0].detail
+                )
             except Exception:  # noqa: BLE001
                 connection = "Локальный статус Calendar недоступен."
         return WorkflowSnapshot(visits, notes, reminders, calendar, connection)
@@ -62,17 +73,35 @@ class DatabaseWorkflowAdapter:
         key = f"panel:{profile_id}:{identity}"
         if operation == "visit_calendar":
             from health_agent.google_calendar.publication import publication_notice
+
             if self._publication is None:
                 raise ValueError("calendar_unavailable")
-            return publication_notice(self._publication.publish(profile_id, fields["code"])) or "Calendar: без изменений."
+            return (
+                publication_notice(
+                    self._publication.publish(profile_id, fields["code"])
+                )
+                or "Calendar: без изменений."
+            )
         with self._sessions() as session:
             notice = _apply(session, profile_id, operation, fields, key)
-        if self._publication is not None and operation in {"visit_question", "visit_answer", "visit_done", "visit_cancel", "visit_move", "visit_prepare"}:
+        if self._publication is not None and operation in {
+            "visit_question",
+            "visit_answer",
+            "visit_done",
+            "visit_cancel",
+            "visit_move",
+            "visit_prepare",
+        }:
             from health_agent.google_calendar.publication import publication_notice
+
             try:
-                notice += " " + publication_notice(self._publication.sync_visit(profile_id, fields["code"]))
+                notice += " " + publication_notice(
+                    self._publication.sync_visit(profile_id, fields["code"])
+                )
             except Exception:  # noqa: BLE001
-                notice += " Calendar: синхронизация отложена; локальные изменения сохранены."
+                notice += (
+                    " Calendar: синхронизация отложена; локальные изменения сохранены."
+                )
         return notice
 
 
@@ -109,7 +138,13 @@ def _apply(
     if operation == "visit_move":
         visit = visits.get(profile_id, fields["code"])
         start = parse_local_datetime(fields["when"], visit.timezone_name)
-        visits.reschedule(profile_id, fields["code"], starts_at=start, ends_at=start + (visit.ends_at - visit.starts_at), timezone_name=visit.timezone_name)
+        visits.reschedule(
+            profile_id,
+            fields["code"],
+            starts_at=start,
+            ends_at=start + (visit.ends_at - visit.starts_at),
+            timezone_name=visit.timezone_name,
+        )
         return "Время визита сохранено."
     if operation in {"visit_done", "visit_cancel"}:
         method = visits.complete if operation.endswith("done") else visits.cancel

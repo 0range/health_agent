@@ -14,6 +14,7 @@ from health_agent.whoop.oauth import (
     WhoopOAuth,
     WhoopOAuthError,
     WhoopOAuthScopesError,
+    WhoopOAuthTemporaryError,
 )
 from health_agent.whoop.tokens import TokenStore, TokenStoreError, WhoopToken
 
@@ -175,6 +176,10 @@ class WhoopClient:
                     refresh_with_required_scopes,
                 )
             )
+        except WhoopOAuthTemporaryError as error:
+            raise WhoopApiError(
+                "WHOOP token refresh is temporarily unavailable"
+            ) from error
         except WhoopOAuthScopesError as error:
             raise WhoopAuthorizationRequired(
                 "WHOOP authorization is missing required scopes"
