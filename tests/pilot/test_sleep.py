@@ -105,6 +105,24 @@ def test_standalone_sleep_report_is_saved_confirmed_and_replayed() -> None:
     assert len(store.list(profile, "sleep", "diary")) == 1
 
 
+def test_temporal_standalone_report_starts_diary_after_causal_discussion() -> None:
+    store, brain, profile = MemoryStore(), FakeBrain(), uuid4()
+    coach = SleepCoach(store, brain)
+    coach.handle(profile, "Почему я плохо сплю?", source_key="causal", now=NOW)
+
+    coach.handle(
+        profile,
+        "Сегодня тяжеловато просыпался. Ночью вставал два раза.",
+        source_key="synthetic:after-causal",
+        now=NOW,
+    )
+
+    entry = store.list(profile, "sleep", "diary")[0]
+    assert entry.source_key == "synthetic:after-causal"
+    assert "morning_prompt_key" not in entry.payload
+    assert brain.calls[-1][1]["causal_reply"] is False
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -138,6 +156,7 @@ def test_non_diary_free_text_is_not_saved_or_confirmed(text: str) -> None:
         "Часто просыпался ночью",
         "Ночью вставал два раза",
         "Сегодня выспался",
+        "Сегодня я плохо спал",
         "Мне приснился поезд",
     ],
 )

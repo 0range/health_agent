@@ -67,3 +67,22 @@ Success: no issues found in 2 source files
 ```
 
 The same pre-existing SWIG import deprecation warnings remained visible. No full-suite or live write/provider check was run.
+
+## Round 2 review fix
+
+The bounded affirmative frame now permits the ordinary temporal-first explicit-person order `Сегодня я плохо спал`, including a limited set of sleep modifiers after `я`. The frame remains anchored and does not admit the prior name or directive counterexamples.
+
+Before commit, a private root probe revealed that the existing report's colloquial modifier was outside the bounded synthetic vocabulary. No private text was copied into tests or tracked files. A synthetic `Сегодня тяжеловато просыпался. Ночью вставал два раза.` regression now verifies that an explicit temporal diary declaration remains a diary after recent causal discussion, while the existing causal-continuity test remains green.
+
+```text
+$ .venv/bin/pytest -q tests/pilot/test_sleep.py tests/pilot/test_sleep_grounding.py
+68 passed, 5 warnings in 0.58s
+
+$ .venv/bin/ruff check src/health_agent/pilot/sleep.py tests/pilot/test_sleep.py
+All checks passed!
+
+$ .venv/bin/mypy src/health_agent/pilot/sleep.py tests/pilot/test_sleep.py
+Success: no issues found in 2 source files
+```
+
+The same pre-existing SWIG import deprecation warnings remained visible. No full-suite or live write/provider check was run.

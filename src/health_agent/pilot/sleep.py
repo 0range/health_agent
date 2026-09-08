@@ -44,7 +44,9 @@ _DREAM_RE = re.compile(
 )
 _STANDALONE_SLEEP_RE = re.compile(
     r"^(?:я\s+)?(?:(?:сегодня|вчера|этой\s+ночью|ночью|утром|часто|редко|"
-    r"плохо|хорошо|тяжело|легко|долго|мало|крепко|беспокойно|нормально)\s+){0,4}"
+    r"плохо|хорошо|тяжел\w*|легко|долго|мало|крепко|беспокойно|нормально)\s+){0,4}"
+    r"(?:я\s+)?(?:(?:часто|редко|плохо|хорошо|тяжел\w*|легко|долго|мало|"
+    r"крепко|беспокойно|нормально)\s+){0,3}"
     r"(?:спал(?:а|и)?|спалось|просыпал(?:ся|ась)|проснул(?:ся|ась)|"
     r"уснул(?:а)?|заснул(?:а)?|выспал(?:ся|ась)|не\s+выспал(?:ся|ась)|"
     r"вставал(?:а)?)\b",
@@ -63,6 +65,9 @@ _QUESTION_WORDING_RE = re.compile(
 _DIRECTIVE_RE = re.compile(
     r"^(?:запиши|расскажи|скажи|объясни|ответь|помоги|подскажи)\b",
     re.IGNORECASE,
+)
+_EXPLICIT_DIARY_TIME_RE = re.compile(
+    r"^(?:сегодня|вчера|этой\s+ночью|ночью|утром)\b", re.IGNORECASE
 )
 _SAVED_PREFIX = "Запись сна сохранена."
 
@@ -136,7 +141,7 @@ class SleepCoach:
             else None
         )
         standalone_diary = _looks_like_standalone_diary(stripped)
-        if standalone_diary:
+        if standalone_diary and _EXPLICIT_DIARY_TIME_RE.search(stripped) is None:
             recent_turns = list(
                 reversed(self.store.list(profile_id, "sleep", "turn", limit=12))
             )
