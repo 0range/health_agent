@@ -63,9 +63,11 @@ as such; data seen once does not establish unattended collection reliability.
 Archive collection starts today, 10 September 2026, in Europe/Moscow. The setup
 day is partial; office readings remain office readings. The daily completeness
 review starts 11 September at 10:00 Moscow, backed by hourly freshness/storage
-checks and three-day reconciliation. A proposed review cadence is 3–5 complete
-bedroom nights for descriptive plots, 7–10 for exploratory hypotheses and 14–21
-for a methods/results report. These are work milestones, not validated sample-size
+checks and three-day reconciliation. The agreed review cadence is the first bedroom night on 11 September, first
+descriptive observations on 12–13 September (2–3 days), and an exploratory results
+report on 20–24 September (10–14 days), while collection continues for 14–21 nights.
+The first-night review uses its actual sleep interval across both calendar dates;
+previous-day calendar quality alone is insufficient for that review. These are work milestones, not validated sample-size
 thresholds. The operational six-second coverage threshold is >=99% and no gap over
 60 seconds; analysis-specific inclusion rules still need to be fixed before
 looking at exposure/outcome associations. See [operations](../runbooks/research-collection.md).

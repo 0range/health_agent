@@ -119,15 +119,20 @@ an off-machine backup or a new daily database backup schedule.
 
 ## Analysis milestones
 
-These are planning estimates, conditional on complete bedroom nights:
+Agreed review schedule (10 September 2026), conditional on uploaded data:
 
-- **3–5 nights:** completeness/clock checks, overnight plots, noise events and
-  basic room summaries. If the first bedroom night is 10→11 September: 13–15 September.
-- **7–10 nights:** exploratory within-person associations and candidate lag windows,
-  with explicit missingness and context. No causal conclusion from these patterns.
-- **14–21 nights:** reproducible methods, quality and exploratory results report,
-  usable as a starting manuscript. Adjacent six-second points are correlated;
-  they do not turn a few weeks into thousands of independent nights.
+- **11 September:** review the first bedroom night, including source freshness,
+  gaps, sensor placement and both people's sleep/recovery. Use the actual WHOOP
+  sleep interval across 10→11 September; a previous-calendar-day report alone
+  does not cover the entire night. The automatic collection check runs at 10:00
+  Moscow and retries hourly. Interpretation is reviewed in this conversation.
+- **12–13 September (2–3 days):** first descriptive observations and plots. These
+  are early patterns and data-quality findings, not stable effect estimates.
+- **20–24 September (10–14 days):** first exploratory results report comparing
+  room exposures and sleep within each person, with missingness and uncertainty.
+- Continue archiving for the planned **14–21 bedroom nights**. Six-second samples
+  within a night are correlated; they do not replace independent nights. These
+  milestones do not imply causal proof or an automatic message/report delivery.
 
 Agree/freeze a small primary question and analysis protocol before examining the
 associations. Room move time and notable nights away, illness, alcohol, late food,
