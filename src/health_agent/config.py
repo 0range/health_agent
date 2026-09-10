@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     automation_root: Path = Field(
         default=Path("data/automation"), validation_alias="AUTOMATION_ROOT"
     )
+    qingping_client_file: Path = Field(
+        default=Path(".tokens/qingping-client.json"), validation_alias="QINGPING_CLIENT_FILE"
+    )
+    qingping_connection_file: Path = Field(
+        default=Path(".tokens/qingping-connection.json"), validation_alias="QINGPING_CONNECTION_FILE"
+    )
+    qingping_root: Path = Field(
+        default=Path("data/qingping"), validation_alias="QINGPING_ROOT"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )

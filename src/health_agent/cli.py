@@ -89,6 +89,7 @@ from health_agent.panel.launchd import (
 )
 from health_agent.panel.service import build_panel_service
 from health_agent.pilot.cli import app as pilot_app
+from health_agent.qingping.cli import app as qingping_app
 from health_agent.questions.composition import (
     build_question_application,
     build_telegram_question_runtime,
@@ -168,6 +169,7 @@ app.add_typer(question_app, name="question")
 app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
 app.add_typer(pilot_app, name="pilot")
+app.add_typer(qingping_app, name="qingping")
 app.add_typer(lab_extraction_app, name="lab-extract")
 app.add_typer(visit_app, name="visit")
 app.add_typer(create_calendar_cli(), name="calendar")
