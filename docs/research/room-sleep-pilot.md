@@ -1,8 +1,8 @@
 # Room conditions and sleep: prospective personal pilot
 
-Draft collection protocol, 10 September 2026. One consenting account owner now;
-a second participant can join later with their own authorization and profile.
-The target is 21–28 complete bedroom nights, starting with the first full night
+Draft collection protocol, 10 September 2026. Two separately authorized WHOOP
+accounts share one bedroom sensor; each person retains their own local profile.
+The target is 14–21 complete bedroom nights, starting with the first full night
 after the device is placed there. Setup readings from the office remain separate.
 
 ## Data to preserve
@@ -42,7 +42,7 @@ Noise-versus-HR changes can be exploratory after timing and noise semantics are
 validated. Do not conduct uncontrolled harmful exposure experiments.
 
 Thousands of adjacent samples are correlated observations, not thousands of
-independent nights. With 21–28 nights from one/two people, report descriptive
+independent nights. With 14–21 nights from one/two people, report descriptive
 results and uncertainty; no population-wide causal claims or promise of journal
 acceptance. A reproducible methods/data-quality report is a realistic first paper
 artifact. Freeze the analysis protocol before fitting associations; this draft is
@@ -64,8 +64,14 @@ Archive collection starts today, 10 September 2026, in Europe/Moscow. The setup
 day is partial; office readings remain office readings. The daily completeness
 review starts 11 September at 10:00 Moscow, backed by hourly freshness/storage
 checks and three-day reconciliation. A proposed review cadence is 3–5 complete
-bedroom nights for descriptive plots, 7–10 for exploratory hypotheses and 21–28
+bedroom nights for descriptive plots, 7–10 for exploratory hypotheses and 14–21
 for a methods/results report. These are work milestones, not validated sample-size
 thresholds. The operational six-second coverage threshold is >=99% and no gap over
 60 seconds; analysis-specific inclusion rules still need to be fixed before
 looking at exposure/outcome associations. See [operations](../runbooks/research-collection.md).
+
+Daily private comparison datasets retain native observations, a six-second HR/air
+comparison table, complete available public summary fields and all native stress
+graph variants. Stress absolute-time anchoring remains unverified and is explicitly
+excluded from the UTC comparison table. See the dataset section in the operations
+runbook for provenance, units, gaps and file hashes.

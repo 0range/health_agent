@@ -1,0 +1,9 @@
+# Shared-room sleep study dataset
+
+The owner clarified a 14–21-night personal study: archive both WHOOP accounts and all available room fields at their finest source resolution, reconcile at least the preceding day, and make the histories easy to compare. Low live latency is unnecessary.
+
+Keep the existing native archives and collection cadence. Add a private daily research export alongside the existing quality reports. Produce a six-second interval table combining the one room sensor and separately identified participants' HR (count/mean/min/max and original first/last timestamps). Include all eight sensor fields and room labels. Empty intervals remain empty. Also export exact native HR/air observations, original sleep-stage intervals and all available normalized public resource source_values (sleep/recovery/cycle/workout/body). Do not forward-fill nightly HRV/SpO2 into continuous measurements.
+
+Retain all three stress graph variants and their original points in a separate native CSV/JSON. Each point keeps graph kind, native time label, source date, graph coordinates and displayed score. UTC remains empty until the timezone/day anchoring of the graphical API is independently verified. Minute labels establish display granularity, not verified absolute timestamps. No fabricated six-second stress, continuous HRV or acoustic peak waveform.
+
+The existing independent quality job revises exports for the preceding three study dates after 10:00 Moscow, with per-source gaps and daily status alongside them. A manual current-day export is explicitly partial. Files remain private and outside Git. One manifest maps participant columns to profile IDs and explains units and aggregation. Test missing bins, multiple native samples per bin, profile isolation and stress time ambiguity. Verify a current-day live export and retain real counts.

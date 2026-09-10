@@ -8,7 +8,7 @@ import plistlib
 import shutil
 import sys
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -23,10 +23,40 @@ from health_agent.automation.storage import GlobalRunLock, atomic_private_write
 from health_agent.config import Settings
 from health_agent.db import build_engine
 from health_agent.qingping.service import Connection
+from health_agent.research.dataset import export_day
 from health_agent.research.participants import check_participants
 
 app = typer.Typer(help="Private room/sleep research quality reports.")
 LABEL = "com.orange.health-agent.research-quality"
+
+
+@app.command("export")
+def export_dataset(day: Annotated[str, typer.Option("--day")]) -> None:
+    """Export one Moscow study date; current-day exports are explicitly partial."""
+    try:
+        selected = date.fromisoformat(day)
+    except ValueError:
+        raise typer.BadParameter("Use YYYY-MM-DD") from None
+    settings = Settings()
+    lock = GlobalRunLock(settings.research_root / "quality.lock")
+    if not lock.acquire():
+        typer.echo("status=skipped reason=already_running")
+        return
+    try:
+        result = export_day(
+            settings,
+            build_engine(settings),
+            Connection.load(settings.qingping_connection_file),
+            selected,
+        )
+        typer.echo(
+            f"status=exported date={day} rows={result['rows']} participants={len(result['participants'])} partial_day={result['partial_day']}"
+        )
+    except Exception:  # noqa: BLE001 - never expose raw source or connection configuration
+        typer.echo("status=failed safe_error=research_export_failed", err=True)
+        raise typer.Exit(1) from None
+    finally:
+        lock.release()
 
 
 class QualityLaunchdManager(LaunchdManager):

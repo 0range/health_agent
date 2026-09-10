@@ -11,6 +11,8 @@ from sqlalchemy import Engine
 from health_agent.automation.storage import atomic_private_write
 from health_agent.config import Settings
 from health_agent.qingping.service import Connection
+from health_agent.research.calendar import ZONE, recent_days
+from health_agent.research.dataset import export_day
 from health_agent.research.quality import QualityService
 from health_agent.whoop.participants import targets
 
@@ -73,6 +75,20 @@ def check_participants(
             else "attention",
             "participants": per_person,
         }
+    combined["datasets"] = []
+    for day in recent_days(now) if now.astimezone(ZONE).hour >= 10 else []:
+        try:
+            manifest = export_day(settings, engine, sensor, day, now)
+            combined["datasets"].append(
+                {
+                    "date": day.isoformat(),
+                    "status": "exported",
+                    "rows": manifest["rows"],
+                }
+            )
+        except Exception:  # noqa: BLE001 - surface a safe export failure without private source data
+            combined["status"] = "attention"
+            combined["datasets"].append({"date": day.isoformat(), "status": "failed"})
     atomic_private_write(
         settings.research_root / "status.json", json.dumps(combined, indent=2).encode()
     )

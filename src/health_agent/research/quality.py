@@ -88,7 +88,8 @@ def capacity(engine: Engine, root: Path, container: str) -> dict[str, Any]:
         * 24
         * 2
     )
-    forecast = max(10 * GIB, 31 * (air + whoop) * 3)
+    export_reserve = GIB  # Native CSV + comparison/context exports for 31 days.
+    forecast = max(10 * GIB, 31 * (air + whoop) * 3) + export_reserve
     host_free = shutil.disk_usage(root).free
     database_free = None
     try:
@@ -114,7 +115,8 @@ def capacity(engine: Engine, root: Path, container: str) -> dict[str, Any]:
         "database_filesystem_free_bytes": database_free,
         "forecast_31_days_two_whoops_bytes": forecast,
         "additional_free_reserve_bytes": 5 * GIB,
-        "method": "measured_max_compressed_payloads_x3_minimum_10_GiB",
+        "daily_export_reserve_bytes": export_reserve,
+        "method": "measured_max_compressed_payloads_x3_minimum_10_GiB_plus_1_GiB_exports",
     }
 
 

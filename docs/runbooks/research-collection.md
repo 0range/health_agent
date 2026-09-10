@@ -110,8 +110,8 @@ is checked separately; the larger Mac free space does not override it.
 points from two wearers before accounting for archive revisions. Forecasts include
 hourly changed WHOOP snapshots for four dates and two profiles, measured maximum
 compressed PostgreSQL payload sizes, minimum per-family size assumptions, and a
-threefold allowance for row/index overhead and growth. A **10 GiB minimum forecast
-plus 5 GiB free reserve** currently fits inside Docker. It is an estimate, not a
+threefold allowance for row/index overhead and growth. A **10 GiB minimum native-archive forecast
+plus 1 GiB for exports and 5 GiB free reserve** currently fits inside Docker. It is an estimate, not a
 preallocated reservation; the checker recalculates it hourly and returns attention
 if either filesystem drops below the required reserve. No unrelated Docker volumes
 were deleted. Existing backups remain separate; this increment does not establish
@@ -125,7 +125,7 @@ These are planning estimates, conditional on complete bedroom nights:
   basic room summaries. If the first bedroom night is 10→11 September: 13–15 September.
 - **7–10 nights:** exploratory within-person associations and candidate lag windows,
   with explicit missingness and context. No causal conclusion from these patterns.
-- **21–28 nights:** reproducible methods, quality and exploratory results report,
+- **14–21 nights:** reproducible methods, quality and exploratory results report,
   usable as a starting manuscript. Adjacent six-second points are correlated;
   they do not turn a few weeks into thousands of independent nights.
 
@@ -161,3 +161,46 @@ if any of them is missing or stale. Per-person current evidence lives in
 `data/research/daily/<profile-id>/YYYY-MM-DD.json`. Another person's fresh pulse
 cannot satisfy a missing person's freshness check. Unrelated WHOOP profiles are
 not automatically enrolled in the room study.
+
+## Daily comparison datasets (14–21-night study)
+
+The research target is a 2–3-week exploratory shared-bedroom study. Live latency
+is not required: at least daily recovery of the preceding day's finest available
+history is required. WHOOP explicitly rejected HR step=1 and returned the allowed
+steps `6, 60, 600`; the collector uses 6. All three native stress graph variants
+are retained, including the extended 24-hour graph. Their point labels show
+minute granularity, but absolute UTC anchoring is still unverified.
+
+After 10:00 Moscow the quality job regenerates datasets for the preceding three
+study dates alongside the existing quality reports. A manual partial current-day
+export is available with:
+
+```sh
+.venv/bin/health-agent research export --day 2026-09-10
+```
+
+Private `data/research/datasets/YYYY-MM-DD/` contains:
+
+- `series-6s.csv`: shared UTC intervals, all eight room fields and each person's HR;
+  count, mean, minimum, maximum, first and last actual observation times per field.
+  Intervals are half-open. Empty counts are zero; missing measured values are blank.
+- `native-observations.csv`: original HR and room timestamps/values, without binning.
+- `stress-native.csv`: every point from each graph variant with native time labels,
+  displayed scores and original graph coordinates. `at_utc` is deliberately empty.
+  Variants overlap and must not be counted as independent measurements.
+- `whoop-context.json`: complete available source fields for overlapping sleep,
+  recovery, cycle, workout and current body snapshots, exact original stage
+  intervals, stress raw replies and HR provenance. Body values are current snapshots;
+  nightly HRV, SpO2 and skin temperature are not continuous measurements.
+- `manifest.json`: profile-to-column mapping, units, generation time, partial-day
+  flag and SHA-256/size of each file. Verify hashes before using an export that
+  might have been interrupted during regeneration. A completed calendar day or
+  successful export does not mean complete data; consult the daily quality report.
+
+The comparison table supports HR/room alignment without pretending samples arrived
+simultaneously. Stress stays separate until its date/timezone anchoring is verified.
+Noise maxima are maxima of returned samples, not acoustic Lmax. Native archives
+and original responses remain in PostgreSQL; daily exports are derived artifacts.
+Storage planning includes another 1 GiB for 31 days of exports plus the existing
+5 GiB free reserve. No temporary live verification dashboard is installed or saved
+in the project.
