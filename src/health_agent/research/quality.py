@@ -127,8 +127,10 @@ class QualityService:
         detail_root: Path,
         sensor_root: Path,
         container: str,
+        profile_id: UUID | None = None,
     ) -> None:
         self.engine, self.sensor, self.root = engine, sensor, root
+        self.profile_id = profile_id or sensor.profile_id
         self.detail_root, self.sensor_root, self.container = (
             detail_root,
             sensor_root,
@@ -287,7 +289,9 @@ class QualityService:
             "interpretation": "99_percent_6s_bins_and_no_gap_over_60s; stress_has_no_verified_UTC_sample_times",
         }
 
-    def run(self, now: datetime | None = None) -> dict[str, Any]:
+    def run(
+        self, now: datetime | None = None, *, persist_status: bool = True
+    ) -> dict[str, Any]:
         now = now or datetime.now(UTC)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         reports = []
@@ -300,7 +304,7 @@ class QualityService:
                     WhoopConnection.auth_status,
                     WhoopConnection.last_error_code,
                 ).where(
-                    WhoopConnection.profile_id == self.sensor.profile_id,
+                    WhoopConnection.profile_id == self.profile_id,
                     WhoopConnection.external_user_id.is_not(None),
                 )
             ).all()
@@ -374,7 +378,7 @@ class QualityService:
             hr_last = session.scalar(
                 select(PilotRecord.payload)
                 .where(
-                    PilotRecord.profile_id == self.sensor.profile_id,
+                    PilotRecord.profile_id == self.profile_id,
                     PilotRecord.kind == "whoop_detail",
                     PilotRecord.payload["resource"].astext == "heart_rate",
                     PilotRecord.payload["calendar_timezone"].astext == str(ZONE),
@@ -422,7 +426,8 @@ class QualityService:
             "daily_review_after": "10:00 Europe/Moscow",
             "configured_whoops": len(accounts),
         }
-        atomic_private_write(
-            self.root / "status.json", json.dumps(result, indent=2).encode()
-        )
+        if persist_status:
+            atomic_private_write(
+                self.root / "status.json", json.dumps(result, indent=2).encode()
+            )
         return result

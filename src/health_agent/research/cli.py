@@ -23,7 +23,7 @@ from health_agent.automation.storage import GlobalRunLock, atomic_private_write
 from health_agent.config import Settings
 from health_agent.db import build_engine
 from health_agent.qingping.service import Connection
-from health_agent.research.quality import QualityService
+from health_agent.research.participants import check_participants
 
 app = typer.Typer(help="Private room/sleep research quality reports.")
 LABEL = "com.orange.health-agent.research-quality"
@@ -60,14 +60,11 @@ def check() -> None:
         typer.echo("status=skipped reason=already_running")
         return
     try:
-        result = QualityService(
+        result = check_participants(
+            settings,
             build_engine(settings),
             Connection.load(settings.qingping_connection_file),
-            settings.research_root,
-            settings.whoop_detail_root,
-            settings.qingping_root,
-            settings.research_postgres_container,
-        ).run()
+        )
         typer.echo(
             f"status={result['status']} daily_reports={len(result['daily_reports'])}"
         )

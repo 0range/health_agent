@@ -18,8 +18,8 @@ verified interfaces; the current archive includes nightly HRV. Noise values are
 not audio, and brief peaks between readings may be missed. The manufacturer's
 archival noise semantics have not been established as Leq/Lmax.
 
-One WHOOP profile is connected today. A second participant requires their own
-profile, authorization and collector configuration; disk planning includes two.
+Each participant requires their own profile, public authorization and app-session
+configuration; disk planning includes two. See the additional-participant setup below.
 Existing historical data before 10 September is retained, but outside this study.
 No automatic retention deletion is configured for research records.
 
@@ -136,3 +136,28 @@ exercise and ventilation changes are useful context when known. See the
 
 Sources: [Qingping cloud API](https://developer.qingping.co/cloud-to-cloud/open-apis),
 [WHOOP public API](https://developer.whoop.com/api/).
+
+## Additional WHOOP participants
+
+`WHOOP_DETAIL_ACCOUNTS_FILE` optionally points to a private JSON list of additional
+participants. The existing `WHOOP_DETAIL_SESSION_FILE` and `WHOOP_DETAIL_ROOT`
+remain the first participant. Each additional entry has `profile_id`,
+`session_file`, and an independent `root`. Paths are relative to the collector's
+working directory. Session files and the manifest must be private (0600).
+
+Create a separate local profile, authorize its public API connection, and verify
+its app session against that same WHOOP user before enabling it. The public
+four-hour automation already enumerates all registered connections. The hourly
+`whoop-detail sync` and `refresh` commands now process every enrolled participant;
+one participant's error is recorded separately and does not stop the others.
+No second launchd job is needed. Incomplete public authorization remains visible
+as a failed detail collection; a manual diagnostic fetch is not proof that the
+scheduled pipeline is complete.
+
+The quality job checks each explicitly enrolled profile against the same physical
+sensor. The main `status.json` aggregates all participants and reports attention
+if any of them is missing or stale. Per-person current evidence lives in
+`data/research/participants/<profile-id>/status.json`; daily evidence remains at
+`data/research/daily/<profile-id>/YYYY-MM-DD.json`. Another person's fresh pulse
+cannot satisfy a missing person's freshness check. Unrelated WHOOP profiles are
+not automatically enrolled in the room study.

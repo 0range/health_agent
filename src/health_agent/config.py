@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     whoop_detail_root: Path = Field(
         default=Path("data/whoop-detail"), validation_alias="WHOOP_DETAIL_ROOT"
     )
+    whoop_detail_accounts_file: Path | None = Field(
+        default=None, validation_alias="WHOOP_DETAIL_ACCOUNTS_FILE"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )

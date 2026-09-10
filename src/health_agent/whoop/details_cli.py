@@ -21,6 +21,7 @@ from health_agent.config import Settings
 from health_agent.db import build_engine
 from health_agent.pilot.storage import PilotStore
 from health_agent.whoop.details import DetailClient, DetailError, DetailService, claims
+from health_agent.whoop.participants import DetailTarget, targets
 
 app = typer.Typer(help="WHOOP app physiological detail archive.")
 LABEL = "com.orange.health-agent.whoop-detail"
@@ -45,8 +46,15 @@ class DetailLaunchdManager(LaunchdManager):
 
 
 @contextmanager
-def operation():
+def operation(target: DetailTarget | None = None):
     settings = Settings()
+    if target is not None:
+        settings = settings.model_copy(
+            update={
+                "whoop_detail_root": target.root,
+                "whoop_detail_session_file": target.session_file,
+            }
+        )
     lock = GlobalRunLock(settings.whoop_detail_root / "sync.lock")
     acquired = False
     try:
@@ -55,7 +63,14 @@ def operation():
             typer.echo("status=skipped reason=already_running")
             raise typer.Exit()
         with httpx.Client(timeout=30) as http:
-            yield settings, DetailClient(http, settings.whoop_detail_session_file)
+            client = DetailClient(http, settings.whoop_detail_session_file)
+            if (
+                target is not None
+                and target.profile_id is not None
+                and client.profile_id != target.profile_id
+            ):
+                raise DetailError("whoop_detail_profile_mismatch")
+            yield settings, client
     except typer.Exit:
         raise
     except Exception as error:  # noqa: BLE001 - never expose upstream bodies/tokens at the CLI boundary
@@ -82,7 +97,26 @@ def operation():
 
 @app.command("sync")
 def sync() -> None:
-    with operation() as (settings, client):
+    failed = False
+    for target in configured_targets():
+        try:
+            sync_target(target)
+        except typer.Exit as error:
+            failed = failed or error.exit_code != 0
+    if failed:
+        raise typer.Exit(1)
+
+
+def configured_targets() -> list[DetailTarget]:
+    try:
+        return targets(Settings())
+    except Exception:  # noqa: BLE001 - manifest errors must not expose private configuration
+        typer.echo("status=failed safe_error=whoop_participants_invalid", err=True)
+        raise typer.Exit(1) from None
+
+
+def sync_target(target: DetailTarget) -> None:
+    with operation(target) as (settings, client):
         report = DetailService(
             PilotStore(build_engine(settings)), settings.whoop_detail_root
         ).sync(client)
@@ -96,15 +130,27 @@ def sync() -> None:
 
 @app.command("refresh")
 def refresh() -> None:
-    with operation() as (_, client):
-        client.refresh()
-        client.verify()
-        typer.echo("status=refreshed identity=verified")
+    failed = False
+    for target in configured_targets():
+        try:
+            with operation(target) as (_, client):
+                client.refresh()
+                client.verify()
+                typer.echo("status=refreshed identity=verified")
+        except typer.Exit as error:
+            failed = failed or error.exit_code != 0
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command("status")
 def status() -> None:
-    with operation() as (settings, client):
+    for target in configured_targets():
+        target_status(target)
+
+
+def target_status(target: DetailTarget) -> None:
+    with operation(target) as (settings, client):
         state_path = settings.whoop_detail_root / "state.json"
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         error_path = settings.whoop_detail_root / "last_error.json"
