@@ -112,7 +112,8 @@ def test_dinner_quiet_hours_skip_pause_and_restart(setup: tuple[MemoryStore, Bra
     store, brain, coach, profile, noon = setup
     late = noon.replace(hour=21)
     coach.handle(profile, "/ел 21:00 Ужин", source_key="dinner", now=late)
-    assert coach.due(profile, late + timedelta(hours=10)) == []
+    assert all(not notice.key.startswith("meal:") for notice in coach.due(profile, late + timedelta(hours=10)))
+    assert coach.due(profile, late + timedelta(hours=10))[0].key.startswith("breakfast:")
 
     lunch = noon + timedelta(days=1)
     coach.handle(profile, "/ел 12:00 Обед", source_key="lunch", now=lunch)
@@ -236,7 +237,7 @@ def test_all_structured_fields_are_normalized_without_crash(setup: tuple[MemoryS
     })
     coach.handle(profile, "/ел рис", source_key="malformed", now=noon)
     analysis = store.list(profile, "food", "meal")[0].payload["analysis"]
-    assert analysis["foods"] == []
+    assert analysis["foods"] == ["рис"]
     assert analysis["portion_estimate"] is None
     assert isinstance(analysis["unknowns"], list)
     assert analysis["kcal"] is None and analysis["protein_g"] is None

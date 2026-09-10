@@ -13,6 +13,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
+from health_agent.pilot.food_additions import additions, reconcile
 from health_agent.pilot.food_history import build_food_history
 
 _TIME = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
@@ -50,6 +51,8 @@ class FoodCoach:
         self._aware(now)
         command = text.strip()
         lowered = command.lower()
+        if lowered.startswith("/завтрак"):
+            return self._configure_breakfast(profile_id, command, source_key, now)
         if lowered.startswith("/напоминания выкл"):
             self._setting(profile_id, source_key, False, now)
             return "Напоминания о плане питания выключены."
@@ -112,6 +115,9 @@ class FoodCoach:
         if not self._reminders_enabled(profile_id):
             return []
         notices: list[Notice] = []
+        breakfast = self._breakfast_notice(profile_id, now)
+        if breakfast is not None:
+            notices.append(breakfast)
         meal = self._latest_meal(profile_id)
         if meal is not None and meal.payload.get("category") != "dinner":
             reminder = self._meal_notice(profile_id, meal, now)
@@ -121,6 +127,61 @@ class FoodCoach:
         if weekly is not None:
             notices.append(weekly)
         return notices
+
+    def _breakfast_schedule(self, profile_id: UUID) -> tuple[bool, time]:
+        record = self._by_source(profile_id, "settings", "breakfast_schedule")
+        payload = record.payload if record is not None else {}
+        try:
+            scheduled = time.fromisoformat(str(payload.get("time", "09:00")))
+            if scheduled.tzinfo is not None:
+                raise ValueError
+        except ValueError:
+            scheduled = time(9, 0)
+        return bool(payload.get("enabled", True)), scheduled
+
+    def _configure_breakfast(self, profile_id: UUID, text: str, source_key: str, now: datetime) -> str:
+        _, scheduled = self._breakfast_schedule(profile_id)
+        value = text.removeprefix("/завтрак").strip().lower()
+        if value not in {"вкл", "выкл"}:
+            if re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", value) is None:
+                return "Укажите время по Москве: /завтрак 09:00, либо /завтрак вкл или /завтрак выкл."
+            hour, minute = map(int, value.split(":"))
+            scheduled = time(hour, minute)
+        prior = self._by_source(profile_id, "breakfast_setting", source_key)
+        if prior is None:
+            prior = self._store.put(profile_id, "food", "breakfast_setting", source_key,
+                                    {"time": scheduled.strftime("%H:%M"), "enabled": value != "выкл"}, at=now)
+            current = self._by_source(profile_id, "settings", "breakfast_schedule")
+            if current is None:
+                self._store.put(profile_id, "food", "settings", "breakfast_schedule", prior.payload, at=now)
+            else:
+                self._store.patch(profile_id, current.id, prior.payload)
+        enabled, scheduled = self._breakfast_schedule(profile_id)
+        if not enabled:
+            return "Утренние напоминания о завтраке выключены."
+        text = f"Напомню о завтраке в {scheduled:%H:%M} по Москве, если завтрак ещё не записан."
+        if not self._reminders_enabled(profile_id):
+            text += " Сейчас все напоминания о питании выключены; включить: /напоминания вкл."
+        return text
+
+    def _breakfast_notice(self, profile_id: UUID, now: datetime) -> Notice | None:
+        enabled, scheduled = self._breakfast_schedule(profile_id)
+        local = now.astimezone(_USER_ZONE)
+        target = datetime.combine(local.date(), scheduled, _USER_ZONE)
+        if not enabled or not target <= local < target + timedelta(hours=2):
+            return None
+        if self._quiet(now, self._protocol(profile_id)):
+            return None
+        key = f"breakfast:{local.date().isoformat()}"
+        if self._by_source(profile_id, "notice", key) is not None:
+            return None
+        for meal in self._store.list(profile_id, "food", "meal"):
+            occurred = self._from_iso(meal.payload["occurred_at"]).astimezone(_USER_ZONE)
+            if occurred.date() == local.date() and occurred <= local and (
+                meal.payload.get("category") == "breakfast" or occurred >= target
+            ):
+                return None
+        return Notice(key, "Доброе утро! Напоминаю про завтрак. Когда поешь, пришли фото или коротко напиши, что было.")
 
     def _meal_notice(self, profile_id: UUID, meal: Record, now: datetime) -> Notice | None:
         anchor = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
@@ -359,6 +420,8 @@ class FoodCoach:
             if comment is not None and all(item.id != comment.id for item in comment_records):
                 comment_records.append(comment)
             comments = [str(item.payload["text"]) for item in sorted(comment_records, key=lambda item: item.at)]
+            evidence = additions([str(payload["original"]), str(payload["caption"]), *comments])
+            payload.update(evidence)
             chosen_image = image_path
             if chosen_image is None and payload.get("photos"):
                 chosen_image = Path(str(payload["photos"][-1]["path"]))
@@ -376,6 +439,7 @@ class FoodCoach:
                 {"meal": {
                     "text": payload["original"], "caption": chosen_caption,
                     "portion": payload.get("user_portion"), "comments": comments,
+                    **evidence,
                     "previous_analysis": payload.get("previous_analysis"),
                     "photo_analyses": [item.get("analysis") for item in payload.get("photos", [])
                                        if item.get("analysis") is not None],
@@ -410,6 +474,12 @@ class FoodCoach:
                     str(payload["category"]),
                     self._protocol(profile_id), payload.get("user_portion"),
                 )
+                payload["analysis"] = reconcile(payload["analysis"], evidence, payload.get("previous_analysis"), _NUTRIENTS)
+                current = payload["analysis"]
+                unconsumed = self._components({"foods": [*evidence["planned_additions"], *evidence["excluded_additions"]]})
+                actual = self._components({"foods": current["foods"]})
+                current["plate_components"] = [key for key in _COMPONENT_LABELS
+                                               if key in (set(current["plate_components"]) - unconsumed) | actual]
                 payload["analysis_revisions"] = [*payload.get("analysis_revisions", []), {
                     "raw": raw, "derived": derived,
                     "reason": "photo" if chosen_image is not None else "text",
@@ -843,6 +913,8 @@ class FoodCoach:
             return None
         result = dict(value)
         foods = result.get("foods")
+        if isinstance(foods, str):
+            foods = [foods]
         result["foods"] = ([item.strip() for item in foods
                             if isinstance(item, str) and item.strip()][:50]
                            if isinstance(foods, list) else [])
@@ -852,6 +924,8 @@ class FoodCoach:
                                   if isinstance(user_portion, str) and user_portion.strip()
                                   else None)
         unknowns = result.get("unknowns")
+        if isinstance(unknowns, str):
+            unknowns = [unknowns]
         result["unknowns"] = ([item.strip() for item in unknowns
                                if isinstance(item, str) and item.strip()][:50]
                               if isinstance(unknowns, list) else [])
@@ -894,7 +968,8 @@ class FoodCoach:
         if isinstance(analysis, dict):
             # Render from current validated fields, including older saved analyses.
             reply = self._render_feedback(
-                analysis, str(payload.get("category", "")), self._protocol(profile_id),
+                {**analysis, "planned_additions": payload.get("planned_additions", [])},
+                str(payload.get("category", "")), self._protocol(profile_id),
             )
             kcal = analysis.get("kcal")
             if (isinstance(kcal, (int, float)) and not isinstance(kcal, bool)
@@ -904,6 +979,10 @@ class FoodCoach:
                 reply += " Калорийность пока неизвестна."
         else:
             reply = "Приём пищи сохранён; анализ сейчас недоступен."
+        if payload.get("confirmed_additions"):
+            reply += "\nУчтены дополнения: " + ", ".join(payload["confirmed_additions"]) + "."
+        if payload.get("planned_additions"):
+            reply += "\nВ плане добавить: " + ", ".join(payload["planned_additions"]) + ". Пока не считаю это съеденным."
         return reply + "\n" + self._next_meal_text(profile_id, meal)
 
     @staticmethod
@@ -916,7 +995,10 @@ class FoodCoach:
     def _next_meal_text(self, profile_id: UUID, meal: Record) -> str:
         payload = meal.payload
         if payload.get("category") == "dinner":
-            return "Следующий приём — завтрак после пробуждения; время пока не задано."
+            enabled, scheduled = self._breakfast_schedule(profile_id)
+            if enabled and self._reminders_enabled(profile_id):
+                return f"Следующий приём — завтрак после пробуждения. Напоминание настроено на {scheduled:%H:%M} (Москва)."
+            return "Следующий приём — завтрак после пробуждения. Утренние напоминания выключены."
         protocol = self._protocol(profile_id)
         target = self._meal_target(payload, protocol)
         control = self._latest_control(profile_id, meal.id)
@@ -953,8 +1035,9 @@ class FoodCoach:
         labels = [_COMPONENT_LABELS[item] for item in _COMPONENT_LABELS if item in components]
         observation = f"В записи отмечены: {', '.join(labels)}."
         expected = FoodCoach._expected_components(protocol, category)
+        planned_components = FoodCoach._components({"foods": analysis.get("planned_additions", [])})
         missing = next((item for item in _COMPONENT_LABELS
-                        if item in expected and item not in components), None)
+                        if item in expected and item not in components and item not in planned_components), None)
         if missing is not None:
             return f"{observation} По выбранному правилу можно добавить {_COMPONENT_LABELS[missing]}."
         if analysis.get("portion_estimate") is None and analysis.get("portion_user") is None:
@@ -1038,6 +1121,12 @@ class FoodCoach:
             "Use null only when the food or quantity cannot be reasonably estimated; never claim "
             "an assumed weight is measured. Cooking duration (e.g. oats 20 minutes) is not a weight. "
             "Coconut/almond/oat/soy milk and plant-based yogurt are NOT dairy. "
+            "foods and unknowns MUST be arrays of Russian strings, never a single string. "
+            "Use text descriptions as evidence even without an image. "
+            "confirmed_additions are foods the user explicitly added: include them in the entire "
+            "meal and recalculate ALL nutrient totals, stating any assumed portion. "
+            "planned_additions are intentions, not consumed foods: exclude them from foods and nutrients. "
+            "excluded_additions retract earlier additions: exclude them from the meal. "
             "User corrections override previous interpretations. For a single photo return the "
             "entire corrected meal, not just the comment ingredient. Preserve unrelated ingredients. "
             "For multiple photos consider previous observations; do not count repeat views twice. "
