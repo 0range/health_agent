@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     qingping_root: Path = Field(
         default=Path("data/qingping"), validation_alias="QINGPING_ROOT"
     )
+    research_root: Path = Field(
+        default=Path("data/research"), validation_alias="RESEARCH_ROOT"
+    )
+    research_postgres_container: str = Field(
+        default="health-agent-postgres-1", validation_alias="RESEARCH_POSTGRES_CONTAINER"
+    )
+    whoop_detail_session_file: Path = Field(
+        default=Path(".tokens/whoop-web.json"), validation_alias="WHOOP_DETAIL_SESSION_FILE"
+    )
+    whoop_detail_root: Path = Field(
+        default=Path("data/whoop-detail"), validation_alias="WHOOP_DETAIL_ROOT"
+    )
     metabase_url: str = Field(
         default="http://127.0.0.1:53000", validation_alias="METABASE_URL"
     )

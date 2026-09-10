@@ -61,3 +61,12 @@ The Mac must be awake, Docker/PostgreSQL running, and cloud/device network acces
 available. launchd resumes on availability; polling faster cannot reconstruct
 measurements the sensor never stored. Validate actual timing and gaps before
 using the archive in research.
+
+## Research operation from 10 September 2026
+
+The live device now uses verified 6-second collection / 60-second cloud reporting.
+History can include the sample just before the requested starting second; the
+collector preserves bounded adjacent readings with their original timestamps,
+while rejecting unrelated windows. Batch insertion makes daily replay idempotent
+without a transaction per sample. After 09:00 Moscow it also replays the previous
+three complete study dates once daily. See [daily quality and storage checks](research-collection.md).

@@ -57,3 +57,15 @@ not a preregistration. Publishing any personal data requires a separate decision
 Detailed WHOOP app interfaces are not the public developer contract and require
 separate regression checks and session renewal. Raw exports must identify them
 as such; data seen once does not establish unattended collection reliability.
+
+## Start and review schedule agreed 10 September
+
+Archive collection starts today, 10 September 2026, in Europe/Moscow. The setup
+day is partial; office readings remain office readings. The daily completeness
+review starts 11 September at 10:00 Moscow, backed by hourly freshness/storage
+checks and three-day reconciliation. A proposed review cadence is 3–5 complete
+bedroom nights for descriptive plots, 7–10 for exploratory hypotheses and 21–28
+for a methods/results report. These are work milestones, not validated sample-size
+thresholds. The operational six-second coverage threshold is >=99% and no gap over
+60 seconds; analysis-specific inclusion rules still need to be fixed before
+looking at exposure/outcome associations. See [operations](../runbooks/research-collection.md).

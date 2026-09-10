@@ -107,6 +107,7 @@ from health_agent.reminders.launchd import (
 from health_agent.reminders.repository import ReminderRepository
 from health_agent.reminders.telegram import parse_snooze_duration
 from health_agent.reminders.time import parse_local_datetime
+from health_agent.research.cli import app as research_app
 from health_agent.staging import (
     StagingConfigurationError,
     StagingEnvironment,
@@ -133,6 +134,7 @@ from health_agent.whoop.auth_service import (
 )
 from health_agent.whoop.client import WhoopClient
 from health_agent.whoop.dashboard import bootstrap_whoop_dashboard
+from health_agent.whoop.details_cli import app as whoop_detail_app
 from health_agent.whoop.oauth import WhoopOAuth
 from health_agent.whoop.status import get_whoop_status
 from health_agent.whoop.sync import sync_whoop
@@ -170,6 +172,8 @@ app.add_typer(reminder_app, name="reminder")
 app.add_typer(sheets_app, name="sheets")
 app.add_typer(pilot_app, name="pilot")
 app.add_typer(qingping_app, name="qingping")
+app.add_typer(research_app, name="research")
+app.add_typer(whoop_detail_app, name="whoop-detail")
 app.add_typer(lab_extraction_app, name="lab-extract")
 app.add_typer(visit_app, name="visit")
 app.add_typer(create_calendar_cli(), name="calendar")

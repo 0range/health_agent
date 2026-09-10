@@ -180,3 +180,61 @@ def test_sensor_faults_are_not_measurements_but_battery_charging_is_valid():
             "battery": {"status": 1, "value": 95},
         }
     ) == {"battery": {"value": 95, "unit": "%"}}
+
+
+def test_boundary_sample_before_integer_start_does_not_stall(clean_database, tmp_path):
+    service = svc(clean_database, tmp_path)
+    service.sync(Client([]), START + timedelta(minutes=20, microseconds=500))
+    client = Client([])
+    client.history = lambda mac, start, end: [
+        measurement(datetime.fromtimestamp(start - 1, UTC))
+    ]
+    result = service.sync(client, START + timedelta(minutes=21, microseconds=500))
+    assert result["last_error"] is None
+    assert result["samples"] == 1
+
+
+def test_calendar_backfill_recovers_previous_midnight_after_24h_overlap(
+    clean_database, tmp_path
+):
+    service = svc(clean_database, tmp_path)
+    client = Client([])
+    service.sync(client, START + timedelta(days=1, hours=7))
+    client.rows = [measurement(START + timedelta(minutes=1))]
+    # On the next calendar day this is older than a trailing 24-hour overlap.
+    result = service.sync(client, START + timedelta(days=2, hours=7))
+    assert result["samples"] == 1
+    assert (
+        json.loads(service.state_path.read_text())["calendar_backfill_date"]
+        == "2026-09-12"
+    )
+
+
+def test_failed_calendar_replay_is_retried_without_rewinding_cursor(
+    clean_database, tmp_path
+):
+    service = svc(clean_database, tmp_path)
+    client = Client([])
+    service.sync(client, START + timedelta(days=1, hours=7))
+    service.sync(client, START + timedelta(days=2, hours=5, minutes=59))
+    real_history = client.history
+
+    def fail_old_day(mac, start, end):
+        if start < (START + timedelta(days=1)).timestamp():
+            raise QingpingError("qingping_api_unavailable")
+        return real_history(mac, start, end)
+
+    client.history = fail_old_day
+    now = START + timedelta(days=2, hours=6)
+    with pytest.raises(QingpingError):
+        service.sync(client, now)
+    state = json.loads(service.state_path.read_text())
+    assert state["calendar_backfill_date"] == "2026-09-11"
+    assert datetime.fromisoformat(state["cursor"]) == now
+    client.history = real_history
+    client.rows = [measurement(START + timedelta(minutes=1))]
+    assert service.sync(client, now)["samples"] == 1
+    assert (
+        json.loads(service.state_path.read_text())["calendar_backfill_date"]
+        == "2026-09-12"
+    )

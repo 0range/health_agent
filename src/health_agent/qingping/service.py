@@ -7,15 +7,17 @@ import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 
 from health_agent.automation.storage import atomic_private_write, require_private_file
 from health_agent.db import session_scope
 from health_agent.pilot.storage import PilotRecord, PilotStore
 from health_agent.qingping.client import QingpingClient, QingpingError
+from health_agent.research.calendar import ZONE, bounds, recent_days
 
 KIND = "room_measurement"
 FIELDS = {
@@ -159,6 +161,66 @@ class QingpingService:
                     if row.payload.get("room") != room:
                         row.payload = {**row.payload, "room": room}
 
+    def _save_window(
+        self,
+        client: QingpingClient,
+        device: dict[str, Any],
+        start: datetime,
+        end: datetime,
+        now: datetime,
+    ) -> int:
+        # Live history includes the sample immediately preceding start_time
+        # (observed one second before the requested integer). Accept a bounded
+        # 60-second overlap, keep native times, and reject unrelated windows.
+        requested_start, requested_end = int(start.timestamp()), int(end.timestamp())
+        rows = client.history(self.connection.mac, requested_start, requested_end)
+        values = []
+        for raw in rows:
+            at = observed_at(raw)
+            if not requested_start - 60 <= at.timestamp() <= requested_end + 60:
+                raise QingpingError("qingping_history_outside_window")
+            if at < self.connection.start_at or at > now:
+                continue
+            values.append(
+                {
+                    "id": uuid4(),
+                    "profile_id": self.connection.profile_id,
+                    "domain": "shared",
+                    "kind": KIND,
+                    "source_key": f"qingping:{self.connection.mac}:{at.isoformat()}",
+                    "at": at,
+                    "payload": {
+                        "provider": "qingping",
+                        "device_mac": self.connection.mac,
+                        "product": device.get("info", {}).get("product", {}),
+                        "device_metadata": {
+                            "firmware": device.get("info", {}).get("version"),
+                            "settings": device.get("info", {}).get("setting", {}),
+                            "observed_at": now.isoformat(),
+                        },
+                        "room": self.connection.room_at(at),
+                        "metrics": metrics(raw),
+                        "raw": raw,
+                    },
+                }
+            )
+        # Bounded batches avoid one transaction per six-second sample on replay.
+        with session_scope(self.store.engine) as session:
+            for offset in range(0, len(values), 200):
+                session.execute(
+                    insert(PilotRecord)
+                    .values(values[offset : offset + 200])
+                    .on_conflict_do_nothing(
+                        index_elements=[
+                            "profile_id",
+                            "domain",
+                            "kind",
+                            "source_key",
+                        ]
+                    )
+                )
+        return len(rows)
+
     def sync(
         self, client: QingpingClient, now: datetime | None = None
     ) -> dict[str, Any]:
@@ -190,38 +252,25 @@ class QingpingService:
             processed = 0
             while start < target:
                 end = min(start + timedelta(days=1), target)
-                rows = client.history(
-                    self.connection.mac, int(start.timestamp()), int(end.timestamp())
-                )
-                for raw in rows:
-                    at = observed_at(raw)
-                    if not start <= at <= end:
-                        raise QingpingError("qingping_history_outside_window")
-                    self.store.put(
-                        self.connection.profile_id,
-                        "shared",
-                        KIND,
-                        f"qingping:{self.connection.mac}:{at.isoformat()}",
-                        {
-                            "provider": "qingping",
-                            "device_mac": self.connection.mac,
-                            "product": device.get("info", {}).get("product", {}),
-                            "device_metadata": {
-                                "firmware": device.get("info", {}).get("version"),
-                                "settings": device.get("info", {}).get("setting", {}),
-                                "observed_at": now.isoformat(),
-                            },
-                            "room": self.connection.room_at(at),
-                            "metrics": metrics(raw),
-                            "raw": raw,
-                        },
-                        at=at,
-                    )
-                    processed += 1
+                processed += self._save_window(client, device, start, end, now)
                 cursor = max(cursor, end)
                 state.update(cursor=cursor.isoformat())
                 self._save_state(state)
                 start = end
+            # Revisit complete calendar days, not merely the trailing 24 hours.
+            local = now.astimezone(ZONE)
+            if (
+                local.hour >= 9
+                and state.get("calendar_backfill_date") != local.date().isoformat()
+            ):
+                for day in recent_days(now):
+                    day_start, day_end = bounds(day)
+                    day_start = max(day_start, self.connection.start_at)
+                    if day_start < day_end:
+                        processed += self._save_window(
+                            client, device, day_start, day_end, now
+                        )
+                state["calendar_backfill_date"] = local.date().isoformat()
             interval = (
                 device.get("info", {}).get("setting", {}).get("report_interval", 900)
             )
