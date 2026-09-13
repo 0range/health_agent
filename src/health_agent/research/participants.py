@@ -14,6 +14,7 @@ from health_agent.qingping.service import Connection
 from health_agent.research.calendar import ZONE, recent_days
 from health_agent.research.dataset import export_day
 from health_agent.research.quality import QualityService
+from health_agent.research.weather import sync as sync_weather
 from health_agent.whoop.participants import targets
 
 
@@ -75,6 +76,13 @@ def check_participants(
             else "attention",
             "participants": per_person,
         }
+    try:
+        weather = sync_weather(settings, engine, now) if now.astimezone(ZONE).hour >= 10 else {"status": "scheduled_after_10"}
+    except Exception:  # noqa: BLE001 - invalid optional config cannot block core collection
+        weather = {"status": "attention", "safe_error": "weather_config_failed"}
+    combined["sources"]["weather"] = weather
+    if weather["status"] == "attention":
+        combined["status"] = "attention"
     combined["datasets"] = []
     for day in recent_days(now) if now.astimezone(ZONE).hour >= 10 else []:
         try:

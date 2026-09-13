@@ -55,7 +55,7 @@ from health_agent.visits.telegram import DatabaseVisitCommands
 
 HELP = {
     "sleep": HELP_TEXT
-    + "\n\nПомогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку.\n/дневник — записи\n/итоги — разбор недели\n/утро 09:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
+    + "\n\nПомогаю со сном и помню наши обсуждения.\nУтром напиши, как себя чувствуешь, или /сон и заметку.\n/опрос — два вопроса кнопками\n/дневник — записи\n/итоги — разбор недели\n/утро 08:00 — время вопроса\n/утро выкл — отключить\n/цели — твои цели\nМедицинские PDF можно присылать сюда, как раньше.",
     "food": (
         "Просто фотографируй еду. Можно прислать несколько фото и дописать комментарий. "
         "Сохраню всё, коротко разберу тарелку и сам напомню о следующем приёме.\n"
@@ -423,6 +423,15 @@ def build_coach(
     raise ValueError("unknown_pilot_domain")
 
 
+class SleepTelegramAPI(TelegramBotAPI):
+    """Derive stable reply buttons from durable, versioned questionnaire prompts."""
+
+    def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int:
+        from health_agent.pilot.sleep_checkin import keyboard
+
+        return super().send_message(chat_id, text, reply_markup=keyboard(text))
+
+
 def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
     if domain not in HELP:
         raise ValueError("unknown_pilot_domain")
@@ -445,7 +454,7 @@ def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:
         engine = build_engine(settings)
         store = PilotStore(engine)
         coach, brain = build_coach(settings, store, profile_id, domain)
-        gateway = TelegramBotAPI(credential.token)
+        gateway = (SleepTelegramAPI if domain == "sleep" else TelegramBotAPI)(credential.token)
         messenger = TelegramMessenger(credential.bot_id, gateway, state)
         replies = PrivateReplyStore(root / "prepared-replies")
         actions = PilotActions(coach, store, domain, profile_id)

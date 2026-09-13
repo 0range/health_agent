@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from health_agent.pilot import food_carbs
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
 from health_agent.pilot.food_additions import additions, reconcile
 from health_agent.pilot.food_history import build_food_history
@@ -75,6 +76,9 @@ class FoodCoach:
             return "Опишите приём пищи или приложите фотографию."
         if attachment is not None:
             return self._photo(profile_id, command, source_key, now, attachment)
+        saved_meal = self._by_source(profile_id, "meal", source_key)
+        if saved_meal is not None:
+            return self._meal(profile_id, command, source_key, now, None)
         saved_comment = self._by_source(profile_id, "comment", source_key)
         if saved_comment is not None:
             meal = self._store.get(profile_id, str(saved_comment.payload["meal_id"]))
@@ -99,11 +103,20 @@ class FoodCoach:
         ):
             return self._confirm_text(profile_id, source_key, now)
         candidate = self._comment_candidate(profile_id, now)
+        if re.search(r"посмотри.*(?:переписк|истори)|что.*(?:съел|ел сегодня)", lowered):
+            return self._journal(profile_id, now)
+
         if self._is_question(command):
             if candidate is not None and self._plate_question(command):
                 return self._comment(profile_id, candidate, command, source_key, now)
             return "С общими вопросами лучше обратиться в основной Health Agent. Здесь я сохраняю питание."
-        if self._clear_meal(command):
+        if self._not_consumed(command):
+            if candidate is not None and any(additions([command]).values()):
+                return self._comment(profile_id, candidate, command, source_key, now)
+            return "Понял, пока не записываю это как съеденное. Когда поешь, напиши состав или пришли фото."
+        if candidate is not None and re.search(r"^(?:и |а )?(?:ещ[её]|добав|это |не |убери|исправ)", lowered):
+            return self._comment(profile_id, candidate, command, source_key, now)
+        if self._clear_meal(command) or self._answer_to_meal_notice(profile_id, command, now):
             return self._meal(profile_id, command, source_key, now, None)
         if candidate is not None:
             return self._comment(profile_id, candidate, command, source_key, now)
@@ -416,6 +429,7 @@ class FoodCoach:
             comment_records = [
                 item for item in self._store.list(profile_id, "food", "comment")
                 if item.payload.get("meal_id") == meal.id
+                and not item.payload.get("superseded_by_meal")
             ]
             if comment is not None and all(item.id != comment.id for item in comment_records):
                 comment_records.append(comment)
@@ -476,6 +490,7 @@ class FoodCoach:
                 )
                 payload["analysis"] = reconcile(payload["analysis"], evidence, payload.get("previous_analysis"), _NUTRIENTS)
                 current = payload["analysis"]
+                current["carbohydrate_sources"] = food_carbs.classify(current["foods"])
                 unconsumed = self._components({"foods": [*evidence["planned_additions"], *evidence["excluded_additions"]]})
                 actual = self._components({"foods": current["foods"]})
                 current["plate_components"] = [key for key in _COMPONENT_LABELS
@@ -682,115 +697,7 @@ class FoodCoach:
         history = build_food_history(self._store, profile_id, now, days=7)
         if history["recorded_meal_count"] == 0:
             return "Сохранённых приёмов пищи нет; соблюдение плана неизвестно."
-        fallback = self._bounded_weekly(self._weekly_facts(history, self._protocol(profile_id)))
-        text = fallback
-        try:
-            suggestion = self._brain(
-                "Кратко по-русски: одна осторожная идея следующего шага по журналу питания. "
-                "Учитывайте регулярность, разнообразие и заданную рамку тарелки. Не считайте "
-                "неполный журнал полным рационом, не ставьте диагнозов и не выдумывайте числа.",
-                {"recorded_food_history": history, "protocol": self._protocol(profile_id)},
-                image_path=None,
-            ).strip()
-            if self._safe_weekly_suggestion(suggestion):
-                addition = f" Возможная идея: {suggestion}"
-                if len(fallback) + len(addition) <= 1200:
-                    text = fallback + addition
-        except Exception:  # noqa: BLE001 - stable factual fallback at provider boundary
-            text = fallback
-        return text
-
-    @staticmethod
-    def _bounded_weekly(value: str) -> str:
-        if len(value) <= 1200:
-            return value
-        suffix = (
-            " Это только записи, а не полный рацион; пропуски не означают голодание. "
-            "Следующий шаг: продолжать отмечать приёмы фото и короткими уточнениями."
-        )
-        head = value.removesuffix(suffix).rstrip()
-        budget = 1200 - len(suffix) - 2
-        return f"{head[:budget].rstrip()}…{suffix}"
-
-    @staticmethod
-    def _safe_weekly_suggestion(value: str) -> bool:
-        lowered = value.casefold()
-        forbidden = ("диабет", "рак", "лекарств", "запрещ", "голода", "обязательно")
-        return bool(value) and len(value) <= 240 and "{" not in value and not any(
-            word in lowered for word in forbidden
-        )
-
-    @staticmethod
-    def _weekly_facts(history: dict[str, Any], protocol: dict[str, Any]) -> str:
-        meals = int(history["recorded_meal_count"])
-        days = len(history["recorded_days"])
-        nutrient_counts = {
-            key: sum(meal["nutrients_estimated"].get(key) is not None
-                     for meal in history["meals"])
-            for key in _NUTRIENTS
-        }
-        ordered = sorted(history["meals"], key=lambda meal: meal["recorded_at"])
-        intervals: list[float] = []
-        for recorded_day in history["recorded_days"]:
-            day_meals = [meal for meal in ordered if FoodCoach._from_iso(
-                meal["recorded_at"]).astimezone(_USER_ZONE).date().isoformat() == recorded_day]
-            closed = False
-            previous: dict[str, Any] | None = None
-            for current in day_meals:
-                if previous is not None and not closed:
-                    previous_end = FoodCoach._from_iso(
-                        previous.get("ended_at", previous["recorded_at"]),
-                    )
-                    current_at = FoodCoach._from_iso(current["recorded_at"])
-                    interval = (current_at - previous_end).total_seconds() / 3600
-                    if interval >= 0:
-                        intervals.append(interval)
-                if current.get("category") == "dinner":
-                    closed = True
-                previous = current
-        interval_note = (
-            f"Интервалы в плане: {sum(2.5 <= value <= 4.5 for value in intervals)} "
-            f"из {len(intervals)} (между окончанием и следующим приёмом внутри дня)."
-            if intervals else "Для оценки интервалов внутри дня записей недостаточно."
-        )
-        known = ", ".join(f"{key}={count}" for key, count in nutrient_counts.items())
-        foods = sorted({food for meal in history["meals"] for food in meal["foods"]}, key=str.casefold)
-        variety = f"Разнообразие по записям: {len(foods)} позиций"
-        examples: list[str] = []
-        example_length = 0
-        for food in foods:
-            remaining = 160 - example_length
-            if remaining <= 0:
-                break
-            sample = food[:remaining]
-            examples.append(sample)
-            example_length += len(sample) + 2
-        if examples:
-            variety += f" ({', '.join(examples)})"
-        rules = protocol.get("plate_rules")
-        if isinstance(rules, dict) and rules:
-            eligible = 0
-            matched = 0
-            for meal in history["meals"]:
-                expected = FoodCoach._expected_components(protocol, str(meal.get("category", "")))
-                if expected:
-                    eligible += 1
-                    observed = FoodCoach._components({"foods": meal["foods"]})
-                    matched += expected <= observed
-            framework = (
-                f"По рамке тарелки видны все заданные компоненты в {matched} из {eligible} записей"
-                if eligible else "Рамка тарелки настроена, но сопоставимых записей нет"
-            )
-        else:
-            framework = "Рамка тарелки не настроена"
-        dates = ", ".join(history["recorded_days"])
-        return (
-            f"Сохранено {meals} приёмов за {days} дней ({dates}). {interval_note} "
-            f"{variety}. {framework}. "
-            f"Число записей с известными оценками нутриентов: {known}. "
-            "Это только записи, а не полный рацион; пропуски не означают голодание. "
-            "Следующий шаг: продолжать отмечать приёмы фото и короткими уточнениями."
-        )
+        return food_carbs.weekly(history)
 
     def _pending_photo(self, profile_id: UUID) -> Record | None:
         return next((item for item in self._store.list(profile_id, "food", "photo")
@@ -833,11 +740,47 @@ class FoodCoach:
         lowered = text.lower().strip()
         if lowered.startswith("/ел"):
             return True
-        if re.search(r"\b(?:поел|съел|позавтракал|пообедал|поужинал)\b", lowered):
+        if re.search(r"\b(?:поел[аи]?|съел[аи]?|покушал[аи]?|позавтракал[аи]?|пообедал[аи]?|поужинал[аи]?)\b", lowered):
             return True
         return bool(re.search(
             r"^(?:завтрак|обед|ужин|перекус)\s*(?::|-)?\s+\S+", lowered,
         ))
+
+    @staticmethod
+    def _not_consumed(text: str) -> bool:
+        return bool(re.search(
+            r"\b(?:не\s+(?:ел[аи]?|поел[аи]?|съел[аи]?|покушал[аи]?|завтракал[аи]?)|"
+            r"собираюсь|планирую|буду|хочу|потом|завтра|позже|добавлю|съем|поем)\b", text.casefold()))
+
+    def _answer_to_meal_notice(self, profile_id: UUID, text: str, now: datetime) -> bool:
+        food_words = r"каш|яич|омлет|хлеб|блин|йогур|творог|рыб|куриц|говядин|суп|салат|греч|овся|рис|макарон|сыр|бутерброд"
+        if re.search(food_words, text.casefold()) is None:
+            return False
+        latest = self._latest_meal(profile_id)
+        for notice in self._store.list(profile_id, "food", "notice", limit=100):
+            if not notice.source_key.startswith(("breakfast:", "meal:")):
+                continue
+            delivered = self._from_iso(str(notice.payload.get("delivered_at", notice.at.isoformat())))
+            if not timedelta(0) <= now - delivered <= timedelta(hours=3):
+                continue
+            if latest is not None and self._from_iso(latest.payload["occurred_at"]) >= delivered:
+                continue
+            return True
+        return False
+
+    def _journal(self, profile_id: UUID, now: datetime) -> str:
+        history = build_food_history(self._store, profile_id, now, days=1)
+        labels = {"breakfast": "завтрак", "lunch": "обед", "afternoon": "перекус", "dinner": "ужин"}
+        lines = ["Сегодня записано:"]
+        for meal in reversed(history["meals"]):
+            at = self._from_iso(meal["recorded_at"]).astimezone(_USER_ZONE)
+            lines.append(f"{at:%H:%M} — {labels.get(meal['category'], 'приём')}: {', '.join(meal['foods']) or 'состав уточняется'}.")
+        latest = self._latest_meal(profile_id)
+        if not history["meals"]:
+            return "Сегодня пока нет записанных приёмов пищи."
+        if latest:
+            lines.append(self._next_meal_text(profile_id, latest))
+        return "\n".join(lines)[:1200]
 
     def _protocol(self, profile_id: UUID) -> dict[str, Any]:
         record = self._by_source(profile_id, "settings", "protocol")
@@ -979,6 +922,10 @@ class FoodCoach:
                 reply += " Калорийность пока неизвестна."
         else:
             reply = "Приём пищи сохранён; анализ сейчас недоступен."
+        if isinstance(analysis, dict):
+            carb_note = food_carbs.feedback(analysis.get("foods"))
+            if carb_note:
+                reply += "\n" + carb_note
         if payload.get("confirmed_additions"):
             reply += "\nУчтены дополнения: " + ", ".join(payload["confirmed_additions"]) + "."
         if payload.get("planned_additions"):

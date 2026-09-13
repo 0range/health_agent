@@ -152,3 +152,22 @@ def install(env_file: Annotated[Path, typer.Option("--env-file")]) -> None:
     rotate_safe_logs(paths)
     result = QualityLaunchdManager(paths).install()
     typer.echo(f"status={result} interval_seconds=3600 daily_local_time=10:00")
+
+
+@app.command("weather-sync")
+def weather_sync() -> None:
+    """Backfill outdoor hourly context for completed Moscow study days."""
+    from health_agent.research.weather import sync
+
+    settings = Settings()
+    lock = GlobalRunLock(settings.research_root / "quality.lock")
+    if not lock.acquire():
+        typer.echo("status=skipped reason=already_running")
+        return
+    try:
+        result = sync(settings, build_engine(settings), datetime.now(UTC), force=True)
+        typer.echo(json.dumps(result))
+        if result["status"] != "ok":
+            raise typer.Exit(1)
+    finally:
+        lock.release()

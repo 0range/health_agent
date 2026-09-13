@@ -301,7 +301,7 @@ def export_day(
                 }
             )
         rows.append(comparison_row)
-    manifest = {
+    manifest: dict[str, Any] = {
         "date": day.isoformat(),
         "timezone": str(ZONE),
         "generated_at": now.isoformat(),
@@ -348,6 +348,9 @@ def export_day(
     atomic_private_write(
         root / "whoop-context.json", json.dumps(summaries, ensure_ascii=False).encode()
     )
+    from health_agent.research.weather import export_day as export_weather_day
+
+    manifest["weather"] = export_weather_day(settings, engine, day)
     manifest["files"] = {
         name: {
             "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest(),
@@ -360,6 +363,10 @@ def export_day(
             "whoop-context.json",
         )
     }
+    if manifest["weather"].get("status") == "exported":
+        manifest["files"]["weather-hourly.csv"] = {
+            key: manifest["weather"][key] for key in ("sha256", "bytes")
+        }
     atomic_private_write(
         root / "manifest.json",
         json.dumps(manifest, ensure_ascii=False, indent=2).encode(),

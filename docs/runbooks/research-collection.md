@@ -209,3 +209,45 @@ and original responses remain in PostgreSQL; daily exports are derived artifacts
 Storage planning includes another 1 GiB for 31 days of exports plus the existing
 5 GiB free reserve. No temporary live verification dashboard is installed or saved
 in the project.
+
+## Outdoor weather context
+
+The optional private `data/research/weather-location.json` contains `label`,
+`latitude`, and `longitude` for the study district. Do not commit this file.
+The existing hourly research quality job fetches completed-day weather once per
+Moscow day after 10:00, retries failures hourly, and replays the preceding week
+for provider revisions. First activation backfills from the study start.
+Manual backfill: `health-agent research weather-sync` (uses the quality lock).
+
+Source: [Open-Meteo Historical Forecast API](https://open-meteo.com/en/docs/historical-forecast-api).
+These are **hourly model estimates**, not a station or window-mounted sensor.
+Ten fields: outdoor temperature, relative humidity, dew point, mean sea-level
+pressure, surface pressure, wind speed/direction/gusts, precipitation and cloud
+cover. Raw replies and retrieval hashes are retained; UTC hourly records live in
+PostgreSQL as shared `weather_raw` / `weather_hour` PilotRecords. Future hours
+are excluded. Unknown values remain null. Quality status includes per-day
+24-hour coverage and missing fields; a failed fetch cannot erase prior data.
+
+Daily datasets include `weather-hourly.csv` with units/source in `manifest.json`
+and file hashes. Join its native UTC hours to the bedroom series for analysis;
+do not manufacture six-second outdoor observations. Weather is contextual,
+particularly for interpreting ventilation and indoor temperature/humidity.
+The small shared-room study cannot establish an independent causal weather effect.
+
+## Subjective morning outcome
+
+The main bot asks at 08:00 Moscow (owner-overridable `/утро HH:MM`). `/опрос`
+starts or resumes the current day's questionnaire. Two reply-keyboard taps:
+last-night overall sleep quality 0–10 and feeling rested on awakening 0–10.
+Each can be skipped; no awakening counts or duration estimates are requested.
+Optional prose is accepted through `/сон`. Answers persist per profile/Moscow
+wake date with schema version 2 and separate response timestamps; skip is null,
+not zero. Completed answers are stored in sleep diary `checkin` payloads,
+independently of WHOOP scores. Unfinished drafts survive restart.
+
+Rationale: [single-item sleep quality evaluation](https://doi.org/10.5664/jcsm.7478)
+and [restorative sleep questionnaire development](https://doi.org/10.5664/jcsm.3860).
+This short Russian adaptation is **not a validated SQS or RSQ instrument** and
+has no diagnostic cutoff. Published agreement with subjective questionnaires
+is not evidence of being the strongest correlate of PSG or WHOOP. Record the
+answer times when interpreting morning sleep inertia and delayed responses.

@@ -10,6 +10,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from health_agent.pilot.contracts import Record, Store
+from health_agent.pilot.food_carbs import classify
 
 NUTRIENTS = (
     "kcal",
@@ -100,6 +101,7 @@ def _project(meal: Record) -> dict[str, Any]:
             key: _nonnegative_number(analysis.get(key)) for key in NUTRIENTS
         },
         "analysis_available": bool(analysis),
+        "carbohydrate_sources": classify(analysis.get("foods")),
         "unknowns": _bounded_list(analysis.get("unknowns")),
     }
     ended_at = meal.payload.get("ended_at")

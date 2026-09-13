@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from health_agent.pilot import sleep_checkin
 from health_agent.pilot.contracts import (
     Attachment,
     Brain,
@@ -124,6 +125,11 @@ class SleepCoach:
             at=now,
         )
         stripped = str(user_turn.payload["text"])
+        checkin_reply = sleep_checkin.handle(self.store, profile_id, stripped, now)
+        if checkin_reply is not None:
+            self.store.put(profile_id, "sleep", "turn", f"assistant:{source_key}",
+                           {"role": "assistant", "text": checkin_reply}, at=now)
+            return checkin_reply
         urgent = guard_urgent_question(stripped)
         if urgent is not None:
             self.store.put(
@@ -209,9 +215,12 @@ class SleepCoach:
         enabled, morning_at = self._schedule(profile_id)
         if enabled and morning_at <= local.time().replace(tzinfo=None) < time(12):
             key = f"morning:{local.date().isoformat()}"
-            if not self._notice_delivered(profile_id, key):
+            if not self._notice_delivered(profile_id, key) and not any(
+                row.payload.get("checkin", {}).get("wake_date") == local.date().isoformat()
+                for row in self.store.list(profile_id, "sleep", "diary", limit=100)
+            ):
                 notices.append(
-                    Notice(key, "Доброе утро. Как спалось и как вы себя чувствуете после пробуждения?")
+                    Notice(key, sleep_checkin.start(self.store, profile_id, now))
                 )
 
         if local.weekday() == 6 and local.time().replace(tzinfo=None) >= time(18):
@@ -244,7 +253,7 @@ class SleepCoach:
                 else "Утренние вопросы выключены."
             )
         if value.lower() == "выкл":
-            payload = {"enabled": False, "time": "09:00", "timezone": "Europe/Moscow"}
+            payload = {"enabled": False, "time": "08:00", "timezone": "Europe/Moscow"}
             record = self.store.put(
                 profile_id, "sleep", "schedule", source_key, payload, at=now
             )
@@ -254,7 +263,7 @@ class SleepCoach:
         except ValueError:
             return "Укажите время как /утро HH:MM или выключите: /утро выкл."
         if parsed.second or parsed.microsecond:
-            return "Укажите время с точностью до минут, например /утро 09:00."
+            return "Укажите время с точностью до минут, например /утро 08:00."
         if not time(6) <= parsed < time(12):
             return "Утренний вопрос можно назначить с 06:00 до 11:59 по Москве."
         payload = {
@@ -270,12 +279,12 @@ class SleepCoach:
     def _schedule(self, profile_id: UUID) -> tuple[bool, time]:
         rows = self.store.list(profile_id, "sleep", "schedule", limit=1)
         if not rows:
-            return True, time(9)
+            return True, time(8)
         payload = rows[0].payload
         try:
-            parsed = time.fromisoformat(str(payload.get("time", "09:00")))
+            parsed = time.fromisoformat(str(payload.get("time", "08:00")))
         except ValueError:
-            parsed = time(9)
+            parsed = time(8)
         return bool(payload.get("enabled", True)), parsed
 
     def _render_diary(self, profile_id: UUID) -> str:
@@ -485,7 +494,7 @@ def _weekly_frame(entries: list[Record], local_now: datetime) -> str:
 def _schedule_confirmation(payload: dict[str, Any]) -> str:
     if not bool(payload.get("enabled", True)):
         return "Утренние вопросы выключены. Дневник и /итоги остаются доступны."
-    scheduled = str(payload.get("time", "09:00"))
+    scheduled = str(payload.get("time", "08:00"))
     return f"Буду задавать утренний вопрос в {scheduled} по Москве."
 
 

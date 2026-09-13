@@ -53,3 +53,20 @@
 переписаны, дополнительных сообщений от имени пользователя не отправлено. Служба
 фудбота перезапущена, опрос Telegram свежий и без ошибки. Проверка следующего утра
 выполнена без отправки тестового напоминания и без создания выдуманной еды.
+
+## Meal continuity and short weekly advice
+
+A food description following a delivered, unanswered breakfast/meal notice is
+captured without asking whether it is a new meal. Explicit consumed-meal verbs
+(including `покушал/покушала`) create a new meal and restart the existing interval
+calculation; additions/corrections stay with the current meal. Plans, refusals
+and questions do not become eaten meals. Retry uses the original source key.
+A superseded comment can be retained for audit with `superseded_by_meal`, while
+being excluded from reanalysis of the old meal. Historical receipts are retained.
+
+Carbohydrate source labels distinguish whole grains/legumes, refined starch,
+free sugars, whole fruit and unspecified starch. This is ingredient evidence,
+not measured sugar grams, glycemic index or a guarantee of slow absorption.
+Weekly output selects one concrete action and one basis from logged meals in
+at most 450 characters; insufficient evidence is explicit. `/неделя` uses the
+new format immediately; previously delivered weekly messages are not resent.

@@ -169,10 +169,11 @@ class TelegramBotAPI:
                 self._wait(attempt)
         raise TelegramTransientError("download_retry_exhausted")
 
-    def send_message(self, chat_id: int, text: str) -> int:
-        result = self._post(
-            "sendMessage", {"chat_id": chat_id, "text": text}, mutation=True
-        )
+    def send_message(self, chat_id: int, text: str, *, reply_markup: dict[str, object] | None = None) -> int:
+        payload: dict[str, object] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        result = self._post("sendMessage", payload, mutation=True)
         if not isinstance(result, dict):
             raise TelegramDeliveryUnknown("invalid_send_response")
         try:

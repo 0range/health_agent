@@ -207,7 +207,7 @@ def test_sunday_weekly_notice_is_cached_replayed_and_not_hidden_by_dinner() -> N
     notices = coach.due(profile, sunday)
     assert len(notices) == 1
     assert notices[0].key == "food-weekly-2026-W36"
-    assert "Сохранено" in notices[0].text
+    assert "На следующую неделю" in notices[0].text
     calls = len(brain.calls)
     assert FoodCoach(store, brain).due(profile, sunday) == notices
     assert len(brain.calls) == calls
@@ -223,7 +223,7 @@ def test_weekly_silence_pause_outage_and_profile_isolation() -> None:
     assert coach.due(profile, sunday) == []
     coach.handle(profile, "/ел 12:00 обед", source_key="meal", now=sunday.replace(hour=9))
     first = coach.due(profile, sunday)
-    assert len(first) == 1 and "Сохранено" in first[0].text
+    assert len(first) == 1 and "На следующую неделю" in first[0].text
     calls = len(brain.calls)
     assert coach.due(profile, sunday) == first
     assert len(brain.calls) == calls
@@ -355,9 +355,10 @@ def test_weekly_quiet_hours_and_manual_shared_evidence() -> None:
     manual = coach.handle(profile, "/неделя", source_key="manual", now=sunday)
     automatic = coach.due(profile, sunday)[0].text
     for value in (manual, automatic):
-        assert "2026-09-06" in value
-        assert "разнообраз" in value.lower()
-        assert "нутриент" in value.lower()
+        assert "1 из 1" in value
+        assert len(value) <= 450
+        assert "нутриент" not in value.lower()
+    assert manual == automatic
 
 
 def test_explicit_text_meal_is_a_boundary_for_following_photo(tmp_path: Path) -> None:
@@ -422,6 +423,6 @@ def test_weekly_long_food_names_fit_limit_and_keep_caveat_and_next_step() -> Non
         coach.handle(profile, "/неделя", source_key="manual-long", now=sunday),
         coach.due(profile, sunday)[0].text,
     ):
-        assert len(text) <= 1200
-        assert "Это только записи" in text
-        assert "Следующий шаг" in text
+        assert len(text) <= 450
+        assert "По этим данным" in text
+        assert "Один шаг" in text

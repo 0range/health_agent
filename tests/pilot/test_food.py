@@ -295,7 +295,7 @@ def test_week_summary_excludes_overnight_and_post_dinner_adjacency(
     lunch = breakfast + timedelta(hours=3, minutes=30)
     coach.handle(profile, "/ел 12:30 обед", source_key="lunch-day-2", now=lunch)
 
-    summary = coach.handle(profile, "/неделя", source_key="week", now=lunch)
+    summary = coach._summary(profile, lunch, days=7)
     assert "1 из 1" in summary
 
 

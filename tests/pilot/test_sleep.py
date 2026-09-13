@@ -247,7 +247,7 @@ def test_morning_schedule_due_window_pause_timezone_and_no_stale_prompt() -> Non
     store, profile = MemoryStore(), uuid4()
     coach = SleepCoach(store, FakeBrain())
 
-    assert coach.due(profile, datetime(2026, 9, 7, 5, 59, tzinfo=UTC)) == []
+    assert coach.due(profile, datetime(2026, 9, 7, 4, 59, tzinfo=UTC)) == []
     notice = coach.due(profile, NOW)[0]
     assert notice.key == "morning:2026-09-07"
     store.put(profile, "sleep", "notice", notice.key, {"text": notice.text}, at=NOW)
@@ -455,7 +455,7 @@ def test_health_context_and_goals_are_context_not_claims_and_fallback_saves() ->
     coach = SleepCoach(store, unavailable, health_context=lambda _p, _t: {"whoop": "missing"})
     reply = coach.handle(profile, "/сон Спал семь часов", source_key="entry", now=NOW)
     assert "сохран" in reply.lower()
-    assert "09:00" in reply
+    assert "08:00" in reply
     assert store.list(profile, "sleep", "diary")
 
 
