@@ -70,3 +70,25 @@ not measured sugar grams, glycemic index or a guarantee of slow absorption.
 Weekly output selects one concrete action and one basis from logged meals in
 at most 450 characters; insufficient evidence is explicit. `/неделя` uses the
 new format immediately; previously delivered weekly messages are not resent.
+
+## Repeated reminders (14 September 2026)
+
+Each pending meal receives at most **three delivered notifications**: the first
+at the existing target, then two repeats at least **30 minutes** after the
+previous recorded delivery. This includes breakfast, lunch, afternoon snack and
+dinner; logging dinner still ends that day's meal-interval reminders. The
+notification names the next meal and asks the user to log food if already eaten.
+It does not infer fasting from an absent journal entry.
+
+The series uses successful `notice` receipts only, including legacy first-notice
+keys. Outbound attempts do not count as delivery. Restart can send one overdue
+notification, never a backlog at once. Repeats have bounded grace through 90
+minutes after the first receipt (or the existing initial expiry, whichever is
+later); quiet hours and the breakfast window still apply. The 4.5-hour interval
+option has a 30-minute initial delivery window so polling jitter cannot lose it.
+
+A newly recorded meal stops the old series. `/пропустить` stops the pending
+series, `/напоминания выкл` pauses notices, and `/позже N` postpones the next
+notice without resetting the total cap. An active breakfast series has its own
+Moscow-date control, so postponing/skipping it works even without a prior meal.
+Snooze retries preserve the original stored target and confirmation.

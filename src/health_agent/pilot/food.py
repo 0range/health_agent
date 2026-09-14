@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from health_agent.pilot import food_carbs
+from health_agent.pilot import food_carbs, food_reminders
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
 from health_agent.pilot.food_additions import additions, reconcile
 from health_agent.pilot.food_history import build_food_history
@@ -186,15 +186,23 @@ class FoodCoach:
         if self._quiet(now, self._protocol(profile_id)):
             return None
         key = f"breakfast:{local.date().isoformat()}"
-        if self._by_source(profile_id, "notice", key) is not None:
-            return None
         for meal in self._store.list(profile_id, "food", "meal"):
             occurred = self._from_iso(meal.payload["occurred_at"]).astimezone(_USER_ZONE)
             if occurred.date() == local.date() and occurred <= local and (
                 meal.payload.get("category") == "breakfast" or occurred >= target
             ):
                 return None
-        return Notice(key, "Доброе утро! Напоминаю про завтрак. Когда поешь, пришли фото или коротко напиши, что было.")
+        control = self._breakfast_control(profile_id, key)
+        if control is not None:
+            if control.payload.get("action") == "skip":
+                return None
+            if control.payload.get("action") == "snooze":
+                target = self._from_iso(control.payload["until"])
+        original_target = datetime.combine(local.date(), scheduled, _USER_ZONE)
+        return food_reminders.next_notice(
+            self._notice_receipts(profile_id, key), base_key=key, target=target,
+            initial_expiry=original_target + timedelta(hours=2), now=now, meal_name="завтрак",
+        )
 
     def _meal_notice(self, profile_id: UUID, meal: Record, now: datetime) -> Notice | None:
         anchor = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
@@ -208,13 +216,43 @@ class FoodCoach:
                 return None
             if action == "snooze":
                 target = self._from_iso(control.payload["until"])
-        if target > expires or now < target or now > expires or self._quiet(now, protocol):
+        if self._quiet(now, protocol):
             return None
+        # Configured 4.5 h intervals still need a nonzero first-delivery window.
+        expires = max(expires, self._meal_target(meal.payload, protocol) + timedelta(minutes=30))
         key = f"meal:{meal.id}:at:{target.astimezone(UTC).isoformat()}"
-        # By contract the root writes a notice record only after successful delivery.
-        if any(r.source_key == key for r in self._store.list(profile_id, "food", "notice")):
+        names = {"breakfast": "обед", "lunch": "полдник", "afternoon": "ужин"}
+        return food_reminders.next_notice(
+            self._notice_receipts(profile_id, f"meal:{meal.id}:at:"),
+            base_key=key, target=target, initial_expiry=expires, now=now,
+            meal_name=names.get(str(meal.payload.get("category")), "следующий приём пищи"),
+        )
+
+    def _notice_receipts(self, profile_id: UUID, prefix: str) -> list[Record]:
+        return [r for r in self._store.list(profile_id, "food", "notice", limit=1000)
+                if r.source_key == prefix or r.source_key.startswith(
+                    prefix if prefix.endswith(":") else prefix + ":repeat:")]
+
+    def _breakfast_control(self, profile_id: UUID, scope: str) -> Record | None:
+        return next((r for r in self._store.list(profile_id, "food", "control", limit=100)
+                     if r.payload.get("reminder_scope") == scope), None)
+
+    def _pending_breakfast_scope(self, profile_id: UUID, now: datetime) -> str | None:
+        local = now.astimezone(_USER_ZONE)
+        enabled, scheduled = self._breakfast_schedule(profile_id)
+        target = datetime.combine(local.date(), scheduled, _USER_ZONE)
+        key = f"breakfast:{local.date().isoformat()}"
+        if not enabled or not target <= local < target + timedelta(hours=2):
             return None
-        return Notice(key, "Плановый интервал после последнего приёма пищи прошёл. Хотите поесть сейчас?")
+        if not self._notice_receipts(profile_id, key):
+            return None
+        for meal in self._store.list(profile_id, "food", "meal"):
+            occurred = self._from_iso(meal.payload["occurred_at"]).astimezone(_USER_ZONE)
+            if occurred.date() == local.date() and occurred <= local and (
+                meal.payload.get("category") == "breakfast" or occurred >= target
+            ):
+                return None
+        return key
 
     def _meal(
         self, profile_id: UUID, text: str, source_key: str, now: datetime,
@@ -565,22 +603,52 @@ class FoodCoach:
         match = re.search(r"/позже\s+(\d{1,3})", text.lower())
         if match is None or int(match.group(1)) <= 0:
             return "Укажите число минут, например: /позже 30."
+        previous = self._by_source(profile_id, "control", source_key)
+        if previous is not None and previous.payload.get("action") == "snooze":
+            return str(previous.payload.get("reply") or (
+                "Перенос уже сохранён: " + self._from_iso(previous.payload["until"]).astimezone(_USER_ZONE).strftime("%H:%M") + " (Москва)."
+            ))
+        scope = self._pending_breakfast_scope(profile_id, now)
+        if scope is not None:
+            return self._snooze_breakfast(profile_id, scope, int(match.group(1)), source_key, now)
         meal = self._latest_meal(profile_id)
         if meal is None:
             return "Сначала сохраните приём пищи."
+        receipts = self._notice_receipts(profile_id, f"meal:{meal.id}:at:")
+        if len(receipts) >= food_reminders.LIMIT:
+            return "Все три напоминания уже отправлены. Запиши приём пищи, когда поешь."
         minutes = int(match.group(1))
         target = now + timedelta(minutes=minutes)
+        if receipts:
+            target = max(target, max(map(food_reminders.delivered_at, receipts)) + food_reminders.SPACING)
         occurred = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
         protocol = self._protocol(profile_id)
-        if target > occurred + timedelta(hours=4.5):
+        expiry = max(occurred + timedelta(hours=4.5), self._meal_target(meal.payload, protocol) + timedelta(minutes=30))
+        if target > food_reminders.deadline(receipts, expiry):
             return "Не могу отложить: интервал напоминания уже закончится. Новое напоминание не запланировано."
         if self._quiet(target, protocol):
             return "Не могу отложить на тихие часы. Новое напоминание не запланировано."
+        reply = f"Следующее напоминание — в {target.astimezone(_USER_ZONE):%H:%M} (Москва), если приём ещё не записан."
         self._store.put(profile_id, "food", "control", source_key, {
             "action": "snooze", "meal_id": meal.id,
-            "until": target.isoformat(),
+            "until": target.isoformat(), "reply": reply,
         }, at=now)
-        return f"Напомню через {minutes} мин."
+        return reply
+
+    def _snooze_breakfast(self, profile_id: UUID, scope: str, minutes: int, source_key: str, now: datetime) -> str:
+        if len(self._notice_receipts(profile_id, scope)) >= food_reminders.LIMIT:
+            return "Все три напоминания о завтраке уже отправлены."
+        _, scheduled = self._breakfast_schedule(profile_id)
+        local = now.astimezone(_USER_ZONE)
+        end = datetime.combine(local.date(), scheduled, _USER_ZONE) + timedelta(hours=2)
+        target = now + timedelta(minutes=minutes)
+        if target >= end or self._quiet(target, self._protocol(profile_id)):
+            return "Не могу отложить за пределы утреннего окна или на тихие часы."
+        reply = f"Напомню о завтраке не раньше {target.astimezone(_USER_ZONE):%H:%M}. Между уведомлениями — минимум 30 минут."
+        self._store.put(profile_id, "food", "control", source_key, {
+            "action": "snooze", "reminder_scope": scope, "until": target.isoformat(), "reply": reply,
+        }, at=now)
+        return reply
 
     def _correct_portion(
         self, profile_id: UUID, text: str, source_key: str, now: datetime,
@@ -630,6 +698,11 @@ class FoodCoach:
         return self._feedback(profile_id, updated)
 
     def _control(self, profile_id: UUID, action: str, source_key: str, now: datetime) -> str:
+        scope = self._pending_breakfast_scope(profile_id, now)
+        if scope is not None:
+            self._store.put(profile_id, "food", "control", source_key,
+                            {"action": action, "reminder_scope": scope}, at=now)
+            return "Сегодня больше не напоминаю о завтраке."
         meal = self._latest_meal(profile_id)
         if meal is None:
             return "Сначала сохраните приём пищи."

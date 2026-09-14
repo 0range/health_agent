@@ -88,7 +88,8 @@ def test_meal_due_correction_and_delivery_suppression(setup: tuple[MemoryStore, 
     notice = coach.due(profile, noon + timedelta(hours=4, minutes=30))[0]
     assert notice.key != old_key
     store.put(profile, "food", "notice", notice.key, {"delivered": True}, at=noon + timedelta(hours=4, minutes=30))
-    assert coach.due(profile, noon + timedelta(hours=5)) == []
+    assert coach.due(profile, noon + timedelta(hours=4, minutes=59)) == []
+    assert coach.due(profile, noon + timedelta(hours=5))[0].key.endswith(":repeat:2")
 
 
 def test_photo_replay_is_idempotent_and_persists_before_failed_analysis(tmp_path: Path) -> None:
