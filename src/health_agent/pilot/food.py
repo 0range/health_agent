@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo
 
 from health_agent.pilot import food_carbs, food_reminders
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
-from health_agent.pilot.food_additions import additions, reconcile
+from health_agent.pilot.food_additions import (
+    additions,
+    correct_grains,
+    grain_corrections,
+    mentions,
+    reconcile,
+)
 from health_agent.pilot.food_history import build_food_history
 
 _TIME = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
@@ -474,6 +480,12 @@ class FoodCoach:
             comments = [str(item.payload["text"]) for item in sorted(comment_records, key=lambda item: item.at)]
             evidence = additions([str(payload["original"]), str(payload["caption"]), *comments])
             payload.update(evidence)
+            reference = payload.get("previous_analysis") or meal.payload.get("analysis") or {}
+            known_foods = reference.get("foods", [])
+            if not known_foods and payload.get("photos"):
+                known_foods = (payload["photos"][0].get("analysis") or {}).get("foods", [])
+            corrections = grain_corrections(comments, known_foods)
+            payload["confirmed_corrections"] = corrections
             chosen_image = image_path
             if chosen_image is None and payload.get("photos"):
                 chosen_image = Path(str(payload["photos"][-1]["path"]))
@@ -492,6 +504,7 @@ class FoodCoach:
                     "text": payload["original"], "caption": chosen_caption,
                     "portion": payload.get("user_portion"), "comments": comments,
                     **evidence,
+                    "confirmed_corrections": corrections,
                     "previous_analysis": payload.get("previous_analysis"),
                     "photo_analyses": [item.get("analysis") for item in payload.get("photos", [])
                                        if item.get("analysis") is not None],
@@ -499,11 +512,48 @@ class FoodCoach:
                  "protocol": self._protocol(profile_id)},
                 image_path=chosen_image,
             )
-            payload["analysis_raw"] = raw
             derived = self._parse_analysis(
                 raw, bool(payload["photo_path"]), str(payload["category"]),
                 self._protocol(profile_id), payload.get("user_portion"),
             )
+            attempts: list[dict[str, Any]] = [{"raw": raw, "mode": "initial"}]
+            if derived is not None:
+                checked = correct_grains(reconcile(derived, evidence, reference, _NUTRIENTS), corrections, _NUTRIENTS)
+                if checked["foods"] != derived["foods"]:
+                    # Vision sometimes repeats its old plate despite a text correction.
+                    # Retry once using the now-authoritative ingredient list, without the image.
+                    derived = checked
+                    try:
+                        retry_raw = self._brain(
+                            self._system_prompt() + " The authoritative_foods list includes confirmed user "
+                            "additions and corrections. Return this entire meal and recompute its total nutrients. "
+                            "User-named ingredients need not appear in the earlier image. "
+                            "State assumed sizes in unknowns; do not reuse the old nutrient totals.",
+                            {"meal": {"text": payload["original"], "caption": chosen_caption,
+                                      "comments": comments, "authoritative_foods": checked["foods"],
+                                      "portion": payload.get("user_portion"),
+                                      "portion_estimate": checked.get("portion_estimate"),
+                                      **evidence, "confirmed_corrections": corrections},
+                             "protocol": self._protocol(profile_id)}, image_path=None,
+                        )
+                        attempts.append({"raw": retry_raw, "mode": "text_reconciliation"})
+                        retry = self._parse_analysis(retry_raw, bool(payload["photo_path"]), str(payload["category"]),
+                                                     self._protocol(profile_id), payload.get("user_portion"))
+                        if retry is not None:
+                            reconciled = correct_grains(reconcile(retry, evidence, reference, _NUTRIENTS), corrections, _NUTRIENTS)
+                            # A dessert-only estimate must not replace the entire plate.
+                            complete = all(
+                                any(mentions(food, candidate) or mentions(candidate, food)
+                                    for candidate in reconciled["foods"])
+                                for food in checked["foods"]
+                            )
+                            if complete:
+                                derived = reconciled
+                                raw = retry_raw
+                    except Exception as error:  # noqa: BLE001 - preserve confirmed foods when retry is unavailable
+                        attempts.append({"mode": "text_reconciliation", "safe_error": type(error).__name__})
+            payload["analysis_attempts"] = [*payload.get("analysis_attempts", []), *attempts]
+            payload["analysis_raw"] = raw
             payload["analysis"] = derived
             payload["analysis_error"] = None if payload["analysis"] is not None else "invalid_json"
             payload["analysis_status"] = ("complete" if payload["analysis"] is not None
@@ -527,6 +577,7 @@ class FoodCoach:
                     self._protocol(profile_id), payload.get("user_portion"),
                 )
                 payload["analysis"] = reconcile(payload["analysis"], evidence, payload.get("previous_analysis"), _NUTRIENTS)
+                payload["analysis"] = correct_grains(payload["analysis"], corrections, _NUTRIENTS)
                 current = payload["analysis"]
                 current["carbohydrate_sources"] = food_carbs.classify(current["foods"])
                 unconsumed = self._components({"foods": [*evidence["planned_additions"], *evidence["excluded_additions"]]})
@@ -1001,6 +1052,8 @@ class FoodCoach:
                 reply += "\n" + carb_note
         if payload.get("confirmed_additions"):
             reply += "\nУчтены дополнения: " + ", ".join(payload["confirmed_additions"]) + "."
+        if payload.get("confirmed_corrections"):
+            reply += "\nИсправлен состав: " + ", ".join(c["replacement"] for c in payload["confirmed_corrections"]) + "."
         if payload.get("planned_additions"):
             reply += "\nВ плане добавить: " + ", ".join(payload["planned_additions"]) + ". Пока не считаю это съеденным."
         return reply + "\n" + self._next_meal_text(profile_id, meal)
@@ -1147,6 +1200,8 @@ class FoodCoach:
             "meal and recalculate ALL nutrient totals, stating any assumed portion. "
             "planned_additions are intentions, not consumed foods: exclude them from foods and nutrients. "
             "excluded_additions retract earlier additions: exclude them from the meal. "
+            "Short comments like 'ещё ...' and '+ ...' are additions even if absent from the image. "
+            "confirmed_corrections replace mistaken ingredients; do not retain the old ingredient. "
             "User corrections override previous interpretations. For a single photo return the "
             "entire corrected meal, not just the comment ingredient. Preserve unrelated ingredients. "
             "For multiple photos consider previous observations; do not count repeat views twice. "
