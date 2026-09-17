@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from health_agent.pilot import food_carbs, food_reminders
+from health_agent.pilot import food_assessment, food_carbs, food_reminders
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
 from health_agent.pilot.food_additions import (
     additions,
@@ -74,6 +74,8 @@ class FoodCoach:
             return self._correct(profile_id, command, source_key, now)
         if lowered.startswith("/порция"):
             return self._correct_portion(profile_id, command, source_key, now)
+        if lowered in {"/план", "план питания", "покажи план питания"} and self._protocol(profile_id).get("meal_assessment_version") == 1:
+            return food_assessment.plan_text(self._protocol(profile_id))
         if lowered.startswith("/сегодня"):
             return self._summary(profile_id, now, days=1)
         if lowered.startswith("/неделя"):
@@ -766,6 +768,8 @@ class FoodCoach:
                         {"reminders_enabled": enabled}, at=now)
 
     def _summary(self, profile_id: UUID, now: datetime, days: int) -> str:
+        if days == 1 and self._protocol(profile_id).get("meal_assessment_version") == 1:
+            return food_assessment.daily_summary(build_food_history(self._store, profile_id, now, days=1))
         local_now = now.astimezone(_USER_ZONE)
         start = local_now.date() - timedelta(days=days - 1)
         meals = [m for m in self._store.list(profile_id, "food", "meal")
@@ -821,6 +825,8 @@ class FoodCoach:
         history = build_food_history(self._store, profile_id, now, days=7)
         if history["recorded_meal_count"] == 0:
             return "Сохранённых приёмов пищи нет; соблюдение плана неизвестно."
+        if self._protocol(profile_id).get("meal_assessment_version") == 1:
+            return food_assessment.weekly_summary(history)
         return food_carbs.weekly(history)
 
     def _pending_photo(self, profile_id: UUID) -> Record | None:
@@ -1030,6 +1036,8 @@ class FoodCoach:
         return result
 
     def _feedback(self, profile_id: UUID, meal: Record) -> str:
+        if self._protocol(profile_id).get("meal_assessment_version") == 1:
+            return self._assessed_feedback(profile_id, meal)
         payload = meal.payload
         analysis = payload.get("analysis")
         if isinstance(analysis, dict):
@@ -1057,6 +1065,26 @@ class FoodCoach:
         if payload.get("planned_additions"):
             reply += "\nВ плане добавить: " + ", ".join(payload["planned_additions"]) + ". Пока не считаю это съеденным."
         return reply + "\n" + self._next_meal_text(profile_id, meal)
+
+    def _assessed_feedback(self, profile_id: UUID, meal: Record) -> str:
+        payload = meal.payload
+        raw = payload.get("analysis")
+        analysis = ({**raw, "planned_additions": payload.get("planned_additions", [])}
+                    if isinstance(raw, dict) else None)
+        category = str(payload.get("category", ""))
+        reply = food_assessment.render_meal(analysis, category)
+        if payload.get("confirmed_additions"):
+            reply += "\n➕ Учтены дополнения: " + ", ".join(payload["confirmed_additions"]) + "."
+        if payload.get("confirmed_corrections"):
+            reply += "\n✏️ Исправлен состав: " + ", ".join(c["replacement"] for c in payload["confirmed_corrections"]) + "."
+        if payload.get("planned_additions"):
+            reply += "\n📝 Планируешь добавить: " + ", ".join(payload["planned_additions"]) + ". Пока не считаю съеденным."
+        day = self._from_iso(str(payload["occurred_at"])).astimezone(_USER_ZONE).date()
+        day_end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=_USER_ZONE) - timedelta(microseconds=1)
+        history = build_food_history(self._store, profile_id, day_end, days=1)
+        reply += "\n" + (food_assessment.daily_summary(history) if category == "dinner"
+                          else food_assessment.calorie_total(history))
+        return reply + "\n⏰ " + self._next_meal_text(profile_id, meal).replace("по вашему плану", "по плану")
 
     @staticmethod
     def _meal_target(payload: dict[str, Any], protocol: dict[str, Any]) -> datetime:
