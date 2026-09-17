@@ -48,6 +48,8 @@ def build_food_history(
     invalid = 0
     source = store.list(profile_id, "food", "meal", limit=1000)
     for meal in source:
+        if meal.payload.get("superseded_by_meal"):
+            continue
         occurred = _parse_aware(meal.payload.get("occurred_at"))
         if occurred is None or occurred > now:
             invalid += 1
@@ -104,6 +106,11 @@ def _project(meal: Record) -> dict[str, Any]:
         "carbohydrate_sources": classify(analysis.get("foods")),
         "unknowns": _bounded_list(analysis.get("unknowns")),
     }
+    user_kcal = meal.payload.get("user_kcal")
+    if isinstance(user_kcal, dict) and _nonnegative_number(user_kcal.get("value")) is not None:
+        projected["nutrients_estimated"]["kcal"] = _nonnegative_number(user_kcal["value"])
+        projected["kcal_source"] = "user_estimate"
+        projected["model_kcal_estimate"] = _nonnegative_number(analysis.get("kcal"))
     ended_at = meal.payload.get("ended_at")
     end_source = meal.payload.get("end_source")
     if (

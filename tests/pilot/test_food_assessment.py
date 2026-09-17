@@ -163,7 +163,8 @@ def test_saved_plan_focus_and_weekly_do_not_ban_planned_treat():
     )
     coach.handle(profile, "/ел полдник", source_key="meal", now=now)
     weekly = coach.handle(profile, "/неделя", source_key="week", now=now)
-    assert "вкусняшку в полдник оставляем" in weekly
+    assert "Вкусняшка в полдник разрешена" in weekly
+    assert "/фокус" in weekly
     assert "замени сладость" not in weekly
 
 

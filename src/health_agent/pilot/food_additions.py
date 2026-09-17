@@ -18,7 +18,7 @@ _FOOD = re.compile(
     r"каш\w*|рис\w*|булгур\w*|греч\w*|киноа|кускус\w*|салат\w*|овощ\w*|"
     r"огур\w*|помидор\w*|томат\w*|морков\w*|капуст\w*|яйц\w*|куриц\w*|"
     r"рыб\w*|говядин\w*|кревет\w*|суп\w*|шоколад\w*|конфет\w*|торт\w*|"
-    r"пирог\w*|крекер\w*|булоч\w*|блин\w*|сахар\w*|м[её]д|сок\w*|ягод\w*)\b"
+    r"пирог\w*|крекер\w*|булоч\w*|бутерброд\w*|блин\w*|сахар\w*|м[её]д|сок\w*|ягод\w*)\b"
 )
 _INTENTION = re.compile(
     r"\b(?:хочу|буду|планирую|собираюсь|думаю|добавлю|съем|съесть|поем|куплю|купить|может|пожалуй)\b"
@@ -99,6 +99,8 @@ def correct_grains(
 
 def statement(text: str) -> tuple[str, str] | None:
     value = text.strip().lower().rstrip(".!").strip()
+    # A consumed addition can be followed by a separate calorie discussion.
+    value = re.split(r"[.!]\s+(?=думаю\b|мне\b|я\b)", value, maxsplit=1)[0].strip()
     value = re.sub(r"^(?:вот\s+)?(?:обед|ужин|завтрак)[,:]\s*", "", value)
     if _UNCERTAIN.search(value) or len(value) > 140:
         return None
@@ -114,7 +116,7 @@ def statement(text: str) -> tuple[str, str] | None:
         food = re.sub(rf"^{_PREFIX}", "", match["food"]).strip()
         if food and len(food) <= 100:
             return food, "planned" if match["verb"] == "добавлю" else "confirmed"
-    short = re.fullmatch(r"(?:(?:(?:и|а)\s+)?ещ[её]\s+|\+\s*)(.+)", value)
+    short = re.fullmatch(r"(?:(?:(?:и|а)\s+)?(?:ещ[её]|так\s*же)\s+|\+\s*)(.+)", value)
     if (
         short
         and not _INTENTION.search(value)
@@ -200,8 +202,14 @@ def reconcile(
         for f in evidence["confirmed_additions"]
         if not any(mentions(f, x) for x in foods)
     ]
-    result["foods"] = [*foods, *missing]
-    if removed or missing:
+    preserved = [
+        food for food in original_foods
+        if evidence["confirmed_additions"]
+        and not any(mentions(x, food) for x in evidence["excluded_additions"])
+        and not any(mentions(food, x) or mentions(x, food) for x in [*foods, *missing])
+    ]
+    result["foods"] = [*foods, *missing, *preserved]
+    if removed or missing or preserved:
         for key in nutrients:
             result[key] = None
         result["unknowns"] = [

@@ -32,7 +32,7 @@ def test_durable_replay_beyond_history_caps(tmp_path, kind, offline, original_ti
         coach.handle(profile, "масло", source_key="pending", now=now + timedelta(days=1))
     brain.reply = RuntimeError("offline") if offline else Brain().reply
     event = now + (timedelta(days=1, minutes=1) if kind == "text_confirmation" else timedelta(minutes=41))
-    text = {"comment": "немного масла", "photo": "", "photo_confirmation": "тот же", "text_confirmation": "новый"}[kind]
+    text = {"comment": "там немного масла", "photo": "", "photo_confirmation": "тот же", "text_confirmation": "новый"}[kind]
     attachment = _photo(tmp_path, "retry.jpg") if kind == "photo" else None
     if kind == "photo":
         event = now + timedelta(minutes=2)
@@ -54,7 +54,7 @@ def test_durable_replay_beyond_history_caps(tmp_path, kind, offline, original_ti
     assert len(brain.calls) == calls + int(offline)
     assert store.get(profile, original.id).payload["analysis_status"] == "complete"
     if kind == "comment" and offline:
-        assert "немного масла" in brain.calls[-1][0]["meal"]["comments"]
+        assert "там немного масла" in brain.calls[-1][0]["meal"]["comments"]
     assert store.get(profile, first.id).payload["occurred_at"] == first.payload["occurred_at"]
 
 
