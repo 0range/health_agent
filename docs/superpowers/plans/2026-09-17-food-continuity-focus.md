@@ -71,12 +71,12 @@ Files: new `src/health_agent/pilot/food_focus.py`, integration in `food.py`,
 ## Task 3: Verify, repair confirmed historical errors, deploy
 
 - [x] Review diff for replay/provenance issues and public/private data separation.
-- [ ] Before any production repair, write a private snapshot; repair only confirmed
+- [x] Before any production repair, write a private snapshot; repair only confirmed
   misbindings with their original timestamps, retain audit evidence, verify replay.
-- [ ] Fast-forward tested work to main, restart the three conversation services
+- [x] Fast-forward tested work to main, restart the three conversation services
   for the shared goal-context fix, verify polling; leave research collectors running.
-- [ ] Push reviewed commits to the existing GitHub remote and verify matching SHA.
-- [ ] Report actual implemented behavior and validation; identify any remaining
+- [x] Push reviewed commits to the existing GitHub remote and verify matching SHA.
+- [x] Report actual implemented behavior and validation; identify any remaining
   ambiguity without claiming universal understanding of natural-language messages.
 
 ## Task 4: Preserve the subsequently selected shared stage priorities
@@ -89,8 +89,21 @@ existing tests. Personal values remain in private database records and snapshots
   A text-only long-term food focus must display without inventing kilograms.
 - [x] Filter inactive goals in the shared context and training selector; label
   planned goals in `/цели`; render a saved focus title before legacy numeric goals.
-- [ ] Snapshot and save the user's two dated stages, pause superseded goals,
+- [x] Snapshot and save the user's two dated stages, pause superseded goals,
   replace obsolete weekly session counts with an empty list and dated preferences.
   Preserve the prior preferences in the private change audit.
-- [ ] Verify all three model contexts see the new stages, no accepted training
+- [x] Verify all three model contexts see the new stages, no accepted training
   plan is changed, and run pilot/Telegram tests, Ruff and mypy before deployment.
+
+## Completed validation
+
+- 416 pilot/Telegram tests passed; Ruff passed; mypy passed for all 24 pilot modules.
+- Private JSON snapshots and a full PostgreSQL dump preceded production repair.
+  Repair was prepared in an isolated store, then applied in one database transaction
+  with comparison against the original records. Original event times were retained.
+- Checked repaired history and source replays without creating further meals or
+  model runs. All three model contexts contain the selected dated stages.
+- Three conversation services resumed with fresh successful polling and no current
+  runtime errors. Research collectors were not restarted.
+- Implementation commits reached GitHub `main`; remote and local SHA matched.
+  This is not a new release tag or a combined cross-domain weekly review.
