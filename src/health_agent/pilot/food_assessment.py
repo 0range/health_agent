@@ -226,6 +226,8 @@ def plan_text(protocol: dict[str, Any]) -> str:
         "🔥 Считаем калории; дневного лимита пока нет."
     )
     focus = protocol.get("long_term_focus")
+    if isinstance(focus, dict) and isinstance(focus.get("title"), str) and focus["title"].strip():
+        return text + "\n🎯 " + focus["title"].strip()
     target = (
         calories(focus.get("desired_fat_loss_kg")) if isinstance(focus, dict) else None
     )

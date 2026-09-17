@@ -107,7 +107,7 @@ def _find(records: list[Record], identifier: str) -> Record:
 
 def _line(record: Record) -> str:
     payload = record.payload
-    status = {"active": "", "paused": " · пауза", "done": " · достигнута"}.get(
+    status = {"active": "", "planned": " · запланирована", "paused": " · пауза", "done": " · достигнута"}.get(
         str(payload.get("status")), ""
     )
     parent = f" → {str(payload['parent_id'])[:8]}" if payload.get("parent_id") else ""

@@ -52,4 +52,15 @@ acceptance/expiry/voluntary outcomes.
 Historical repairs require a private before snapshot. Superseded false meal
 records retain their originals and reference the valid replacement; food-history
 projections omit them. Do not publish personal conversations or repair identifiers
-in the repository. This change does not alter research collection or training goals.
+in the repository. This change does not alter research collection.
+
+## Shared stage priorities
+
+Goals can retain explicit calendar periods and a `planned` status for a future
+stage. All three model contexts receive the current Moscow date and active/planned
+shared goals. Paused or completed goals are excluded from model context and new
+training planning; `/цели` still retains them as history. A saved textual food focus
+can replace an older numerical aspiration without creating a calorie target.
+
+Personal stage choices and obsolete preference snapshots stay in the private
+database. This does not add a combined weekly report or assign training frequency.

@@ -18,7 +18,9 @@ model estimates separate from confirmed user changes.
 - All records profile-scoped and idempotent by source_key.
 - Ambiguous text must not silently overwrite the latest meal.
 - Production examples and repair snapshots stay in ignored private `data/`.
-- No new dependencies, no change to WHOOP, sleep or training goals, no release retag.
+- No new dependencies, no change to WHOOP or sleep collection, no release retag.
+- User-approved stage priorities also replace obsolete training preferences;
+  no training frequency or calorie limit is inferred.
 
 ## Task 1: Preserve meal identity and separate text actions
 
@@ -68,10 +70,27 @@ Files: new `src/health_agent/pilot/food_focus.py`, integration in `food.py`,
 
 ## Task 3: Verify, repair confirmed historical errors, deploy
 
-- [ ] Review diff for replay/provenance issues and public/private data separation.
+- [x] Review diff for replay/provenance issues and public/private data separation.
 - [ ] Before any production repair, write a private snapshot; repair only confirmed
   misbindings with their original timestamps, retain audit evidence, verify replay.
-- [ ] Fast-forward tested work to main, restart only the food service, verify polling.
+- [ ] Fast-forward tested work to main, restart the three conversation services
+  for the shared goal-context fix, verify polling; leave research collectors running.
 - [ ] Push reviewed commits to the existing GitHub remote and verify matching SHA.
 - [ ] Report actual implemented behavior and validation; identify any remaining
   ambiguity without claiming universal understanding of natural-language messages.
+
+## Task 4: Preserve the subsequently selected shared stage priorities
+
+Files: `pilot/brain.py`, `training.py`, `goals.py`, `food_assessment.py` and their
+existing tests. Personal values remain in private database records and snapshots.
+
+- [x] Add regression scenarios: paused/completed training goals must not appear
+  in active planning or model context; future planned goals retain their dates.
+  A text-only long-term food focus must display without inventing kilograms.
+- [x] Filter inactive goals in the shared context and training selector; label
+  planned goals in `/цели`; render a saved focus title before legacy numeric goals.
+- [ ] Snapshot and save the user's two dated stages, pause superseded goals,
+  replace obsolete weekly session counts with an empty list and dated preferences.
+  Preserve the prior preferences in the private change audit.
+- [ ] Verify all three model contexts see the new stages, no accepted training
+  plan is changed, and run pilot/Telegram tests, Ruff and mypy before deployment.

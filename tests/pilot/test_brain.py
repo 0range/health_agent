@@ -34,6 +34,21 @@ class Client:
         )
 
 
+@pytest.mark.parametrize("domain", ["sleep", "food", "training"])
+def test_shared_context_excludes_inactive_goals_but_keeps_dated_future_stage(domain):
+    from test_training import MemoryStore
+
+    store, profile = MemoryStore(), UUID(int=1)
+    for status in ["active", "planned", "paused", "done"]:
+        store.put(profile, "shared", "goal", status, {
+            "title": status, "status": status, "period_start": "2027-01-01",
+        })
+    brain = PilotBrain(Settings(yandex_folder_id="test"), profile, store=store, domain=domain)
+    context = brain._profile_context()
+    assert {g["status"] for g in context["shared_goals_not_evidence"]} == {"active", "planned"}
+    assert all(g["period_start"] == "2027-01-01" for g in context["shared_goals_not_evidence"])
+
+
 def test_consent_and_text_call():
     client = Client()
     settings = Settings(

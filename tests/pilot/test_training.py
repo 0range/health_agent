@@ -87,6 +87,22 @@ class Brain:
         return "Помню контекст и отвечаю по тренировкам."
 
 
+def test_paused_training_goals_are_not_presented_or_used_in_new_plan():
+    store, brain, profile = MemoryStore(), Brain(), uuid4()
+    now = datetime(2026, 8, 3, 12, tzinfo=UTC)
+    for status, title in [("paused", "Old race"), ("done", "Completed race"),
+                          ("active", "Current routine"), ("planned", "Next stage")]:
+        store.put(profile, "shared", "goal", status,
+                  {"domain": "training", "status": status, "title": title}, at=now)
+    coach = TrainingCoach(store, brain)
+    reply = coach.handle(profile, "/год", source_key="goals", now=now)
+    assert "Old race" not in reply and "Completed race" not in reply
+    assert "Current routine" in reply and "Next stage" in reply
+    coach.handle(profile, "/план", source_key="plan", now=now)
+    goals = brain.calls[-1][1]["annual_goals"]
+    assert {g["status"] for g in goals} == {"active", "planned"}
+
+
 def test_goal_proposal_acceptance_activities_and_reflection_are_durable():
     store, brain, profile = MemoryStore(), Brain(), uuid4()
     now = datetime(2026, 9, 7, 12, tzinfo=UTC)

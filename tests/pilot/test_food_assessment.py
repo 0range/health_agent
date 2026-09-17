@@ -168,6 +168,17 @@ def test_saved_plan_focus_and_weekly_do_not_ban_planned_treat():
     assert "замени сладость" not in weekly
 
 
+def test_text_focus_supersedes_legacy_numeric_aspiration():
+    from health_agent.pilot.food_assessment import plan_text
+
+    text = plan_text({"long_term_focus": {
+        "title": "Август: регулярное питание и прогулки",
+        "desired_fat_loss_kg": 3,
+    }})
+    assert "Август: регулярное питание и прогулки" in text
+    assert "3 кг" not in text and "лимита пока нет" in text
+
+
 def test_partial_same_category_and_truncation_are_visible():
     from health_agent.pilot.food_assessment import daily_summary
 

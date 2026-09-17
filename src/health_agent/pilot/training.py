@@ -416,6 +416,8 @@ class TrainingCoach:
 
 
 def _training_goal(record: Record) -> bool:
+    if record.payload.get("status", "active") not in {"active", "planned"}:
+        return False
     domain = record.payload.get("domain")
     hierarchy = record.payload.get("hierarchy")
     return domain == "training" or hierarchy in ("training", ["training"])
