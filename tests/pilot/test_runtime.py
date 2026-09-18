@@ -469,3 +469,71 @@ def test_main_bot_question_route_saves_sleep_without_morning_prompt(tmp_path, cl
     from dataclasses import replace
     diary = questions().answer(HealthQuestion(replace(context, update_id=11, message_id=2), '/дневник'))
     assert question.text in diary
+
+
+def test_shared_cycle_routes_before_food_and_preserves_profile_scope(tmp_path, clean_database):
+    from health_agent.pilot.weekly_cycle import WeeklyCycle
+    service, store, coach, gateway, _ = setup_runtime(tmp_path, clean_database)
+    store.put(DEFAULT_PROFILE_ID, 'shared', 'settings', 'coaching-cycle',
+              {'enabled': True, 'training_sessions': 2}, at=NOW)
+    service.process_update(update(100, '/цикл'))
+    assert 'Черновик общей недели 2026-09-14' in gateway.sent[-1][1]
+    service.process_update(update(101, 'Принять неделю 14.09.2026'))
+    service.process_update(update(101, 'Принять неделю 14.09.2026'))
+    service.process_update(update(102, '/вес 75,2'))
+    service.process_update(update(103, '/тренировка 2026-09-06 ходьба'))
+    assert not coach.calls and not store.list(DEFAULT_PROFILE_ID, 'food', 'meal')
+    assert len(store.list(DEFAULT_PROFILE_ID, 'shared', 'cycle_plan')) == 1
+    assert len(store.list(DEFAULT_PROFILE_ID, 'shared', 'weight')) == 1
+    assert len(store.list(DEFAULT_PROFILE_ID, 'training', 'manual_activity')) == 1
+    assert not WeeklyCycle(store).due(uuid4(), NOW)
+    service.process_update(update(104, '/цикл', user=202))
+    assert 'другого профиля' in gateway.sent[-1][1]
+
+
+def test_shared_welcome_delivery_recovers_and_remains_once_on_restart(tmp_path, clean_database):
+    _, store, _, gateway, messenger = setup_runtime(tmp_path, clean_database)
+    coach = SimpleNamespace(due=lambda profile, now: [])
+    store.put(DEFAULT_PROFILE_ID, 'shared', 'settings', 'coaching-cycle',
+              {'enabled': True, 'training_sessions': 2}, at=NOW)
+    failing = SimpleNamespace(send_to_profile=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('offline')))
+    with pytest.raises(RuntimeError):
+        dispatch_notices(coach, store, failing, DEFAULT_PROFILE_ID, 'sleep', NOW)
+    assert not store.by_source(DEFAULT_PROFILE_ID, 'sleep', 'notice', 'cycle:welcome')
+    assert dispatch_notices(coach, store, messenger, DEFAULT_PROFILE_ID, 'food', NOW) == 0
+    assert dispatch_notices(coach, store, messenger, DEFAULT_PROFILE_ID, 'training', NOW) == 0
+    assert dispatch_notices(coach, store, messenger, DEFAULT_PROFILE_ID, 'sleep', NOW) == 1
+    assert dispatch_notices(coach, PilotStore(clean_database), messenger, DEFAULT_PROFILE_ID, 'sleep', NOW) == 0
+    assert len(gateway.sent) == 1 and 'Черновик общей недели' in gateway.sent[0][1]
+    assert not store.list(DEFAULT_PROFILE_ID, 'shared', 'cycle_plan')
+
+
+def test_cycle_suppresses_domain_weeklies_but_keeps_ordinary_reminders(clean_database):
+    from health_agent.pilot.sleep import SleepCoach
+    from health_agent.pilot.training import TrainingCoach
+    store = PilotStore(clean_database)
+    store.put(DEFAULT_PROFILE_ID, 'shared', 'settings', 'coaching-cycle', {'enabled': True}, at=NOW)
+    brain = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('No model call expected'))
+    sunday = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    food, sleep, training = FoodCoach(store, brain), SleepCoach(store, brain), TrainingCoach(store, brain)
+    assert food._weekly_notice(DEFAULT_PROFILE_ID, sunday) is None
+    assert training.due(DEFAULT_PROFILE_ID, sunday) == []
+    assert not any('weekly' in n.key for n in sleep.due(DEFAULT_PROFILE_ID, sunday))
+    breakfast = datetime(2026, 9, 14, 6, tzinfo=UTC)
+    assert any(n.key.startswith('breakfast:') for n in food.due(DEFAULT_PROFILE_ID, breakfast))
+    assert sleep.due(DEFAULT_PROFILE_ID, breakfast.replace(hour=5))
+
+
+def test_main_api_attaches_cycle_buttons_and_preserves_sleep_keyboard(monkeypatch):
+    from health_agent.pilot.runtime import SleepTelegramAPI
+    from health_agent.pilot.sleep_checkin import PROMPT
+    from health_agent.telegram.api import TelegramBotAPI
+    calls = []
+    monkeypatch.setattr(TelegramBotAPI, 'send_message', lambda self, chat_id, text, **kwargs: calls.append(kwargs) or 1)
+    api = SleepTelegramAPI('123:test')
+    api.send_message(123, 'Черновик общей недели 2026-09-14 · 14.09–20.09.')
+    api.send_message(123, PROMPT)
+    api.send_message(123, 'Общая неделя принята.\n...')
+    assert calls[0]['reply_markup']['keyboard'][0] == ['Принять неделю 14.09.2026']
+    assert calls[1]['reply_markup']['keyboard'][0][0] == 'Сон: 0'
+    assert calls[2]['reply_markup'] == {'remove_keyboard': True}

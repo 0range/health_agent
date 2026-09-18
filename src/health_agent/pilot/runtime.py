@@ -21,6 +21,7 @@ from health_agent.pilot.brain import PilotBrain
 from health_agent.pilot.contracts import Attachment, Coach, Store
 from health_agent.pilot.goals import goal_action
 from health_agent.pilot.storage import PilotStore
+from health_agent.pilot.weekly_cycle import WeeklyCycle
 from health_agent.questions.composition import (
     ReadOnlyQuestionCommands,
     TelegramMedicalInbox,
@@ -60,24 +61,25 @@ HELP = {
         "Просто фотографируй еду. Можно прислать несколько фото и дописать комментарий. "
         "Сохраню всё, коротко разберу тарелку и сам напомню о следующем приёме.\n"
         "Меньше 40 минут между фото — один приём; больше 2,5 часа — новый. "
-        "Между ними уточню. Конец приёма оцениваю как последнее фото + 20 минут.\n"
+        "Между ними уточню. Если указано время еды, использую его; иначе конец приёма оцениваю как последнее фото + 20 минут.\n"
         "В 09:00 по Москве напомню про завтрак, если он ещё не записан. "
         "Время можно изменить: /завтрак 09:30; отключить: /завтрак выкл. "
         "Если приём не записан, напомню до трёх раз с интервалом 30 минут. "
-        "В воскресенье вечером пришлю короткий итог недели. "
+        "При включённом общем цикле недельный итог приходит в основной бот; пищевой разбор доступен по /неделя. "
         "Общие вопросы о здоровье — в основном Health Agent.\n\n"
         "Один фокус недели: /фокус. Можно написать «голодный», «не успеваю» или «что выбрать».\n"
         "Необязательные команды: /сегодня · /неделя · /план · /фокус · /время 12:30 · "
         "/порция 200 г · /позже 30 · /пропустить · /напоминания выкл"
     ),
     "training": (
-        "Здесь обсуждаем тренировки. В воскресенье вечером сам пришлю ориентир на неделю. "
-        "Можно написать: «покажи план», «почему так?» или «перенеси бассейн». "
+        "Здесь обсуждаем тренировки. При общем цикле план и недельный итог приходят в основной бот. "
+        "Можно написать: «покажи план», «почему так?» или «перенеси тренировку». "
         "Предложения остаются черновиками, пока ты их не примешь.\n\n"
         "Необязательные команды: /год · /план · /сохранить план · /итоги · /цели.\n"
         "Во внешние системы планы не записываю."
     ),
 }
+HELP['sleep'] += '\n\nОбщая неделя: /цикл — план, /цикл итог — сверка, /цикл итог <текст> — результат или трудность.\n/вес <кг> · /тренировка YYYY-MM-DD <что сделал> · /цикл стоп · /цикл вкл.'
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _PROFILE_REJECTED = "Этот пилот настроен для другого профиля. Сообщение не обрабатывалось."
@@ -125,6 +127,9 @@ class PilotActions:
         urgent = guard_urgent_question(text)
         if urgent is not None:
             return urgent
+        cycle_reply = WeeklyCycle(self.store).handle(context.profile_id, text, key, now, self.domain)
+        if cycle_reply is not None:
+            return cycle_reply
         reply = goal_action(
             self.store, context.profile_id, self.domain, text, source_key=key, now=now
         )
@@ -262,7 +267,10 @@ def dispatch_notices(
     now: datetime,
 ) -> int:
     sent = 0
-    for notice in coach.due(profile_id, now):
+    notices = list(coach.due(profile_id, now))
+    if domain == 'sleep':
+        notices.extend(WeeklyCycle(store).due(profile_id, now))
+    for notice in notices:
         frozen = store.put(
             profile_id, domain, "outbound", notice.key, {"text": notice.text}, at=now
         )
@@ -430,8 +438,9 @@ class SleepTelegramAPI(TelegramBotAPI):
 
     def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int:
         from health_agent.pilot.sleep_checkin import keyboard
+        from health_agent.pilot.weekly_cycle import keyboard as cycle_keyboard
 
-        return super().send_message(chat_id, text, reply_markup=keyboard(text))
+        return super().send_message(chat_id, text, reply_markup=keyboard(text) or cycle_keyboard(text))
 
 
 def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:

@@ -67,6 +67,10 @@ class TrainingCoach:
         return answer
 
     def due(self, profile_id: UUID, now: datetime) -> list[Notice]:
+        from health_agent.pilot.weekly_cycle import owns_weeklies
+
+        if owns_weeklies(self._store, profile_id):
+            return []
         now = _aware(now)
         local_now = now.astimezone(_MOSCOW)
         if local_now.weekday() != 6 or local_now.hour < 18:

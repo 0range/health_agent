@@ -37,7 +37,10 @@ class FoodFocus:
         if (focus and focus.payload["status"] == "active"
                 and focus.payload["from_date"] <= today <= focus.payload["through_date"]):
             return focus
-        return None
+        # A future accepted shared week must not hide the current food task.
+        return next((r for r in self.store.list(profile, 'food', 'focus', limit=100)
+                     if r.payload.get('status') == 'active'
+                     and r.payload['from_date'] <= today <= r.payload['through_date']), None)
 
     def recent(self, profile: UUID, now: datetime) -> Record | None:
         focus = self._selected(profile, "focus_id")

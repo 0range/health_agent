@@ -14,8 +14,8 @@ from health_agent.pilot.sleep import SleepCoach
 
 class MemoryStore:
     def by_source(self, profile_id, domain, kind, source_key):
-        return next((record for owner, record in self.records
-                     if owner == profile_id and record.domain == domain
+        return next((record for record in self.records.get(profile_id, [])
+                     if record.domain == domain
                      and record.kind == kind and record.source_key == source_key), None)
 
     def __init__(self) -> None:

@@ -34,7 +34,7 @@ Main bot owns one Sunday 18:00 Moscow review plus next proposal, and one Wednesd
 18:00 progress check for an accepted current plan. Startup delivers the initial
 proposal during waking hours. Persisted notices prevent duplicates and bounded
 catch-up handles downtime. Old independent weekly pushes are suppressed only for
-profiles with this cycle enabled. Existing morning and meal reminders remain.
+profiles that opted into this cycle (stopping shared pushes does not restore legacy pushes). Existing morning and meal reminders remain.
 
 Commands/buttons work through PilotActions: `/цикл` (main `/неделя` alias), accept,
 simplify, result/obstacle, manual training, weight, and stop. Main bot supplies reply

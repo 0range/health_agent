@@ -4,6 +4,29 @@ from __future__ import annotations
 
 import re
 
+_LABELS = {
+    "breakfast": r"завтрак\w*|позавтрак\w*|breakfast",
+    "lunch": r"обед\w*|пообед\w*|lunch",
+    "afternoon": r"полдни[кй]\w*|перекус\w*|snack",
+    "dinner": r"ужин\w*|поужин\w*|dinner",
+}
+
+
+def labelled_category(text: str) -> str | None:
+    matches = [key for key, pattern in _LABELS.items()
+               if re.search(r"\b(?:" + pattern + r")\b", text, re.IGNORECASE)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def label_clarification(text: str) -> str | None:
+    labels = "|".join(_LABELS.values())
+    match = re.fullmatch(
+        r"(?:(?:нет|это|был[аи]?)\s*[,—-]?\s*)?"
+        r"(?:не\s+(?:" + labels + r")\s*,?\s*а\s+)?"
+        r"(" + labels + r")[.!\s]*", text.strip(), re.IGNORECASE,
+    )
+    return labelled_category(match[1]) if match else None
+
 _FOODS = re.compile(
     r"\b(?:каш\w*|овся\w*|рис\w*|булгур\w*|греч\w*|киноа|удон|лапш\w*|"
     r"паст\w*|макарон\w*|хлеб\w*|бублик\w*|бутерброд\w*|тост\w*|блин\w*|"
@@ -29,7 +52,7 @@ def already_eaten(text: str) -> bool:
 
 
 def explicit_revision(text: str) -> bool:
-    return bool(re.search(
+    return bool(re.search(r"\bдобав(?:ил|ила|лял|ляла)\b", text, re.IGNORECASE) or re.search(
         r"^(?:(?:и|а)\s+)?(?:ещ[её]\b|так\s*же\b|там\b|добав\w*\b|"
         r"это\b|не\b|убери\b|исправ\w*\b|порци\w*\b|\+)|\bэто$", text.strip(), re.IGNORECASE,
     ))

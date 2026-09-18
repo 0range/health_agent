@@ -95,7 +95,7 @@ class FoodCoach:
             return "Опишите приём пищи или приложите фотографию."
         if attachment is not None:
             return self._photo(profile_id, command, source_key, now, attachment)
-        for kind in ("eaten_ack", "calorie_correction"):
+        for kind in ("eaten_ack", "calorie_correction", "meal_metadata"):
             replay = self._by_source(profile_id, kind, source_key)
             if replay is not None:
                 return str(replay.payload["reply"])
@@ -115,6 +115,9 @@ class FoodCoach:
             )
         if self._by_source(profile_id, "text_confirmation", source_key) is not None:
             return self._confirm_text(profile_id, source_key, now)
+        clarification = food_conversation.label_clarification(command)
+        if clarification is not None:
+            return self._clarify_label(profile_id, clarification, command, source_key, now)
         if lowered in {"тот же", "новый"} and (
             self._pending_photo(profile_id) is not None
             or self._by_source(profile_id, "photo_confirmation", source_key) is not None
@@ -125,6 +128,8 @@ class FoodCoach:
             or self._by_source(profile_id, "text_confirmation", source_key) is not None
         ):
             return self._confirm_text(profile_id, source_key, now, same=lowered == "тот же")
+        if lowered in {"новый", "тот же"}:
+            return "Сейчас нет описания, которое ждёт подтверждения. Пришли состав нового приёма или посмотри /сегодня."
         candidate = self._comment_candidate(profile_id, now)
         if re.search(r"посмотри.*(?:переписк|истори)|что.*(?:съел|ел сегодня)", lowered):
             return self._journal(profile_id, now)
@@ -145,7 +150,9 @@ class FoodCoach:
                 return self._comment(profile_id, candidate, command, source_key, now)
             return "Понял, пока не записываю это как съеденное. Когда поешь, напиши состав или пришли фото."
         labelled = self._labelled_category(command)
-        if candidate and labelled and labelled != candidate.payload.get("category") and food_conversation.food_description(command):
+        if labelled and not food_conversation.explicit_revision(command) and (
+            food_conversation.food_description(command) or _TIME.search(command) or self._clear_meal(command)
+        ):
             return self._meal(profile_id, command, source_key, now, None, category=labelled)
         if candidate is not None and food_conversation.explicit_revision(command):
             return self._comment(profile_id, candidate, command, source_key, now)
@@ -298,7 +305,7 @@ class FoodCoach:
     def _meal(
         self, profile_id: UUID, text: str, source_key: str, now: datetime,
         attachment: Attachment | None,
-        *, category: str | None = None,
+        *, category: str | None = None, category_source: str | None = None,
     ) -> str:
         existing = self._by_source(profile_id, "meal", source_key)
         if existing is not None and existing.payload.get("superseded_by_meal"):
@@ -316,7 +323,11 @@ class FoodCoach:
                 "original": text, "caption": attachment.caption if attachment else "",
                 "photo_path": str(attachment.path) if attachment else None,
                 "occurred_at": occurred.isoformat(), "captured_at": now.isoformat(),
-                "category": category, "category_source": "active_reminder" if from_notice else "labelled_heuristic",
+                "category": category, "category_source": category_source or (
+                    "explicit_label" if self._labelled_category(text)
+                    else "active_reminder" if from_notice else "clock_heuristic"
+                ),
+                "time_source": "user" if _TIME.search(text) else "message_time",
                 "analysis": None, "analysis_raw": None, "analysis_error": None,
                 "analysis_status": "pending",
             }
@@ -344,7 +355,11 @@ class FoodCoach:
             )
             return self._analysis_reply(profile_id, updated)
 
+        description = text or attachment.caption
         latest = self._photo_candidate(profile_id, now)
+        labelled = self._labelled_category(description)
+        if _TIME.search(description) or (labelled and latest is not None and labelled != latest.payload.get("category")):
+            return self._start_photo_meal(profile_id, description, source_key, now, attachment)
         if latest is None:
             return self._start_photo_meal(profile_id, text, source_key, now, attachment)
         if self._active_meal_notice(profile_id, now) is not None:
@@ -376,23 +391,24 @@ class FoodCoach:
             "event_at": now.isoformat(), "candidate_meal_id": None,
             "meal_id": None, "status": "pending",
         }, at=now)
-        occurred, cleaned, valid = self._extract_time(text, now)
+        occurred, cleaned, valid = self._extract_time(text or attachment.caption, now)
         if not valid:
             return "Уточните дату или время приёма пищи: указанное время выглядит будущим или слишком давним."
         item = self._photo_item(photo)
         pending_notice = self._active_meal_notice(profile_id, now)
         description = cleaned or attachment.caption
-        from_notice = pending_notice is not None and not self._labelled_category(description)
+        from_notice = pending_notice is not None and not self._labelled_category(description) and not _TIME.search(text or attachment.caption)
         category = pending_notice[0] if from_notice and pending_notice else self._category(description, occurred)
         meal = self._store.put(profile_id, "food", "meal", source_key, {
             "original": text, "caption": attachment.caption,
             "photo_path": str(attachment.path), "photos": [item],
             "latest_photo_at": now.isoformat(),
-            "ended_at": (now + timedelta(minutes=20)).isoformat(),
-            "end_source": "last_photo_plus_20m",
+            "ended_at": (occurred + timedelta(minutes=20)).isoformat(),
+            "end_source": "user_time_plus_20m" if _TIME.search(text or attachment.caption) else "last_photo_plus_20m",
+            "time_source": "user" if _TIME.search(text or attachment.caption) else "message_time",
             "occurred_at": occurred.isoformat(), "captured_at": now.isoformat(),
             "category": category,
-            "category_source": "active_reminder" if from_notice else "labelled_heuristic", "analysis": None,
+            "category_source": "explicit_label" if self._labelled_category(description) else "active_reminder" if from_notice else "clock_heuristic", "analysis": None,
             "analysis_raw": None, "analysis_error": None, "analysis_status": "pending",
         }, at=occurred)
         self._store.patch(profile_id, photo.id, {**photo.payload, "meal_id": meal.id, "status": "confirmed"})
@@ -408,8 +424,9 @@ class FoodCoach:
             payload["photo_path"] = str(photo.payload["path"])
             payload["caption"] = str(photo.payload.get("caption", ""))
         payload["latest_photo_at"] = latest_anchor.isoformat()
-        payload["ended_at"] = (latest_anchor + timedelta(minutes=20)).isoformat()
-        payload["end_source"] = "last_photo_plus_20m"
+        if payload.get("time_source") != "user":
+            payload["ended_at"] = (latest_anchor + timedelta(minutes=20)).isoformat()
+            payload["end_source"] = "last_photo_plus_20m"
         payload["previous_analysis"] = payload.get("analysis")
         payload.pop("user_kcal", None)
         persisted = self._store.patch(profile_id, meal.id, payload)
@@ -477,6 +494,38 @@ class FoodCoach:
         persisted = self._store.patch(profile_id, meal.id, payload)
         return self._analysis_reply(profile_id, self._analyse(profile_id, persisted, comment=saved))
 
+    def _clarify_label(
+        self, profile_id: UUID, category: str, text: str, source_key: str, now: datetime,
+    ) -> str:
+        pending = self._pending_text(profile_id)
+        meal = None
+        if pending and timedelta(0) <= now - pending.at <= timedelta(minutes=30):
+            original = str(pending.payload["text"])
+            if food_conversation.label_clarification(original) is None:
+                reply = self._meal(profile_id, original, pending.source_key, pending.at, None,
+                                   category=category, category_source="explicit_clarification")
+                meal = self._by_source(profile_id, "meal", pending.source_key)
+                if meal is None:
+                    return reply
+                self._store.patch(profile_id, pending.id, {**pending.payload, "status": "confirmed", "meal_id": meal.id})
+        if meal is None:
+            recent = [m for m in self._store.list(profile_id, "food", "meal", limit=100)
+                      if not m.payload.get("superseded_by_meal")
+                      and timedelta(0) <= now - self._from_iso(str(m.payload.get("captured_at", m.at.isoformat()))) <= timedelta(minutes=30)]
+            meal = max(recent, key=lambda m: self._from_iso(str(m.payload.get("captured_at", m.at.isoformat()))), default=None)
+        if meal is None:
+            return "Понял название приёма. Пришли его состав и время — отдельную пустую запись не создаю."
+        payload = {**meal.payload, "category": category, "category_source": "explicit_clarification",
+                   "metadata_corrections": [*meal.payload.get("metadata_corrections", []),
+                                            {"text": text, "source_key": source_key, "at": now.isoformat(), "category": category}]}
+        if payload.get("analysis"):
+            payload["analysis"] = {**payload["analysis"], "feedback": self._render_feedback(payload["analysis"], category, self._protocol(profile_id))}
+        meal = self._store.patch(profile_id, meal.id, payload)
+        reply = self._feedback(profile_id, meal)
+        self._store.put(profile_id, "food", "meal_metadata", source_key,
+                        {"meal_id": meal.id, "reply": reply, "category": category}, at=now)
+        return reply
+
     def _confirm_text(self, profile_id: UUID, source_key: str, now: datetime, *, same: bool = False) -> str:
         previous = self._by_source(profile_id, "text_confirmation", source_key)
         if previous is not None:
@@ -499,7 +548,8 @@ class FoodCoach:
                 profile_id, str(pending.payload["text"]), pending.source_key, pending.at, None,
             )
             meal = self._by_source(profile_id, "meal", pending.source_key)
-        assert meal is not None
+        if meal is None:
+            return reply
         self._store.patch(profile_id, pending.id, {**pending.payload, "status": "confirmed"})
         self._store.put(profile_id, "food", "text_confirmation", source_key, {
             "pending_source_key": pending.source_key, "meal_id": meal.id,
@@ -704,6 +754,10 @@ class FoodCoach:
         payload = dict(meal.payload)
         payload["occurred_at"] = correction.payload["occurred_at"]
         payload["time_corrected"] = True
+        payload["time_source"] = "user"
+        if payload.get("ended_at"):
+            payload["ended_at"] = (occurred + timedelta(minutes=20)).isoformat()
+            payload["end_source"] = "user_time_plus_20m"
         self._store.patch(profile_id, meal.id, payload)
         return f"Время последнего приёма пищи исправлено на {occurred.astimezone(_USER_ZONE):%H:%M}."
 
@@ -856,6 +910,10 @@ class FoodCoach:
                 f"{adherence} Оценка основана только на сохранённых данных.")
 
     def _weekly_notice(self, profile_id: UUID, now: datetime) -> Notice | None:
+        from health_agent.pilot.weekly_cycle import owns_weeklies
+
+        if owns_weeklies(self._store, profile_id):
+            return None
         local = now.astimezone(_USER_ZONE)
         if local.weekday() != 6 or local.time().replace(tzinfo=None) < time(18, 0):
             return None
@@ -896,7 +954,8 @@ class FoodCoach:
     def _photo_candidate(self, profile_id: UUID, event_at: datetime) -> Record | None:
         candidates = [
             meal for meal in self._store.list(profile_id, "food", "meal")
-            if self._from_iso(str(meal.payload["occurred_at"])) <= event_at
+            if not meal.payload.get("superseded_by_meal")
+            and self._from_iso(str(meal.payload["occurred_at"])) <= event_at
         ]
         if not candidates:
             return None
@@ -1056,21 +1115,13 @@ class FoodCoach:
 
     @staticmethod
     def _labelled_category(text: str) -> str | None:
-        words = {"breakfast": "завтрак|breakfast", "lunch": "обед|lunch",
-                 "afternoon": "полдник|перекус|snack", "dinner": "ужин|dinner"}
-        return next((key for key, pattern in words.items() if re.search(pattern, text, re.IGNORECASE)), None)
+        return food_conversation.labelled_category(text)
 
     @staticmethod
     def _category(text: str, occurred: datetime) -> str:
-        lowered = text.lower()
-        labels = {
-            "breakfast": ("завтрак", "breakfast"), "lunch": ("обед", "lunch"),
-            "afternoon": ("полдник", "перекус", "snack"),
-            "dinner": ("ужин", "dinner"),
-        }
-        for category, words in labels.items():
-            if any(word in lowered for word in words):
-                return category
+        labelled = food_conversation.labelled_category(text)
+        if labelled:
+            return labelled
         hour = occurred.astimezone(_USER_ZONE).hour
         if hour < 11:
             return "breakfast"

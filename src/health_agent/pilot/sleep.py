@@ -210,6 +210,8 @@ class SleepCoach:
         return reply
 
     def due(self, profile_id: UUID, now: datetime) -> list[Notice]:
+        from health_agent.pilot.weekly_cycle import owns_weeklies
+
         local = _aware(now).astimezone(_MOSCOW)
         notices: list[Notice] = []
         enabled, morning_at = self._schedule(profile_id)
@@ -223,7 +225,7 @@ class SleepCoach:
                     Notice(key, sleep_checkin.start(self.store, profile_id, now))
                 )
 
-        if local.weekday() == 6 and local.time().replace(tzinfo=None) >= time(18):
+        if local.weekday() == 6 and local.time().replace(tzinfo=None) >= time(18) and not owns_weeklies(self.store, profile_id):
             key = f"weekly:{local.date().isoformat()}"
             recent = self._recent_week_entries(profile_id, local)
             if len(recent) >= 3 and not self._notice_delivered(profile_id, key):

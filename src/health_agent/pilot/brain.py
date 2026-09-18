@@ -21,6 +21,7 @@ from health_agent.config import Settings
 from health_agent.pilot.contracts import Store
 from health_agent.pilot.food_history import build_food_history
 from health_agent.pilot.sleep_context import night_contexts
+from health_agent.pilot.weekly_cycle import context as weekly_context
 from health_agent.questions.safety import guard_urgent_question
 
 _RULES = """
@@ -177,6 +178,7 @@ class PilotBrain:
         today = datetime.now(ZoneInfo("Europe/Moscow")).date()
         result: dict[str, Any] = {
             "current_local_date": today.isoformat(),
+            "shared_weekly_cycle": weekly_context(self.store, self.profile_id, datetime.now(UTC)),
             "sleep_location_context": night_contexts(
                 self.store, self.profile_id, today - timedelta(days=14), today + timedelta(days=60),
             ),
