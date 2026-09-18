@@ -16,7 +16,8 @@ from sqlalchemy import Engine, or_, select
 from health_agent.automation.storage import atomic_private_write
 from health_agent.config import Settings
 from health_agent.db import session_scope
-from health_agent.pilot.storage import PilotRecord
+from health_agent.pilot.sleep_context import night_contexts, sleep_comparisons
+from health_agent.pilot.storage import PilotRecord, PilotStore
 from health_agent.qingping.service import FIELDS, Connection
 from health_agent.research.calendar import STUDY_START, ZONE, bounds
 from health_agent.whoop.models import (
@@ -123,6 +124,7 @@ def export_day(
     series: dict[str, list[tuple[datetime, float]]] = {f"air_{k}": [] for k in FIELDS}
     participants: list[dict[str, Any]] = []
     summaries: dict[str, Any] = {}
+    night_notes: dict[str, list[dict[str, Any]]] = {}
     stresses: list[dict[str, Any]] = []
     room_bins: dict[int, set[str]] = defaultdict(set)
     with session_scope(engine) as session:
@@ -158,6 +160,9 @@ def export_day(
                     series[f"air_{metric}"].append((row.at, value))
         for index, profile in enumerate(profiles, 1):
             alias = f"person_{index}"
+            night_notes[alias] = night_contexts(
+                PilotStore(engine), profile, day, day + timedelta(days=1),
+            )
             connection = session.scalar(
                 select(WhoopConnection).where(WhoopConnection.profile_id == profile)
             )
@@ -234,6 +239,10 @@ def export_day(
                 stage_latest[row.payload["logical_id"]] = row.payload
             summary = {
                 "sleep": [s.source_values for s in sleeps],
+                "sleep_room_comparisons": sleep_comparisons(
+                    [{"sleep_id": s.external_id, "end_at": s.end_at.isoformat(), "nap": s.is_nap}
+                     for s in sleeps if s.end_at is not None], night_notes[alias],
+                ),
                 "recovery": [r.source_values for r in recoveries],
                 "sleep_stages": stage_latest,
                 "stress_original": latest.get("stress", {}),
@@ -314,6 +323,7 @@ def export_day(
         "aggregation": "half-open UTC intervals; no interpolation; count zero means no observation",
         "stress_time_alignment": "unverified; native minute labels only, never synthetic UTC",
         "nightly_metrics": "original sleep/recovery source values, not continuous samples",
+        "room_comparison": "Raw series are unfiltered co-observations, not personal exposure. Join sleep_room_comparisons by sleep ID: exclude_away must be excluded, unknown is not confirmed home presence. Night-context plans remain plans.",
         "noise_max": "maximum of returned samples, not manufacturer Lmax or guaranteed acoustic peak",
         "completeness": "exported does not mean complete; consult research/daily/<profile-id>/<date>.json",
     }
@@ -348,6 +358,9 @@ def export_day(
     atomic_private_write(
         root / "whoop-context.json", json.dumps(summaries, ensure_ascii=False).encode()
     )
+    atomic_private_write(
+        root / "night-context.json", json.dumps(night_notes, ensure_ascii=False).encode()
+    )
     from health_agent.research.weather import export_day as export_weather_day
 
     manifest["weather"] = export_weather_day(settings, engine, day)
@@ -361,6 +374,7 @@ def export_day(
             "native-observations.csv",
             "stress-native.csv",
             "whoop-context.json",
+            "night-context.json",
         )
     }
     if manifest["weather"].get("status") == "exported":

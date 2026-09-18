@@ -448,11 +448,13 @@ def test_weekly_invalid_or_unknown_ids_get_deterministic_useful_fallback() -> No
 def test_health_context_and_goals_are_context_not_claims_and_fallback_saves() -> None:
     store, profile = MemoryStore(), uuid4()
     store.put(profile, "shared", "goal", "g1", {"text": "ложиться раньше"}, at=NOW)
+    store.put(profile, "shared", "goal", "old", {"text": "old routine", "status": "paused"}, at=NOW)
 
     def unavailable(*args: Any, **kwargs: Any) -> str:
         raise RuntimeError("provider down")
 
     coach = SleepCoach(store, unavailable, health_context=lambda _p, _t: {"whoop": "missing"})
+    assert coach._prompt_payload(profile, "План", False, NOW)["goals_not_evidence"] == [{"text": "ложиться раньше"}]
     reply = coach.handle(profile, "/сон Спал семь часов", source_key="entry", now=NOW)
     assert "сохран" in reply.lower()
     assert "08:00" in reply

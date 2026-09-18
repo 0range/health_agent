@@ -139,6 +139,16 @@ associations. Room move time and notable nights away, illness, alcohol, late foo
 exercise and ventilation changes are useful context when known. See the
 [research protocol](../research/room-sleep-pilot.md) for interpretation limits.
 
+Night location is stored per profile as `shared/sleep_context`, with explicit
+Moscow night-start/wake dates and `reported` or `planned` user provenance. These
+notes are available to all three bots and exported in `night-context.json`.
+`whoop-context.json` includes `sleep_room_comparisons`, keyed by sleep ID: exclude
+`exclude_away` nights from bedroom exposure analysis; `unknown` does not establish
+home presence. A planned absence is conservatively excluded, without claiming it
+already occurred. Notes about nights do not establish daytime or nap locations.
+The raw series remain unfiltered; their matching timestamps alone do not establish
+personal exposure. One participant's trip never implies another participant left.
+
 Sources: [Qingping cloud API](https://developer.qingping.co/cloud-to-cloud/open-apis),
 [WHOOP public API](https://developer.whoop.com/api/).
 

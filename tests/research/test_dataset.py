@@ -119,6 +119,11 @@ def test_daily_export_keeps_profiles_separate_and_shared_humidity(
                 )
             )
     store = PilotStore(clean_database)
+    store.put(DEFAULT_PROFILE_ID, "shared", "sleep_context", "away", {
+        "night_start_date": (day - timedelta(days=1)).isoformat(),
+        "wake_date": day.isoformat(), "location": "away", "evidence": "reported",
+        "source": "user", "timezone": "Europe/Moscow",
+    })
     collector = DetailService(store, tmp_path)
     for profile, uid, value in [
         (DEFAULT_PROFILE_ID, 7, 60),
@@ -164,6 +169,10 @@ def test_daily_export_keeps_profiles_separate_and_shared_humidity(
     assert len(result["participants"]) == 2
     assert result["air_samples"] == 1
     root = settings.research_root / "datasets" / day.isoformat()
+    context = json.loads((root / "night-context.json").read_text())
+    assert context["person_1"][0]["room_comparison"] == "exclude_away"
+    assert context["person_2"] == []
+    assert "night-context.json" in result["files"]
     with (root / "series-6s.csv").open() as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 14400

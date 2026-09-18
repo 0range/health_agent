@@ -1,6 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -44,9 +45,17 @@ def test_shared_context_excludes_inactive_goals_but_keeps_dated_future_stage(dom
             "title": status, "status": status, "period_start": "2027-01-01",
         })
     brain = PilotBrain(Settings(yandex_folder_id="test"), profile, store=store, domain=domain)
+    today = datetime.now(ZoneInfo("Europe/Moscow")).date()
+    store.put(profile, "shared", "sleep_context", "trip", {
+        "night_start_date": (today - timedelta(days=1)).isoformat(),
+        "wake_date": today.isoformat(), "location": "away", "evidence": "planned",
+        "source": "user", "timezone": "Europe/Moscow",
+    })
     context = brain._profile_context()
     assert {g["status"] for g in context["shared_goals_not_evidence"]} == {"active", "planned"}
     assert all(g["period_start"] == "2027-01-01" for g in context["shared_goals_not_evidence"])
+    assert context["sleep_location_context"][0]["room_comparison"] == "exclude_away"
+    assert brain._profile_context(focused_sleep=True)["sleep_location_context"] == context["sleep_location_context"]
 
 
 def test_consent_and_text_call():

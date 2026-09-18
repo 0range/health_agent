@@ -363,7 +363,8 @@ class SleepCoach:
                 {"id": row.id, "at": row.at.isoformat(), **row.payload}
                 for row in entries if now - timedelta(days=14) <= row.at <= now
             ],
-            "goals_not_evidence": [row.payload for row in goals],
+            "goals_not_evidence": [row.payload for row in goals
+                                   if row.payload.get("status", "active") in {"active", "planned"}],
             "verified_health_context": health,
         }
 
