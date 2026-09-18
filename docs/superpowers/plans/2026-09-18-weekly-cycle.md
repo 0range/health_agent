@@ -49,12 +49,17 @@ existing domain stores and Telegram runtime provide I/O and idempotent delivery.
 
 ## Task 4: Rollout and concrete user result
 
-- [ ] Private snapshot and atomic historical repair; check unchanged meals and replay.
-- [ ] Persist owner cycle settings and the first explicit draft, without accepting it.
-- [ ] Fast-forward tested commits, restart conversations, verify successful polling
+- [x] Private snapshot and atomic historical repair; check unchanged meals and replay.
+- [x] Persist owner cycle settings and the first explicit draft, without accepting it.
+- [x] Fast-forward tested commits, restart conversations, verify successful polling
   and the first scheduled invitation/delivery receipt without manually sending chat.
-- [ ] Push GitHub, verify remote SHA, report fixed meal times and how to accept the
+- [x] Push GitHub, verify remote SHA, report fixed meal times and how to accept the
   concrete weekly proposal; clearly state any remaining unconfirmed food record.
 
 Validation before rollout: 458 tests passed across pilot/research/Telegram; Ruff and
 mypy passed. Historical repair and the initial draft were previewed in a private clone.
+
+Rollout: the three conversation agents resumed successfully; their polls were fresh
+and error-free. The main bot recorded delivery of the initial draft. No weekly plan
+was accepted automatically. The source-backed meal repair preserved the existing
+lunch and afternoon additions; source replay created no extra meals or model runs.
