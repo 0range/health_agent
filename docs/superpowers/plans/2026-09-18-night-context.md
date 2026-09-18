@@ -18,21 +18,30 @@ series unchanged and publish explicit per-sleep room-comparison metadata.
 
 ## Tasks
 
-- [ ] Add `pilot/sleep_context.py` with `night_contexts(store, profile, first, last)`
+- [x] Add `pilot/sleep_context.py` with `night_contexts(store, profile, first, last)`
   returning sanitized dated annotations, and `sleep_comparisons(sleeps, contexts)`
   mapping each sleep's local end date to excluded-away or unknown room relevance.
-- [ ] Add regression tests for date boundaries, invalid notes, profile isolation,
+- [x] Add regression tests for date boundaries, invalid notes, profile isolation,
   future-plan provenance and unmatched sleeps. Extend brain tests for all three
   domains and the existing research export test to verify profile-separated notes.
-- [ ] Pass the context through `pilot/brain.py` even in focused sleep answers;
+- [x] Pass the context through `pilot/brain.py` even in focused sleep answers;
   remove paused goals from the duplicate goal list in `pilot/sleep.py`.
-- [ ] Export `night-context.json`, include it in the file hash manifest, and add
+- [x] Export `night-context.json`, include it in the file hash manifest, and add
   `sleep_room_comparisons` in WHOOP context. Leave all measured rows unchanged.
-- [ ] Run `uv run pytest tests/pilot tests/research tests/telegram -q`, Ruff and
+- [x] Run `uv run pytest tests/pilot tests/research tests/telegram -q`, Ruff and
   mypy on touched modules; inspect the diff for personal data.
-- [ ] Snapshot and save only the confirmed user's notes; verify all three model
+- [x] Snapshot and save only the confirmed user's notes; verify all three model
   contexts and private export files, then fast-forward main, restart conversation
   services, push GitHub and verify polling/remote SHA.
 
 The broader product review is read-only: distinguish collection, useful local
 features and the still-missing shared plan/execution/review loop.
+
+## Verification
+
+438 pilot/research/Telegram tests passed; Ruff passed; mypy passed for 32 source
+files. The additional inactive sleep-goal regression passed. Private notes were
+snapshotted, saved and verified in all three model contexts. A production daily
+export verified the new sidecar checksum and per-sleep metadata without backdating
+the future notes. Conversation services have fresh successful polls. Implementation
+was pushed to GitHub main and remote/local SHA matched.
