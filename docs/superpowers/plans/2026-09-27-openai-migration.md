@@ -43,6 +43,6 @@ Files: private `.env` and ignored `data/verification/openai-migration-2026-09-27
 
 - [x] Probe Astra text, image, food JSON and correction, sleep/training dialogue, health-question adapter and structured lab extraction with synthetic inputs. Probe Russian Ogg speech with the actual transcription adapter.
 - [x] Save a private redacted result report with actual response model/status, latency and usage.
-- [ ] Commit reviewed code, fast-forward main, atomically update private `.env` to OpenAI and the authorized owner profile. Keep a private rollback snapshot.
-- [ ] Restart main, food, training and panel services; verify new PIDs, fresh poll timestamps and no runtime errors. Check periodic sync configuration and collector health without sending chat messages.
-- [ ] Push main and compare local HEAD with origin/main. Report actual tested model and a plain-language call inventory to the user.
+- [x] Commit reviewed code, fast-forward main, atomically update private `.env` to OpenAI and the authorized owner profile. Keep a private rollback snapshot.
+- [x] Restart main, food, training and panel services; verify new PIDs, fresh poll timestamps and no runtime errors. Check periodic sync configuration and collector health without sending chat messages.
+- [x] Push main and compare local HEAD with origin/main. Report actual tested model and a plain-language call inventory to the user.
