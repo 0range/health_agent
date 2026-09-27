@@ -44,7 +44,7 @@ def test_shared_context_excludes_inactive_goals_but_keeps_dated_future_stage(dom
         store.put(profile, "shared", "goal", status, {
             "title": status, "status": status, "period_start": "2027-01-01",
         })
-    brain = PilotBrain(Settings(yandex_folder_id="test"), profile, store=store, domain=domain)
+    brain = PilotBrain(Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="test"), profile, store=store, domain=domain)
     today = datetime.now(ZoneInfo("Europe/Moscow")).date()
     store.put(profile, "shared", "sleep_context", "trip", {
         "night_start_date": (today - timedelta(days=1)).isoformat(),
@@ -60,7 +60,7 @@ def test_shared_context_excludes_inactive_goals_but_keeps_dated_future_stage(dom
 
 def test_consent_and_text_call():
     client = Client()
-    settings = Settings(
+    settings = Settings(_env_file=None, ai_provider="yandex",
         yandex_folder_id="test", yandex_allowed_profile_ids=(UUID(int=1),)
     )
     brain = PilotBrain(settings, UUID(int=1), client=client)
@@ -75,7 +75,7 @@ def test_photo_uses_configured_vision_model(tmp_path):
     image = tmp_path / "plate.jpg"
     image.write_bytes(b"\xff\xd8\xffimage")
     client = Client()
-    settings = Settings(
+    settings = Settings(_env_file=None, ai_provider="yandex",
         yandex_folder_id="test", yandex_allowed_profile_ids=(UUID(int=1),)
     )
     PilotBrain(settings, UUID(int=1), client=client)("Food", {}, image_path=image)
@@ -88,7 +88,7 @@ def test_model_metadata_durable_and_failure_retains_input(clean_database):
     store = PilotStore(clean_database)
     profile = UUID(int=1)
     client = Client()
-    settings = Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,))
+    settings = Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="test", yandex_allowed_profile_ids=(profile,))
     brain = PilotBrain(settings, profile, client=client, store=store, domain="food")
     brain("Food", {"message": "Обед"})
     saved = store.list(profile, "food", "model_run")[0]
@@ -127,7 +127,7 @@ def test_transcription_uses_ogg_and_consent(monkeypatch, tmp_path):
     )
     path = tmp_path / "voice.ogg"
     path.write_bytes(b"OggSfake")
-    settings = Settings(
+    settings = Settings(_env_file=None, ai_provider="yandex",
         yandex_folder_id="test", yandex_allowed_profile_ids=(UUID(int=1),)
     )
     assert PilotBrain(settings, UUID(int=1)).transcribe(path) == "Проснулся бодрым"
@@ -175,7 +175,7 @@ def test_shared_source_preferences_and_apple_data_do_not_leak_chats(clean_databa
     )
     client = Client()
     brain = PilotBrain(
-        Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,)),
+        Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="test", yandex_allowed_profile_ids=(profile,)),
         profile,
         client=client,
         store=store,
@@ -212,7 +212,7 @@ def test_sleep_context_has_own_food_facts_and_selected_framework_only(clean_data
         "preferences": ["без рыбы"], "uncertainties": ["порции"],
         "private_notes": "must not leak",
     })
-    settings = Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,))
+    settings = Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="test", yandex_allowed_profile_ids=(profile,))
 
     sleep_client = Client()
     PilotBrain(settings, profile, client=sleep_client, store=store, domain="sleep")(

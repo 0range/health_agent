@@ -1,4 +1,4 @@
-"""Existing Yandex text/vision models, bound to an explicitly consenting profile."""
+"""Configured text/vision provider, bound to an explicitly consenting profile."""
 
 import base64
 import json
@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from health_agent.ai.openai import _OpenAIAdapter
 from health_agent.ai.yandex import (
     _chat_content,
     _YandexAdapter,
@@ -67,11 +68,24 @@ class PilotBrain:
         self.settings = settings
         self.profile_id = profile_id
         self.store, self.domain = store, domain
-        self.adapter = _YandexAdapter(
-            settings,
-            client=client,
-            timeout_seconds=settings.yandex_question_timeout_seconds,
+        self.provider = settings.ai_provider
+        self.adapter: _OpenAIAdapter | _YandexAdapter
+        if self.provider == "openai":
+            self.adapter = _OpenAIAdapter(settings, client=client)
+        else:
+            self.adapter = _YandexAdapter(
+                settings,
+                client=client,
+                timeout_seconds=settings.yandex_question_timeout_seconds,
+            )
+
+    def _require_consent(self) -> None:
+        allowed = (
+            self.settings.openai_allowed_profile_ids if self.provider == "openai"
+            else self.settings.yandex_allowed_profile_ids
         )
+        if self.profile_id not in allowed:
+            raise ValueError("pilot_provider_consent_required")
 
     def __call__(
         self,
@@ -80,8 +94,7 @@ class PilotBrain:
         *,
         image_path: Path | None = None,
     ) -> str:
-        if self.profile_id not in self.settings.yandex_allowed_profile_ids:
-            raise ValueError("pilot_provider_consent_required")
+        self._require_consent()
         current = payload.get("message", payload.get("text", ""))
         if isinstance(current, str):
             urgent = guard_urgent_question(current)
@@ -95,7 +108,8 @@ class PilotBrain:
         if len(encoded) > 90_000:
             raise ValueError("pilot_context_too_large")
         content: list[dict[str, Any]] = [{"type": "text", "text": encoded}]
-        model = yandex_question_model_uri(self.settings)
+        model = (self.settings.openai_model if self.provider == "openai"
+                 else yandex_question_model_uri(self.settings))
         if image_path is not None:
             data = image_path.read_bytes()
             if len(data) > 10 * 1024 * 1024:
@@ -114,7 +128,8 @@ class PilotBrain:
                     },
                 }
             )
-            model = yandex_model_uri(self.settings)
+            if self.provider == "yandex":
+                model = yandex_model_uri(self.settings)
         messages = [
             {"role": "system", "content": _RULES + "\n" + system},
             {"role": "user", "content": content},
@@ -127,7 +142,7 @@ class PilotBrain:
                 "model_run",
                 str(uuid4()),
                 {
-                    "provider": "yandex",
+                    "provider": self.provider,
                     "model": model,
                     "system": _RULES + "\n" + system,
                     "input": payload,
@@ -136,15 +151,18 @@ class PilotBrain:
                 },
             )
         try:
-            response = self.adapter._get_client().chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=2000,
-                reasoning_effort="none",
-                temperature=0,
-                store=False,
-            )
-            output = _chat_content(response)
+            if isinstance(self.adapter, _OpenAIAdapter):
+                response, output = self.adapter.respond(_RULES + "\n" + system, content, self.profile_id)
+            else:
+                response = self.adapter._get_client().chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=2000,
+                    reasoning_effort="none",
+                    temperature=0,
+                    store=False,
+                )
+                output = _chat_content(response)
         except Exception as error:
             if self.store is not None and run is not None:
                 self.store.patch(
@@ -236,11 +254,12 @@ class PilotBrain:
         return result
 
     def transcribe(self, path: Path) -> str:
-        if self.profile_id not in self.settings.yandex_allowed_profile_ids:
-            raise ValueError("pilot_provider_consent_required")
+        self._require_consent()
         data = path.read_bytes()
         if len(data) > 1024 * 1024 or not data.startswith(b"OggS"):
             raise ValueError("pilot_voice_limit")
+        if isinstance(self.adapter, _OpenAIAdapter):
+            return self.adapter.transcribe(data)
         with httpx.Client(timeout=35) as client:
             response = client.post(
                 "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize",

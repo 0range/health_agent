@@ -23,8 +23,8 @@ from health_agent.questions.models import (
 from health_agent.questions.presentation import select_presentation
 from health_agent.questions.service import QuestionResponderError
 
-DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-DEFAULT_MAX_OUTPUT_TOKENS = 2_000
+DEFAULT_OPENAI_MODEL = "gpt-6-astra"
+DEFAULT_MAX_OUTPUT_TOKENS = 4_000
 MAX_OUTPUT_TOKENS = 8_000
 MAX_QUESTION_CHARACTERS = 4_000
 MAX_CITATION_LABEL_CHARACTERS = 32
@@ -375,4 +375,6 @@ def _build_openai_client(api_key: str) -> ResponsesClient:
 
     from openai import OpenAI
 
-    return cast(ResponsesClient, OpenAI(api_key=api_key, timeout=30.0, max_retries=0))
+    return cast(ResponsesClient, OpenAI(
+        api_key=api_key, base_url="https://api.openai.com/v1", timeout=60.0, max_retries=0,
+    ))

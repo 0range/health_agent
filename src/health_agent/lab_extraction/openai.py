@@ -107,7 +107,9 @@ class OpenAILabExtractor:
         if self._client is None:
             try:
                 key = self.settings.load_openai_api_key().get_secret_value()
-                self._client = OpenAI(api_key=key, timeout=30.0, max_retries=0)
+                self._client = OpenAI(
+                    api_key=key, base_url="https://api.openai.com/v1", timeout=60.0, max_retries=0,
+                )
             except Exception:  # noqa: BLE001 -- never expose key-file/config details
                 raise ExtractionError("openai_not_configured") from None
         return self._client

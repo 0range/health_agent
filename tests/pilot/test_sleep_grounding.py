@@ -182,7 +182,7 @@ def test_final_provider_payload_omits_unrelated_profile_data_only_when_focused()
         at=NOW,
     )
     brain = PilotBrain(
-        Settings(yandex_folder_id="test", yandex_allowed_profile_ids=(profile,)),
+        Settings(_env_file=None, ai_provider="yandex", yandex_folder_id="test", yandex_allowed_profile_ids=(profile,)),
         profile,
         client=client,
         store=store,

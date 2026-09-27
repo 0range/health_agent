@@ -156,17 +156,22 @@ class Settings(BaseSettings):
         default=Path(".tokens/openai-api-key"),
         validation_alias="OPENAI_API_KEY_FILE",
     )
-    # gpt-5-mini is the deliberately stable, lower-latency default for this
-    # bounded text-only health-question workflow. Deployments may override it.
-    openai_model: str = Field(default="gpt-5-mini", validation_alias="OPENAI_MODEL")
+    # Shared by text, vision, health questions and structured lab extraction.
+    openai_model: str = Field(default="gpt-6-astra", validation_alias="OPENAI_MODEL")
     openai_max_output_tokens: int = Field(
-        default=2_000,
+        default=4_000,
         ge=64,
         le=8_000,
         validation_alias="OPENAI_MAX_OUTPUT_TOKENS",
     )
-    openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = Field(
+    openai_reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = Field(
         default="low", validation_alias="OPENAI_REASONING_EFFORT"
+    )
+    openai_transcription_model: str = Field(
+        default="gpt-transcribe", validation_alias="OPENAI_TRANSCRIPTION_MODEL"
+    )
+    openai_allowed_profile_ids: tuple[UUID, ...] = Field(
+        default=(), validation_alias="OPENAI_ALLOWED_PROFILE_IDS"
     )
     ai_provider: Literal["openai", "yandex"] = Field(
         default="openai", validation_alias="AI_PROVIDER"

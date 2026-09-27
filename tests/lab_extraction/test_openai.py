@@ -209,7 +209,7 @@ def test_official_client_uses_shared_key_loader_timeout_and_zero_retries(monkeyp
     extractor.extract(PROFILE, TEXT)
     assert calls == [
         "key_loaded",
-        {"api_key": "synthetic-test-key", "timeout": 30.0, "max_retries": 0},
+        {"api_key": "synthetic-test-key", "base_url": "https://api.openai.com/v1", "timeout": 60.0, "max_retries": 0},
     ]
 
 

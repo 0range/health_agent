@@ -46,12 +46,12 @@ def test_default_budget_reasoning_and_sdk_latency_are_bounded(monkeypatch) -> No
         "fake-key", client=SimpleNamespace(responses=responses)
     )
     responder.respond(profile_id=PROFILE_ID, question="test", context=_context())
-    assert responses.calls[0]["max_output_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS == 2_000
+    assert responses.calls[0]["max_output_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS == 4_000
     assert responses.calls[0]["reasoning"] == {"effort": "low"}
     captured = []
     monkeypatch.setattr("openai.OpenAI", lambda **kwargs: captured.append(kwargs))
     _build_openai_client("fake-key")
-    assert captured == [{"api_key": "fake-key", "timeout": 30.0, "max_retries": 0}]
+    assert captured == [{"api_key": "fake-key", "base_url": "https://api.openai.com/v1", "timeout": 60.0, "max_retries": 0}]
 
 
 def test_selected_window_and_sync_semantics_are_sent_for_longer_requested_period() -> (

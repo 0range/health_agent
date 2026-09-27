@@ -54,6 +54,7 @@ class SDKClient:
     def __init__(self):
         self.calls = []
         self.chat = SimpleNamespace(completions=self)
+        self.responses = self
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -75,6 +76,11 @@ class SDKClient:
             ensure_ascii=False,
         )
         return SimpleNamespace(
+            status="completed", output_text=content,
+            output=[SimpleNamespace(
+                type="message", role="assistant", status="completed",
+                content=[SimpleNamespace(type="output_text", text=content)],
+            )],
             choices=[
                 SimpleNamespace(
                     finish_reason="stop",
@@ -181,14 +187,16 @@ def test_telegram_postgres_replay_caption_and_identity(tmp_path, clean_database)
     assert "другого профиля" in gateway.sent[-1][1]
 
 
+@pytest.mark.parametrize("provider", ["openai", "yandex"])
 def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
-    tmp_path, clean_database
+    tmp_path, clean_database, provider
 ):
     store = PilotStore(clean_database)
     client = SDKClient()
-    settings = Settings(
+    settings = Settings(_env_file=None, ai_provider=provider,
         yandex_folder_id="test",
         yandex_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
+        openai_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
     )
     brain = PilotBrain(
         settings,
@@ -236,6 +244,7 @@ def test_real_food_pipeline_delivers_reply_and_persists_model_metadata(
     assert attachment.payload["reply"] == gateway.sent[-1][1]
     assert meal.payload["analysis"]["foods"] == ["рис", "овощи"]
     assert model_run.payload["status"] == "completed"
+    assert model_run.payload["provider"] == provider
     assert model_run.payload["model"] == client.calls[0]["model"]
     assert model_run.payload["output"]
 

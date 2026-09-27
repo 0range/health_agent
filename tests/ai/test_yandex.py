@@ -40,6 +40,7 @@ class RecordingCompletions:
 
 
 def settings(**kwargs):
+    kwargs.setdefault("openai_max_output_tokens", 2000)
     return Settings(_env_file=None, yandex_folder_id="synthetic-folder", **kwargs)
 
 

@@ -3,6 +3,7 @@
 from datetime import timedelta
 from types import SimpleNamespace
 
+import pytest
 from test_runtime import NOW, Gateway, SDKClient, update
 
 from health_agent.config import Settings
@@ -24,15 +25,16 @@ from health_agent.telegram.stores import SqliteTelegramState
 from health_agent.telegram.types import TelegramIdentity
 
 
-def test_two_photos_comments_restart_and_weekly_delivery(tmp_path, clean_database):
+@pytest.mark.parametrize("provider", ["openai", "yandex"])
+def test_two_photos_comments_restart_and_weekly_delivery(tmp_path, clean_database, provider):
     clock = [NOW]
     store = PilotStore(clean_database)
     client = SDKClient()
     brain = PilotBrain(
-        Settings(
-            _env_file=None,
+        Settings(_env_file=None, ai_provider=provider,
             yandex_folder_id="synthetic",
             yandex_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
+            openai_allowed_profile_ids=(DEFAULT_PROFILE_ID,),
         ),
         DEFAULT_PROFILE_ID,
         client=client,
