@@ -48,6 +48,30 @@ acceptance. A reproducible methods/data-quality report is a realistic first pape
 artifact. Freeze the analysis protocol before fitting associations; this draft is
 not a preregistration. Publishing any personal data requires a separate decision.
 
+## Noise peaks and effective timing
+
+Report the background/median, maximum **reported** value, p95/p99, fraction of
+high readings and separate excursions per hour of each person's actual sleep.
+An arithmetic mean of dB is not Leq. Thresholds are exploratory counting rules,
+not medical cutoffs. Counts/durations describe the reported series, not verified
+numbers or lengths of real acoustic events.
+
+An archive audit found about-minute constant-noise plateaus in original provider
+responses while other fields changed in adjacent six-second rows. The collector
+does not forward-fill noise. Record timestamps therefore do not establish noise
+measurement resolution. Averaging, peak detection, weighting and time offset are
+unverified. Do not interpret short-lag HR/awakening responses, or their absence,
+until that timing is established.
+
+Once verified, compare isolated events with quiet moments in the same person/night
+and preceding sleep stage; account for time of night and missingness, then summarize
+across nights. Check whether arousal preceded noise: sleepers can generate sound.
+WHOOP stages are estimates, not EEG confirmation. Do not select the largest
+exploratory correlation as an established effect.
+
+Method references: [WHO Night Noise Guidelines, section 5.7](https://iris.who.int/bitstream/handle/10665/326486/9789289041737-eng.pdf)
+and [Griefahn et al., 2008](https://pmc.ncbi.nlm.nih.gov/articles/PMC2279756/).
+
 ## Interface provenance
 
 [Qingping cloud API](https://developer.qingping.co/cloud-to-cloud/open-apis),

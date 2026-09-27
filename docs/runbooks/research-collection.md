@@ -18,6 +18,14 @@ verified interfaces; the current archive includes nightly HRV. Noise values are
 not audio, and brief peaks between readings may be missed. The manufacturer's
 archival noise semantics have not been established as Leq/Lmax.
 
+An archive audit also found about-minute noise plateaus in original provider rows,
+while CO2 changed between adjacent six-second timestamps. The local collector does
+not fill repeated values. Noise therefore has unverified effective resolution and
+time offset; six-second row coverage does not prove six-second noise measurement.
+Use maxima/percentiles and high-value excursions as descriptions of the reported
+series. Short-lag noise/HR/awakening inference is blocked until noise timing is
+verified. See the research protocol's noise section.
+
 Each participant requires their own profile, public authorization and app-session
 configuration; disk planning includes two. See the additional-participant setup below.
 Existing historical data before 10 September is retained, but outside this study.
