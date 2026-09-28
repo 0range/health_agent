@@ -45,7 +45,7 @@ Files: `pilot/health_insights_report.py`, `pilot/weekly_cycle.py`,
 - [x] Preview on the user's real data read-only; save private evidence and show an
   honest current conclusion without pretending there is a fresh weight trend.
 - [x] Run affected tests, Ruff and mypy; verify the scale's official integration path.
-- [ ] Commit, fast-forward main, activate the owner setting with backup/audit,
+- [x] Commit, fast-forward main, activate the owner setting with backup/audit,
   restart affected services and verify polling. Push and compare GitHub SHA.
-- [ ] Document report semantics and clearly identify any weight-automation setup
+- [x] Document report semantics and clearly identify any weight-automation setup
   that still requires a phone/account action from the user.
