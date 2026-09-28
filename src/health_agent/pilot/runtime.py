@@ -20,6 +20,7 @@ from health_agent.google_calendar.composition import build_publication_service
 from health_agent.pilot.brain import PilotBrain
 from health_agent.pilot.contracts import Attachment, Coach, Store
 from health_agent.pilot.goals import goal_action
+from health_agent.pilot.health_insights_report import HealthInsights
 from health_agent.pilot.storage import PilotStore
 from health_agent.pilot.weekly_cycle import WeeklyCycle
 from health_agent.questions.composition import (
@@ -81,9 +82,18 @@ HELP = {
     ),
 }
 HELP['sleep'] += '\n\nОбщая неделя: /цикл — план, /цикл итог — сверка, /цикл итог <текст> — результат или трудность.\n/вес <кг> · /тренировка YYYY-MM-DD <что сделал> · /цикл стоп · /цикл вкл.'
+HELP['sleep'] += '\n/инсайты — совместный разбор еды, веса, WHOOP и тренировок COROS.'
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _PROFILE_REJECTED = "Этот пилот настроен для другого профиля. Сообщение не обрабатывалось."
+
+
+def health_insights(store: Store) -> HealthInsights:
+    if isinstance(store, PilotStore):
+        from health_agent.pilot.health_insights_whoop import read_whoop
+
+        return HealthInsights(store, lambda profile, first, last, now: read_whoop(store.engine, profile, first, last, now))
+    return HealthInsights(store)
 
 
 @contextmanager
@@ -128,7 +138,7 @@ class PilotActions:
         urgent = guard_urgent_question(text)
         if urgent is not None:
             return urgent
-        cycle_reply = WeeklyCycle(self.store).handle(context.profile_id, text, key, now, self.domain)
+        cycle_reply = WeeklyCycle(self.store, insights=health_insights(self.store)).handle(context.profile_id, text, key, now, self.domain)
         if cycle_reply is not None:
             return cycle_reply
         reply = goal_action(
@@ -270,7 +280,7 @@ def dispatch_notices(
     sent = 0
     notices = list(coach.due(profile_id, now))
     if domain == 'sleep':
-        notices.extend(WeeklyCycle(store).due(profile_id, now))
+        notices.extend(WeeklyCycle(store, insights=health_insights(store)).due(profile_id, now))
     for notice in notices:
         frozen = store.put(
             profile_id, domain, "outbound", notice.key, {"text": notice.text}, at=now
@@ -411,7 +421,14 @@ def build_coach(
             with session_scope(store.engine) as session:
                 context = HealthContextBuilder(session).build(profile, question)
                 blocks: Any = build_responder_input(question, context)[0]["content"]
-                return json.loads(blocks[1]["text"])
+                result = json.loads(blocks[1]["text"])
+            try:
+                observations = health_insights(store).build(profile, datetime.now(UTC))
+                # Follow-up questions see the same computed facts as the deterministic report.
+                result["joint_health_observations"] = {k: v for k, v in observations.items() if k != "daily"}
+            except Exception:  # noqa: BLE001 -- optional coaching facts must not erase clinical evidence
+                result["joint_health_observations"] = {"status": "unavailable"}
+            return result
 
         return SleepCoach(store, brain, health_context=health_context), brain
     if domain == "food":

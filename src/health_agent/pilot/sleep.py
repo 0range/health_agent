@@ -354,7 +354,10 @@ class SleepCoach:
                 health = {}
         focused = is_sleep_question(question)
         if focused:
+            joint = health.get("joint_health_observations")
             health = focused_evidence(health, question, now)
+            if joint is not None:
+                health["joint_health_observations"] = joint
         return {
             "request": text,
             "request_is_diary": is_diary,

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from health_agent.pilot.contracts import Notice, Record, Store
 from health_agent.pilot.food_focus import FoodFocus
 from health_agent.pilot.food_history import build_food_history
+from health_agent.pilot.health_insights_report import HealthInsights
 from health_agent.pilot.sleep_context import night_contexts
 from health_agent.pilot.weekly_evidence import evidence, report_text
 
@@ -77,8 +78,9 @@ def context(store: Store, profile: UUID, now: datetime) -> dict[str, Any]:
 
 
 class WeeklyCycle:
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, *, insights: HealthInsights | None = None) -> None:
         self.store = store
+        self.insights = insights
 
     def _record(self, profile: UUID, kind: str, first: date) -> Record | None:
         return self.store.by_source(profile, "shared", kind, first.isoformat())
@@ -177,6 +179,11 @@ class WeeklyCycle:
         self, profile: UUID, text: str, key: str, now: datetime, domain: str
     ) -> str | None:
         text = text.strip()
+        weight_message = re.fullmatch(r"(?:вес|вешу)\s+(\d{2,3}(?:[.,]\d{1,2})?)\s*(?:кг)?[.!]?", text, re.IGNORECASE)
+        if weight_message:
+            text = "/вес " + weight_message[1]
+        if text.casefold() in {"/инсайты", "инсайты", "покажи инсайты", "общий разбор"} and self.insights is not None:
+            return self.insights.report(profile, now, "request:" + key)
         button = BUTTON.fullmatch(text)
         if not (
             text.casefold().startswith(("/цикл", "/вес ", "/тренировка ", "неделя:"))
@@ -199,7 +206,7 @@ class WeeklyCycle:
                 return self._reply(
                     profile, key, "Общий цикл включён. Текущий план: /цикл.", now
                 )
-        if not enabled(self.store, profile):
+        if not enabled(self.store, profile) and not text.casefold().startswith("/вес "):
             return None
         today = now.astimezone(ZONE).date()
         first = _next_monday(today)
@@ -424,7 +431,7 @@ class WeeklyCycle:
         ]
         return str(rows[0].payload["text"]) if rows else None
 
-    def review(self, profile: UUID, plan: Record, now: datetime) -> str:
+    def review(self, profile: UUID, plan: Record, now: datetime, *, key: str | None = None) -> str:
         p = plan.payload
         facts = evidence(
             self.store,
@@ -433,6 +440,13 @@ class WeeklyCycle:
             date.fromisoformat(p["through_date"]),
             now,
         )
+        if self.insights is not None and settings(self.store, profile).get("health_insights_enabled") is True:
+            report = self.insights.report(profile, now, key or "review:" + now.isoformat())
+            result = self._result(profile, plan)
+            if not facts.get("not_started"):
+                report += (f"\nВ принятом плане {p['from_date']}–{p['through_date']}: "
+                           f"минимум {p['training_sessions']} занятий. Дней с записанными занятиями: {facts['training_days']}.")
+            return report + ("\nТвой итог недели: " + result[:240] if result else "")
         return report_text(facts, p, self._result(profile, plan))
 
     def due(self, profile: UUID, now: datetime) -> list[Notice]:
@@ -458,7 +472,9 @@ class WeeklyCycle:
         ):
             first = anchor.date() - timedelta(days=6)
             plan = self._record(profile, "cycle_plan", first)
-            prefix = self.review(profile, plan, now) + "\n\n" if plan else ""
+            prefix = self.review(profile, plan, now, key=key) + "\n\n" if plan else ""
+            if not plan and self.insights is not None and settings(self.store, profile).get("health_insights_enabled") is True:
+                prefix = self.insights.report(profile, now, key) + "\n\n"
             next_plan = self.proposal(profile, first + timedelta(days=7), now)
             accepted = self._record(profile, "cycle_plan", first + timedelta(days=7))
             return [
@@ -482,7 +498,7 @@ class WeeklyCycle:
                 Notice(
                     key,
                     "Сверка общей недели\n"
-                    + self.review(profile, plan, now)
+                    + self.review(profile, plan, now, key=key)
                     + "\nКак получается следовать плану?",
                 )
             ]

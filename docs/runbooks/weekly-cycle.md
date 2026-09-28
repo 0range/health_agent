@@ -77,3 +77,11 @@ research collectors continue. Check fresh poll timestamps/error fields, main
 plan until the user presses accept. Inspect exact repaired meal times and preserved
 comments via `build_food_history`; verify source replay record counts are unchanged.
 Push the tested commit and verify the remote SHA. Do not move the existing v0.1 tag.
+
+## Joint health observations
+
+With `health_insights_enabled: true`, the shared review includes the joint
+food/weight/WHOOP/COROS report, including when no weekly draft was accepted.
+The report covers completed days and the existing plan check retains its own
+explicit dates. On-demand `/инсайты` works independently of accepted plans or push
+settings. See [the report semantics and weight integration limits](joint-health-insights.md).

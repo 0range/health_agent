@@ -92,6 +92,7 @@ def evidence(
         "coros_sessions": len(activity_ids),
         "manual_days_without_coros": len(manual_days - coros_days),
         "training_count": len(activity_ids) + len(manual_days - coros_days),
+        "training_days": len(coros_days | manual_days),
         "possible_manual_overlap": bool(manual_days & coros_days),
         "training_last_sync": syncs[0].at.isoformat() if syncs else None,
         "training_sync_status": syncs[0].payload.get("status") if syncs else None,
