@@ -105,11 +105,38 @@ def build_insights(
             continue
         day = row.at.astimezone(ZONE).date().isoformat()
         if latest_weight is None or row.at > datetime.fromisoformat(latest_weight["at"]):
-            latest_weight = {"kg": kg, "date": day, "at": row.at.isoformat(), "source": row.payload.get("source")}
+            latest_weight = {"kg": kg, "date": day, "at": row.at.isoformat(), "source": row.payload.get("source"),
+                             "timestamp_precision": row.payload.get("timestamp_precision", "instant")}
         if day in days:
             weighed[day].add((row.at.isoformat(), kg))
     for day, values in weighed.items():
         days[day]["weight_kg"] = float(median(v for _, v in values))
+
+    composition_fields = {"body_fat_percent": 100, "muscle_mass_kg": 500, "muscle_percent": 100}
+    composition_days: dict[str, dict[str, set[float]]] = defaultdict(lambda: defaultdict(set))
+    latest_body: dict[str, Any] | None = None
+    for row in rows("shared", "body_measurement"):
+        p = row.payload
+        recorded_at = timestamp(p.get("recorded_at"))
+        if row.at > now or recorded_at is None or recorded_at > now:
+            continue
+        day = row.at.astimezone(ZONE).date().isoformat()
+        if p.get("measurement_date") != day:
+            continue
+        measurements = {k: number(p.get(k), limit) for k, limit in composition_fields.items()}
+        if not any(v is not None for v in measurements.values()):
+            continue
+        if (latest_body is None or (day, recorded_at.isoformat()) >
+                (latest_body["date"], latest_body["recorded_at"])):
+            latest_body = {**measurements, "date": day, "recorded_at": recorded_at.isoformat(),
+                           "source": p.get("source"), "timestamp_precision": "day"}
+        if day in days:
+            for field, value in measurements.items():
+                if value is not None:
+                    composition_days[day][field].add(value)
+    for day, fields in composition_days.items():
+        for field, composition_values in fields.items():
+            days[day][field] = float(median(composition_values))
 
     activities: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -181,13 +208,15 @@ def build_insights(
         for key in ("kcal_recorded", "protein_recorded_g", "training_minutes"):
             entry[key] = round(entry[key], 1)
     recent = daily[-7:]
-    weight = _comparison(daily, "weight_kg", 3)
+    weight = _comparison(daily, "weight_kg", 2)
     weight["delta_kg"] = weight["delta"]
     latest_sync = next((r for r in runs if r.at <= now), None)
     result: dict[str, Any] = {
         "as_of": now.isoformat(), "first_date": first.isoformat(), "through_date": last.isoformat(),
         "recent_from": (last - timedelta(days=6)).isoformat(), "daily": daily,
         "weight": {**weight, "latest": latest_weight},
+        "body_composition": {"latest": latest_body, "method": "reported_scale_estimates",
+                             **{k: _comparison(daily, k, 2) for k in composition_fields}},
         "food": {"entries": sum(d["food_entries"] for d in recent),
                  "days": sum(d["food_entries"] > 0 for d in recent),
                  "four_slot_days": sum(len(d["main_slots"]) == 4 for d in recent),
@@ -210,6 +239,8 @@ def build_insights(
         "associations": _associations(days, sleeps, activities, locations),
         "truncated": truncated or whoop.get("truncated", False),
         "limits": ["logged food is not a complete diet", "weight change is not measured fat loss",
+                   "body composition is estimated by the scale; kg and percent are separate",
+                   "day precision timestamps are storage anchors, not known weighing times",
                    "COROS absence is not proof of inactivity", "wearable estimates are not diagnoses",
                    "observational comparisons cannot establish causality"],
     }

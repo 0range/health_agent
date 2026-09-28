@@ -49,6 +49,49 @@ def test_weight_daily_medians_not_repeat_measurements_and_undated_whoop_is_not_a
     assert "не измеренная потеря жира" in render(r)
 
 
+def test_two_measurement_days_per_week_allow_a_preliminary_weight_comparison():
+    store, p = MemoryStore(), uuid4()
+    for ago, kg in [(1, 75), (4, 75), (8, 76), (11, 76)]:
+        store.put(p, "shared", "weight", str(ago), {"weight_kg": kg}, at=NOW-timedelta(days=ago))
+    r = build_insights(store, p, NOW, whoop())
+    assert r["weight"]["delta_kg"] == -1
+    assert r["weight"]["recent_days"] == r["weight"]["previous_days"] == 2
+    assert "Предварительное сравнение" in render(r)
+
+
+def test_composition_estimates_are_daily_and_units_and_profile_stay_separate():
+    store, p = MemoryStore(), uuid4()
+    for ago in (1, 4, 8, 11):
+        at = NOW-timedelta(days=ago)
+        payload = {"body_fat_percent": 20 if ago < 7 else 21,
+                   "muscle_mass_kg": 56 if ago < 7 else None,
+                   "muscle_percent": None if ago < 7 else 42,
+                   "recorded_at": NOW.isoformat(), "measurement_date": at.date().isoformat()}
+        for copy in ("original", "copy"):
+            store.put(p, "shared", "body_measurement", f"{ago}:{copy}", payload, at=at)
+    store.put(uuid4(), "shared", "body_measurement", "foreign", {
+        "body_fat_percent": 99, "recorded_at": NOW.isoformat(), "measurement_date": NOW.date().isoformat()}, at=NOW)
+    r = build_insights(store, p, NOW, whoop())
+    body = r["body_composition"]
+    assert body["body_fat_percent"]["delta"] == -1
+    assert body["body_fat_percent"]["recent_days"] == 2
+    assert body["muscle_mass_kg"]["previous"] is None
+    assert body["muscle_percent"]["recent"] is None
+    assert body["latest"]["body_fat_percent"] == 20
+    assert "Это оценки весов" in render(r)
+
+
+def test_todays_composition_is_visible_but_does_not_enter_completed_week_comparison():
+    store, p = MemoryStore(), uuid4()
+    for key, when in (("today", NOW), ("future", NOW+timedelta(days=1))):
+        store.put(p, "shared", "body_measurement", key, {
+            "body_fat_percent": 22, "recorded_at": when.isoformat(),
+            "measurement_date": when.date().isoformat()}, at=when)
+    r = build_insights(store, p, NOW, whoop())
+    assert r["body_composition"]["latest"]["date"] == NOW.date().isoformat()
+    assert r["body_composition"]["body_fat_percent"]["recent_days"] == 0
+
+
 def test_sparse_invalid_future_other_profile_weight_and_partial_day_are_excluded():
     store, p = MemoryStore(), uuid4()
     for i, value in enumerate((True, float("nan"), -3, 0, float("inf"))):

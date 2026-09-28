@@ -83,6 +83,7 @@ HELP = {
 }
 HELP['sleep'] += '\n\nОбщая неделя: /цикл — план, /цикл итог — сверка, /цикл итог <текст> — результат или трудность.\n/вес <кг> · /тренировка YYYY-MM-DD <что сделал> · /цикл стоп · /цикл вкл.'
 HELP['sleep'] += '\n/инсайты — совместный разбор еды, веса, WHOOP и тренировок COROS.'
+HELP['sleep'] += '\n/замер — вес, процент жира и мышцы: три коротких вопроса.\n/замер YYYY-MM-DD — замер за другую дату; /замер отмена — отменить.'
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
 _PROFILE_REJECTED = "Этот пилот настроен для другого профиля. Сообщение не обрабатывалось."
@@ -138,6 +139,12 @@ class PilotActions:
         urgent = guard_urgent_question(text)
         if urgent is not None:
             return urgent
+        if self.domain == "sleep":
+            from health_agent.pilot.body_checkin import handle as body_checkin
+
+            body_reply = body_checkin(self.store, context.profile_id, text, key, now)
+            if body_reply is not None:
+                return body_reply
         cycle_reply = WeeklyCycle(self.store, insights=health_insights(self.store)).handle(context.profile_id, text, key, now, self.domain)
         if cycle_reply is not None:
             return cycle_reply
@@ -280,6 +287,9 @@ def dispatch_notices(
     sent = 0
     notices = list(coach.due(profile_id, now))
     if domain == 'sleep':
+        from health_agent.pilot.body_checkin import due as body_due
+
+        notices.extend(body_due(store, profile_id, now))
         notices.extend(WeeklyCycle(store, insights=health_insights(store)).due(profile_id, now))
     for notice in notices:
         frozen = store.put(
@@ -455,10 +465,11 @@ class SleepTelegramAPI(TelegramBotAPI):
     """Derive stable reply buttons from durable, versioned questionnaire prompts."""
 
     def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int:
+        from health_agent.pilot.body_checkin import keyboard as body_keyboard
         from health_agent.pilot.sleep_checkin import keyboard
         from health_agent.pilot.weekly_cycle import keyboard as cycle_keyboard
 
-        return super().send_message(chat_id, text, reply_markup=keyboard(text) or cycle_keyboard(text))
+        return super().send_message(chat_id, text, reply_markup=keyboard(text) or cycle_keyboard(text) or body_keyboard(text))
 
 
 def run_pilot(settings: Settings, domain: str, profile_id: UUID) -> None:

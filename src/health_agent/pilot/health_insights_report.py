@@ -17,11 +17,17 @@ def render(report: dict[str, Any]) -> str:
     last = date.fromisoformat(report["through_date"]).strftime("%d.%m")
     lines = [f"🧩 Общий разбор {first}–{last} · завершённые дни"]
     if weight["delta_kg"] is not None:
-        lines.append(f"⚖️ Средний вес: {weight['recent']:g} кг; {weight['delta_kg']:+g} кг к прошлой неделе ({weight['recent_days']} и {weight['previous_days']} дней измерений). Это изменение веса, не измеренная потеря жира.")
+        lines.append(f"⚖️ Средний вес: {weight['recent']:g} кг; {weight['delta_kg']:+g} кг к прошлой неделе ({weight['recent_days']} и {weight['previous_days']} дней измерений). Предварительное сравнение: это изменение веса, не измеренная потеря жира.")
     else:
         latest = weight.get("latest")
         detail = f" Последний датированный: {latest['kg']:g} кг, {date.fromisoformat(latest['date']):%d.%m}." if latest else ""
-        lines.append("⚖️ Динамику веса пока не оценить: нужно хотя бы по 3 дня измерений в двух неделях." + detail)
+        lines.append("⚖️ Динамику веса пока не оценить: нужно хотя бы по 2 дня измерений в двух неделях." + detail)
+    body = report.get("body_composition", {}).get("latest")
+    if body:
+        parts = [f"{label} {body[key]:g}{unit}" for key, label, unit in (
+            ("body_fat_percent", "жир", "%"), ("muscle_mass_kg", "мышцы", " кг"),
+            ("muscle_percent", "мышцы", "%")) if body.get(key) is not None]
+        lines.append(f"📏 Весы {date.fromisoformat(body['date']):%d.%m}: {', '.join(parts)}. Это оценки весов.")
     lines.append(f"🍽 Еда записана в {food['days']}/7 дней; все четыре приёма — в {food['four_slot_days']}/7. Это полнота записей, не оценка того, сколько ты ел.")
     calories, protein = food["calories"], food["protein"]
     if calories["recent"] is not None:
@@ -84,11 +90,11 @@ def render(report: dict[str, Any]) -> str:
     if whoop_stale or coros_stale:
         action = "восстановить свежую синхронизацию перед выводами по нагрузке и восстановлению."
     elif latest is None or (now.date() - date.fromisoformat(latest["date"])).days > 7:
-        action = "добавить свежий вес: /вес <кг>. Датированный ряд нужен, чтобы проверить движение к цели."
+        action = "добавить свежий замер: /замер или /вес <кг>. Датированный ряд нужен, чтобы проверить движение к цели."
     elif food["four_slot_days"] < 3:
         action = "три дня подряд записать все четыре приёма и дополнения — тогда можно сопоставлять питание с весом."
     elif weight["delta_kg"] is None:
-        action = "продолжить датированные записи веса; для сравнения нужны хотя бы 3 дня в каждой из двух недель."
+        action = "продолжить замеры дважды в неделю; первое предварительное сравнение появится при 2 днях в каждой из двух недель."
     else:
         action = "на следующую неделю выбрать одно изменение и записывать его; по текущим совпадениям причины не установлены."
     lines.append("🎯 Один следующий шаг: " + action)
