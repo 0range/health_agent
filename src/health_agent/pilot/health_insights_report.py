@@ -105,15 +105,15 @@ class HealthInsights:
     def __init__(self, store: Store, whoop_source: WhoopSource | None = None) -> None:
         self.store, self.whoop_source = store, whoop_source
 
-    def build(self, profile: UUID, now: datetime) -> dict[str, Any]:
-        first, last = period(now)
+    def build(self, profile: UUID, now: datetime, *, through_date: date | None = None) -> dict[str, Any]:
+        first, last = period(now, through_date)
         whoop: dict[str, Any] = {"status": "not_connected", "records": []}
         if self.whoop_source is not None:
             try:
                 whoop = self.whoop_source(profile, first, last, now)
             except Exception:  # noqa: BLE001 -- report missing source without exposing DB details
                 whoop = {"status": "unavailable", "records": []}
-        return build_insights(self.store, profile, now, whoop)
+        return build_insights(self.store, profile, now, whoop, through_date=through_date)
 
     def report(self, profile: UUID, now: datetime, key: str) -> str:
         saved = self.store.by_source(profile, "shared", "health_insight", key)

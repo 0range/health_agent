@@ -31,10 +31,13 @@ def timestamp(value: Any) -> datetime | None:
         return None
 
 
-def period(now: datetime) -> tuple[date, date]:
+def period(now: datetime, through_date: date | None = None) -> tuple[date, date]:
     if now.tzinfo is None:
         raise ValueError("now_requires_timezone")
-    last = now.astimezone(ZONE).date() - timedelta(days=1)
+    today = now.astimezone(ZONE).date()
+    last = through_date if through_date is not None else today - timedelta(days=1)
+    if last > today:
+        raise ValueError("future_insight_period")
     return last - timedelta(days=27), last
 
 
@@ -51,8 +54,10 @@ def _comparison(rows: list[dict[str, Any]], key: str, minimum: int) -> dict[str,
 
 def build_insights(
     store: Store, profile: UUID, now: datetime, whoop: dict[str, Any],
+    *, through_date: date | None = None,
 ) -> dict[str, Any]:
-    first, last = period(now)
+    first, last = period(now, through_date)
+    partial_day = last.isoformat() if last == now.astimezone(ZONE).date() else None
     days: dict[str, dict[str, Any]] = {}
     for offset in range(28):
         day_key = (first + timedelta(days=offset)).isoformat()
@@ -203,8 +208,9 @@ def build_insights(
         days[day]["location"] = context["location"]
     daily = list(days.values())
     for entry in daily:
-        entry["kcal_four_slots"] = round(entry["kcal_recorded"]) if len(entry["main_slots"]) == 4 and not entry["kcal_missing"] else None
-        entry["protein_four_slots"] = round(entry["protein_recorded_g"], 1) if len(entry["main_slots"]) == 4 and not entry["protein_missing"] else None
+        complete_day = entry["date"] != partial_day
+        entry["kcal_four_slots"] = round(entry["kcal_recorded"]) if complete_day and len(entry["main_slots"]) == 4 and not entry["kcal_missing"] else None
+        entry["protein_four_slots"] = round(entry["protein_recorded_g"], 1) if complete_day and len(entry["main_slots"]) == 4 and not entry["protein_missing"] else None
         for key in ("kcal_recorded", "protein_recorded_g", "training_minutes"):
             entry[key] = round(entry[key], 1)
     recent = daily[-7:]
@@ -213,6 +219,7 @@ def build_insights(
     latest_sync = next((r for r in runs if r.at <= now), None)
     result: dict[str, Any] = {
         "as_of": now.isoformat(), "first_date": first.isoformat(), "through_date": last.isoformat(),
+        "partial_day": partial_day,
         "recent_from": (last - timedelta(days=6)).isoformat(), "daily": daily,
         "weight": {**weight, "latest": latest_weight},
         "body_composition": {"latest": latest_body, "method": "reported_scale_estimates",

@@ -12,6 +12,11 @@ from health_agent.pilot.food_history import build_food_history
 from health_agent.pilot.health_insights_report import HealthInsights
 from health_agent.pilot.sleep_context import night_contexts
 from health_agent.pilot.weekly_evidence import evidence, report_text
+from health_agent.pilot.weekly_goals import (
+    current_goals,
+    training_label,
+    training_targets,
+)
 
 ZONE = ZoneInfo("Europe/Moscow")
 SETTING = "coaching-cycle"
@@ -87,17 +92,22 @@ class WeeklyCycle:
 
     def proposal(self, profile: UUID, first: date, now: datetime) -> Record:
         existing = self._record(profile, "cycle_proposal", first)
-        if existing:
-            return existing
         last = first + timedelta(days=6)
-        goals = [
-            r.payload
-            for r in self.store.list(profile, "shared", "goal", limit=100)
-            if r.payload.get("status", "active") in {"active", "planned"}
-            and r.payload.get("priority") == "primary"
-            and r.payload.get("period_start", "0000") <= last.isoformat()
-            and r.payload.get("period_end", "9999") >= first.isoformat()
-        ]
+        goals = current_goals(self.store, profile, first, last)
+        targets = training_targets(goals)
+        if existing:
+            if (self._record(profile, "cycle_plan", first) is None
+                    and existing.payload.get("goals") != goals):
+                previous_payload = existing.payload
+                return self.store.patch(profile, existing.id, {**previous_payload, "goals": goals,
+                    "training_targets": targets,
+                    "training_sessions": sum(targets.values()) if targets else previous_payload["training_sessions"],
+                    "revision": previous_payload["revision"] + 1,
+                    "goal_review_history": [*previous_payload.get("goal_review_history", []),
+                        {"at": now.isoformat(), "goals": previous_payload.get("goals"),
+                         "training_targets": previous_payload.get("training_targets"),
+                         "training_sessions": previous_payload["training_sessions"], "revision": previous_payload["revision"]}]})
+            return existing
         trips = night_contexts(self.store, profile, first, last + timedelta(days=1))
         away = [n for n in trips if n["location"] == "away"]
         history = build_food_history(self.store, profile, now, days=7)
@@ -107,6 +117,8 @@ class WeeklyCycle:
             else FoodFocus._suggest(history)
         )
         target = settings(self.store, profile).get("training_sessions", 2)
+        if targets:
+            target = sum(targets.values())
         if (
             not isinstance(target, int)
             or isinstance(target, bool)
@@ -119,6 +131,7 @@ class WeeklyCycle:
             r"не успева|не успел|нет времени|слишком много", feedback, re.IGNORECASE
         ):
             target = 1
+            targets = {"strength": 1} if "strength" in targets else {}
             focus = "Для одного занятого дня заранее выбрать удобный полдник по своему плану."
         return self.store.put(
             profile,
@@ -132,6 +145,7 @@ class WeeklyCycle:
                 "away_nights": away,
                 "food_focus": focus,
                 "training_sessions": target,
+                "training_targets": targets,
                 "previous_feedback": feedback,
                 "status": "proposed",
                 "revision": 1,
@@ -153,9 +167,12 @@ class WeeklyCycle:
         ]
         lines.extend("🎯 " + g["title"] for g in p.get("goals", [])[:2])
         lines.append("🍽 Одна задача: " + p["food_focus"])
-        lines.append(
-            f"🏃 Привычные короткие тренировки: {p['training_sessions']} за неделю. Дни выбирай по доступности."
-        )
+        if p.get("training_targets"):
+            lines.append("🏋️ Ритм недели: " + training_label(p["training_targets"]) + ". Дни выбирай по доступности.")
+        else:
+            lines.append(
+                f"🏃 Привычные короткие тренировки: {p['training_sessions']} за неделю. Дни выбирай по доступности."
+            )
         if p.get("away_nights"):
             lines.append(
                 "🧳 Учтены ночи вне дома. Для занятий выбирай доступный привычный вариант; воздух спальни к этим ночам не относим."
@@ -182,6 +199,13 @@ class WeeklyCycle:
         weight_message = re.fullmatch(r"(?:вес|вешу)\s+(\d{2,3}(?:[.,]\d{1,2})?)\s*(?:кг)?[.!]?", text, re.IGNORECASE)
         if weight_message:
             text = "/вес " + weight_message[1]
+        if (domain == "sleep" and text.casefold() in {"/неделя", "итоги недели"}
+                and self.insights is not None and settings(self.store, profile).get("weekly_brief_enabled") is True):
+            from health_agent.pilot.weekly_brief import WeeklyBrief
+
+            today = now.astimezone(ZONE).date()
+            sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+            return WeeklyBrief(self.store, self.insights).report(profile, now, sunday, "request:" + key)
         if text.casefold() in {"/инсайты", "инсайты", "покажи инсайты", "общий разбор"} and self.insights is not None:
             return self.insights.report(profile, now, "request:" + key)
         button = BUTTON.fullmatch(text)
@@ -329,6 +353,9 @@ class WeeklyCycle:
                     "Это предложение уже недоступно. Свежий план: /цикл.",
                     now,
                 )
+            updated = self.proposal(profile, first, now)
+            if updated.payload["revision"] != proposal.payload["revision"]:
+                return self._reply(profile, key, "Цели обновились; проверь новый вариант.\n" + self.render(updated), now)
             accepted = self._record(profile, "cycle_plan", first)
             if accepted:
                 self._mirror(profile, accepted, now)
@@ -342,6 +369,7 @@ class WeeklyCycle:
                     {
                         **proposal.payload,
                         "training_sessions": 1,
+                        "training_targets": {"strength": 1} if "strength" in proposal.payload.get("training_targets", {}) else {},
                         "revision": proposal.payload["revision"] + 1,
                         "food_focus": "Для одного занятого дня заранее выбрать удобный полдник по своему плану.",
                     },
@@ -418,6 +446,7 @@ class WeeklyCycle:
                 "from_date": p["from_date"],
                 "through_date": p["through_date"],
                 "training_sessions": p["training_sessions"],
+                "training_targets": p.get("training_targets", {}),
                 "source": "user_accepted_cycle",
             },
             at=now,
@@ -470,6 +499,10 @@ class WeeklyCycle:
             and config.at <= anchor
             and key not in delivered
         ):
+            if self.insights is not None and config.payload.get("weekly_brief_enabled") is True:
+                from health_agent.pilot.weekly_brief import WeeklyBrief
+
+                return [Notice(key, WeeklyBrief(self.store, self.insights).report(profile, now, anchor.date(), key))]
             first = anchor.date() - timedelta(days=6)
             plan = self._record(profile, "cycle_plan", first)
             prefix = self.review(profile, plan, now, key=key) + "\n\n" if plan else ""
