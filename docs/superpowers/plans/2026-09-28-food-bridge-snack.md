@@ -38,6 +38,6 @@ Files: `pilot/food_assessment.py`, `pilot/food_history.py`, `pilot/brain.py`, `p
 ## Task 3: Verify and deploy
 
 - [x] Run one bounded OpenAI analysis of ten almonds in an isolated store; verify next meal and calorie estimate without writing fake food into production.
-- [ ] Save private current protocol backup; activate the exception and replace contradictory blanket snack text atomically after checking unchanged state.
-- [ ] Fast-forward clean main, restart affected bot processes, verify fresh polling/no errors and push/compare remote commit.
-- [ ] Record evidence in a runbook and report archive-supported alternatives and limitations.
+- [x] Save private current protocol backup; activate the exception and replace contradictory blanket snack text atomically after checking unchanged state.
+- [x] Fast-forward clean main, restart affected bot processes, verify fresh polling/no errors and push/compare remote commit.
+- [x] Record evidence in a runbook and report archive-supported alternatives and limitations.
