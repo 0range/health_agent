@@ -571,6 +571,11 @@ class FoodCoach:
         *, comment: Record | None = None,
     ) -> Record:
         payload = dict(meal.payload)
+        for prior in (payload.get("analysis"), payload.get("last_successful_analysis"),
+                      payload.get("previous_analysis")):
+            if isinstance(prior, dict) and food_assessment.calories(prior.get("kcal")) is not None:
+                payload["last_successful_analysis"] = dict(prior)
+                break
         payload["analysis"] = None
         payload["analysis_raw"] = None
         payload["analysis_error"] = None
@@ -586,7 +591,8 @@ class FoodCoach:
             comments = [str(item.payload["text"]) for item in sorted(comment_records, key=lambda item: item.at)]
             evidence = additions([str(payload["original"]), str(payload["caption"]), *comments])
             payload.update(evidence)
-            reference = payload.get("previous_analysis") or meal.payload.get("analysis") or {}
+            reference = (meal.payload.get("analysis") or payload.get("previous_analysis")
+                         or payload.get("last_successful_analysis") or {})
             known_foods = reference.get("foods", [])
             if not known_foods and payload.get("photos"):
                 known_foods = (payload["photos"][0].get("analysis") or {}).get("foods", [])
@@ -612,7 +618,7 @@ class FoodCoach:
                     "portion": payload.get("user_portion"), "comments": comments,
                     **evidence,
                     "confirmed_corrections": corrections,
-                    "previous_analysis": payload.get("previous_analysis"),
+                    "previous_analysis": reference,
                     "photo_analyses": [item.get("analysis") for item in payload.get("photos", [])
                                        if item.get("analysis") is not None],
                 },
@@ -682,6 +688,12 @@ class FoodCoach:
                     [derived] if len(payload.get("photos", [])) <= 1 else [*observations, derived],
                     str(payload["category"]),
                     self._protocol(profile_id), payload.get("user_portion"),
+                    multiple_photos=len(payload.get("photos", [])) > 1,
+                    required_foods=reconcile(reference, evidence, reference, _NUTRIENTS)["foods"],
+                    prior_photos_complete=all(
+                        isinstance(item.get("analysis"), dict)
+                        for item in payload.get("photos", [])
+                    ),
                 )
                 payload["analysis"] = reconcile(payload["analysis"], evidence, reference, _NUTRIENTS)
                 payload["analysis"] = correct_grains(payload["analysis"], corrections, _NUTRIENTS)
@@ -695,6 +707,8 @@ class FoodCoach:
                     "raw": raw, "derived": derived,
                     "reason": "photo" if chosen_image is not None else "text",
                 }]
+                if food_assessment.calories(current.get("kcal")) is not None:
+                    payload["last_successful_analysis"] = dict(current)
         except Exception as exc:  # noqa: BLE001 - authorized model callable is a boundary
             payload["analysis"] = None
             payload["analysis_error"] = type(exc).__name__
@@ -705,8 +719,23 @@ class FoodCoach:
     def _aggregate_analysis(
         values: list[dict[str, Any]], category: str, protocol: dict[str, Any],
         user_portion: Any,
+        *, multiple_photos: bool = False, required_foods: list[str] | None = None,
+        prior_photos_complete: bool = True,
     ) -> dict[str, Any]:
         latest = dict(values[-1])
+        complete_total = (
+            latest.get("analysis_scope") == "whole_meal"
+            and prior_photos_complete
+            and all(
+                any(mentions(food, candidate) or mentions(candidate, food)
+                    for candidate in latest["foods"])
+                for food in (required_foods or [])
+            )
+        )
+        if multiple_photos and complete_total:
+            # The provider has already included earlier food and removed repeat
+            # views. Never add historical totals or merge their renamed foods.
+            values = [latest]
         foods: list[str] = []
         seen: set[str] = set()
         components: set[str] = set()
@@ -724,7 +753,8 @@ class FoodCoach:
         latest["foods"] = foods[:50]
         latest["plate_components"] = [key for key in _COMPONENT_LABELS if key in components]
         latest["unknowns"] = unknowns[:50]
-        if len(values) > 2:
+        if multiple_photos and not complete_total:
+            latest["analysis_scope"] = "partial"
             latest["portion_estimate"] = None
             for key in _NUTRIENTS:
                 latest[key] = None
@@ -1219,6 +1249,7 @@ class FoodCoach:
                 reply += " По твоей оценке; оценка модели сохранена отдельно."
         else:
             reply = "Приём пищи сохранён; анализ сейчас недоступен."
+        reply += self._previous_estimate_notice(payload)
         if isinstance(analysis, dict):
             carb_note = food_carbs.feedback(analysis.get("foods"))
             if carb_note:
@@ -1242,6 +1273,7 @@ class FoodCoach:
         occurred = self._from_iso(str(payload["occurred_at"])).astimezone(_USER_ZONE)
         reply = f"📝 Записал {food_assessment.LABELS.get(category, 'приём пищи').lower()}, {occurred:%H:%M}.\n"
         reply += food_assessment.render_meal(analysis, category)
+        reply += self._previous_estimate_notice(payload)
         if payload.get("user_kcal"):
             reply += "\nКалории за этот приём — по твоей оценке; оценку модели сохранил отдельно."
         if payload.get("confirmed_additions"):
@@ -1259,6 +1291,18 @@ class FoodCoach:
         if category == "breakfast" and focus:
             reply += "\n🎯 Фокус: " + str(focus.payload["text"])
         return reply + "\n⏰ " + self._next_meal_text(profile_id, meal).replace("по вашему плану", "по плану")
+
+    @staticmethod
+    def _previous_estimate_notice(payload: dict[str, Any]) -> str:
+        current = payload.get("analysis")
+        if isinstance(current, dict) and food_assessment.calories(current.get("kcal")) is not None:
+            return ""
+        previous = payload.get("last_successful_analysis")
+        kcal = food_assessment.calories(previous.get("kcal")) if isinstance(previous, dict) else None
+        if kcal is None:
+            return ""
+        return (f"\n↩️ Предыдущая оценка сохранена: ≈{kcal:g} ккал. "
+                "Последнее фото или уточнение ещё не учтено в общей калорийности.")
 
     @staticmethod
     def _meal_target(payload: dict[str, Any], protocol: dict[str, Any]) -> datetime:
@@ -1385,7 +1429,9 @@ class FoodCoach:
     @staticmethod
     def _system_prompt() -> str:
         return (
-            "Return one JSON object only. plate_components MUST be a JSON array using only "
+            "Return one JSON object only. Set analysis_scope to whole_meal only when the "
+            "nutrient estimate covers the entire recorded meal including earlier photos; "
+            "otherwise set it to partial. plate_components MUST be a JSON array using only "
             "these exact strings: [\"vegetables\", \"protein\", \"grains\", \"fruit\", "
             "\"dairy\"]. Also return foods, portion_estimate, nullable kcal, protein_g, fat_g, "
             "carbs_g, saturated_fat_g, fiber_g, cholesterol_mg, confidence, unknowns, feedback. "
@@ -1406,7 +1452,11 @@ class FoodCoach:
             "confirmed_corrections replace mistaken ingredients; do not retain the old ingredient. "
             "User corrections override previous interpretations. For a single photo return the "
             "entire corrected meal, not just the comment ingredient. Preserve unrelated ingredients. "
-            "For multiple photos consider previous observations; do not count repeat views twice. "
+            "For multiple photos return one cumulative meal estimate: include previous_analysis "
+            "and new food visible in this image, counting repeated views only once. Preserve the "
+            "exact previous food names unless the user corrects them. Previous estimates already "
+            "include any stated sharing fraction: do not apply it twice or automatically apply a "
+            "prior photo's fraction to a new separate item. State new portion assumptions explicitly. "
             "Feedback is short and neutral: one plate observation and at most one optional change "
             "relative to the supplied current protocol. Do not call meal timing a physiological law "
             "or claim yolks or dairy are universally forbidden."

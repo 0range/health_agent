@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from health_agent.ai.openai import _OpenAIAdapter
+from health_agent.ai.openai import PilotProviderError, _OpenAIAdapter
 from health_agent.ai.yandex import (
     _chat_content,
     _YandexAdapter,
@@ -172,6 +172,7 @@ class PilotBrain:
                         **run.payload,
                         "status": "failed",
                         "error_type": type(error).__name__,
+                        **(error.metadata() if isinstance(error, PilotProviderError) else {}),
                     },
                 )
             raise

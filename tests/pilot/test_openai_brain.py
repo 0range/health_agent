@@ -2,7 +2,9 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
+from openai import APIConnectionError, APIStatusError
 
 from health_agent.config import Settings
 from health_agent.pilot.brain import PilotBrain
@@ -137,3 +139,93 @@ def test_openai_client_uses_official_endpoint_even_with_shell_override(monkeypat
     _OpenAIAdapter(settings())._get_client()
     assert captured == [{"api_key": "test-key", "base_url": "https://api.openai.com/v1",
                          "timeout": 60.0, "max_retries": 0}]
+
+
+@pytest.mark.parametrize("status", [None, 408, 409, 429, 500, 503])
+def test_transient_failure_retries_once_then_returns_completed_output(monkeypatch, status):
+    import health_agent.ai.openai as module
+
+    sleeps = []
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+    client = Client()
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    failure = (APIConnectionError(request=request) if status is None else
+               APIStatusError("private upstream message", response=httpx.Response(status, request=request), body=None))
+    attempts = []
+
+    def create(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise failure
+        return client.response
+
+    client.create = create
+    assert PilotBrain(settings(), PROFILE, client=client)("Food", {}) == "Ответ"
+    assert len(attempts) == 2 and len(sleeps) == 1
+    assert attempts[0] == attempts[1]
+
+
+@pytest.mark.parametrize("status,code,expected", [
+    (400, None, "pilot_provider_request_rejected"),
+    (401, None, "pilot_provider_auth_required"),
+    (429, "insufficient_quota", "pilot_provider_quota_exhausted"),
+    (429, "project_spend_limit_exceeded", "pilot_provider_quota_exhausted"),
+    (503, None, "pilot_provider_server_error"),
+])
+def test_permanent_or_exhausted_error_is_safe_and_durable(monkeypatch, status, code, expected):
+    from test_training import MemoryStore
+
+    import health_agent.ai.openai as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    store, client, attempts = MemoryStore(), Client(), []
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+
+    def create(**kwargs):
+        attempts.append(kwargs)
+        raise APIStatusError("private upstream message", response=httpx.Response(status, request=request),
+                             body={"code": code})
+
+    client.create = create
+    with pytest.raises(ValueError, match=expected):
+        PilotBrain(settings(), PROFILE, client=client, store=store, domain="food")("Food", {})
+    assert len(attempts) == (2 if status == 503 else 1)
+    failed = store.list(PROFILE, "food", "model_run")[0]
+    assert failed.payload["safe_error_code"] == expected
+    assert failed.payload["http_status"] == status
+    assert failed.payload["attempts"] == len(attempts)
+    assert "private upstream message" not in str(failed.payload)
+
+
+def test_long_retry_after_is_not_ignored(monkeypatch):
+    import health_agent.ai.openai as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda _: pytest.fail("must honor long backoff"))
+    client, attempts = Client(), []
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+
+    def create(**kwargs):
+        attempts.append(kwargs)
+        raise APIStatusError("private", response=httpx.Response(
+            429, request=request, headers={"retry-after": "30"}), body=None)
+
+    client.create = create
+    with pytest.raises(ValueError, match="pilot_provider_rate_limited"):
+        PilotBrain(settings(), PROFILE, client=client)("Food", {})
+    assert len(attempts) == 1
+
+
+def test_failed_response_envelope_retries_server_error_only(monkeypatch):
+    import health_agent.ai.openai as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    client, attempts = Client(), []
+
+    def create(**kwargs):
+        attempts.append(kwargs)
+        return (SimpleNamespace(status="failed", error=SimpleNamespace(code="server_error"))
+                if len(attempts) == 1 else client.response)
+
+    client.create = create
+    assert PilotBrain(settings(), PROFILE, client=client)("Food", {}) == "Ответ"
+    assert len(attempts) == 2
