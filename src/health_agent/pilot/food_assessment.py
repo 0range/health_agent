@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from health_agent.pilot import food_snacks
 from health_agent.pilot.food_carbs import classify
 
 LABELS = {
@@ -166,6 +167,10 @@ def findings(
 
 
 def render_meal(analysis: dict[str, Any] | None, category: str) -> str:
+    if category == food_snacks.CATEGORY:
+        kcal = _kcal(analysis.get("kcal") if analysis else None)
+        return (f"🥜 {food_snacks.LABEL} · {kcal}\n"
+                "✅ Подходит под твой вариант на случай длинного перерыва. Полный приём ещё впереди.")
     label = LABELS.get(category, "Приём пищи")
     if not analysis:
         return f"🍽 {label} сохранён · калории пока неизвестны\n👀 Состав пока не разобрал — оценку плана дам после разбора."
@@ -213,6 +218,14 @@ def daily_summary(history: dict[str, Any]) -> str:
         if known and len(known) < len(values):
             text += " + есть еда без оценки"
         lines.append(f"• {label}: {text}")
+    snacks = [m for m in meals if m["category"] == food_snacks.CATEGORY]
+    if snacks:
+        values = [calories(m["nutrients_estimated"].get("kcal")) for m in snacks]
+        known = [v for v in values if v is not None]
+        text = _kcal(sum(known)) if known else "калории пока неизвестны"
+        if known and len(known) < len(values):
+            text += " + есть еда без оценки"
+        lines.append(f"🥜 Перекусы: {len(snacks)} · {text} (включены в итог)")
     return "\n".join(lines)
 
 
@@ -225,6 +238,8 @@ def plan_text(protocol: dict[str, Any]) -> str:
         "Тарелка: примерно ½ овощей, ¼ белка, ¼ цельной крупы.\n"
         "🔥 Считаем калории; дневного лимита пока нет."
     )
+    if food_snacks.enabled(protocol):
+        text += "\n" + food_snacks.help_text()
     focus = protocol.get("long_term_focus")
     if isinstance(focus, dict) and isinstance(focus.get("title"), str) and focus["title"].strip():
         return text + "\n🎯 " + focus["title"].strip()
@@ -286,6 +301,10 @@ def weekly_summary(history: dict[str, Any]) -> str:
         f"🔥 По записям: {total}."
         + (f" Без оценки: {unknown}; сумма неполная." if unknown else ""),
     ]
+    snacks = sum(m["category"] == food_snacks.CATEGORY for m in meals)
+    if snacks:
+        lines[1] = (f"📝 Записано {len(meals) - snacks} полных приёмов и {snacks} перекусов "
+                    f"за {len(days)} из {period['days']} дней; все 4 приёма есть в {complete_days} дн.")
     matched = [
         f"{LABELS[c].lower()} {successes[c]}/{examined[c]}"
         for c in LABELS

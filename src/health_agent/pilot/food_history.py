@@ -68,6 +68,8 @@ def build_food_history(
             "to_date": today.isoformat(),
         },
         "recorded_meal_count": len(selected),
+        "bridge_snack_count": sum(m["category"] == "bridge_snack" for m in meals),
+        "full_meal_count": sum(m["category"] != "bridge_snack" for m in meals),
         "recorded_days": sorted(
             {occurred.astimezone(_MOSCOW).date().isoformat() for occurred, _ in selected}
         ),
@@ -75,13 +77,15 @@ def build_food_history(
         "meals": meals,
         "interpretation_limits": (
             "Only logged meals; missing entries are not fasting. "
-            "Nutrients are estimates, unknown is null."
+            "Nutrients are estimates, unknown is null. "
+            "bridge_snack is a small intake: count nutrients, not a full meal slot."
         ),
     }
     if invalid:
         result["invalid_record_count"] = invalid
     while result["meals"] and len(json.dumps(result, ensure_ascii=False)) > _MAX_JSON_CHARS:
-        result["meals"].pop()
+        removed = result["meals"].pop()
+        result["bridge_snack_count" if removed["category"] == "bridge_snack" else "full_meal_count"] -= 1
         result["truncated"] = True
         result["recorded_meal_count"] = len(result["meals"])
         retained = selected[: len(result["meals"])]

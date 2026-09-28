@@ -280,6 +280,8 @@ class PilotBrain:
 
 
 def _selected_food_framework(protocol: Any) -> dict[str, Any]:
+    from health_agent.pilot.food_snacks import selected_rule
+
     value = protocol if isinstance(protocol, dict) else {}
 
     def text_list(raw: Any) -> list[str]:
@@ -312,6 +314,7 @@ def _selected_food_framework(protocol: Any) -> dict[str, Any]:
     )
     return {
         "interval_hours": interval,
+        "bridge_snack": selected_rule(value),
         "allowed_interval_hours": allowed_intervals,
         "plate_rules": plate_rules,
         "preferences": text_list(value.get("preferences")),

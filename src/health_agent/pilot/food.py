@@ -17,6 +17,7 @@ from health_agent.pilot import (
     food_carbs,
     food_conversation,
     food_reminders,
+    food_snacks,
 )
 from health_agent.pilot.contracts import Attachment, Brain, Notice, Record, Store
 from health_agent.pilot.food_additions import (
@@ -64,6 +65,8 @@ class FoodCoach:
         self._aware(now)
         command = text.strip()
         lowered = command.lower()
+        if lowered in {"/перекус", "что на перекус", "что на перекус?"} and food_snacks.enabled(self._protocol(profile_id)):
+            return food_snacks.help_text()
         if lowered == "/фокус" or lowered.startswith("/фокус "):
             return FoodFocus(self._store).handle(
                 profile_id, command, source_key, now,
@@ -149,6 +152,8 @@ class FoodCoach:
             if candidate is not None and any(additions([command]).values()):
                 return self._comment(profile_id, candidate, command, source_key, now)
             return "Понял, пока не записываю это как съеденное. Когда поешь, напиши состав или пришли фото."
+        if food_snacks.recognizes(command, self._protocol(profile_id)):
+            return self._meal(profile_id, command, source_key, now, None)
         labelled = self._labelled_category(command)
         if labelled and not food_conversation.explicit_revision(command) and (
             food_conversation.food_description(command) or _TIME.search(command) or self._clear_meal(command)
@@ -157,7 +162,8 @@ class FoodCoach:
         if candidate is not None and food_conversation.explicit_revision(command):
             return self._comment(profile_id, candidate, command, source_key, now)
         pending_notice = self._active_meal_notice(profile_id, now)
-        if self._clear_meal(command) or (pending_notice and food_conversation.food_description(command)):
+        after_snack = candidate is not None and candidate.payload.get("category") == food_snacks.CATEGORY
+        if self._clear_meal(command) or ((pending_notice or after_snack) and food_conversation.food_description(command)):
             category = pending_notice[0] if pending_notice and not self._labelled_category(command) else None
             return self._meal(profile_id, command, source_key, now, None, category=category)
         if candidate is not None:
@@ -226,6 +232,8 @@ class FoodCoach:
         return text
 
     def _breakfast_notice(self, profile_id: UUID, now: datetime) -> Notice | None:
+        if self._snack_owns_breakfast(profile_id, now):
+            return None
         enabled, scheduled = self._breakfast_schedule(profile_id)
         local = now.astimezone(_USER_ZONE)
         target = datetime.combine(local.date(), scheduled, _USER_ZONE)
@@ -253,10 +261,11 @@ class FoodCoach:
         )
 
     def _meal_notice(self, profile_id: UUID, meal: Record, now: datetime) -> Notice | None:
-        anchor = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
         protocol = self._protocol(profile_id)
         target = self._meal_target(meal.payload, protocol)
-        expires = anchor + timedelta(hours=4.5)
+        expires = self._meal_expiry(meal.payload, protocol)
+        if meal.payload.get("category") == food_snacks.CATEGORY and now > expires:
+            return None
         control = self._latest_control(profile_id, meal.id)
         if control is not None:
             action = control.payload.get("action")
@@ -266,14 +275,12 @@ class FoodCoach:
                 target = self._from_iso(control.payload["until"])
         if self._quiet(now, protocol):
             return None
-        # Configured 4.5 h intervals still need a nonzero first-delivery window.
-        expires = max(expires, self._meal_target(meal.payload, protocol) + timedelta(minutes=30))
         key = f"meal:{meal.id}:at:{target.astimezone(UTC).isoformat()}"
-        names = {"breakfast": "обед", "lunch": "полдник", "afternoon": "ужин"}
+        next_name = food_assessment.LABELS.get(food_snacks.next_category(meal.payload) or "", "следующий приём пищи").lower()
         return food_reminders.next_notice(
             self._notice_receipts(profile_id, f"meal:{meal.id}:at:"),
             base_key=key, target=target, initial_expiry=expires, now=now,
-            meal_name=names.get(str(meal.payload.get("category")), "следующий приём пищи"),
+            meal_name=next_name,
         )
 
     def _notice_receipts(self, profile_id: UUID, prefix: str) -> list[Record]:
@@ -286,6 +293,8 @@ class FoodCoach:
                      if r.payload.get("reminder_scope") == scope), None)
 
     def _pending_breakfast_scope(self, profile_id: UUID, now: datetime) -> str | None:
+        if self._snack_owns_breakfast(profile_id, now):
+            return None
         local = now.astimezone(_USER_ZONE)
         enabled, scheduled = self._breakfast_schedule(profile_id)
         target = datetime.combine(local.date(), scheduled, _USER_ZONE)
@@ -302,6 +311,31 @@ class FoodCoach:
                 return None
         return key
 
+    def _snack_owns_breakfast(self, profile_id: UUID, now: datetime) -> bool:
+        meal = self._photo_candidate(profile_id, now)
+        return bool(meal and meal.payload.get("category") == food_snacks.CATEGORY
+                    and food_snacks.next_category(meal.payload) == "breakfast"
+                    and food_snacks.anchor(meal.payload).astimezone(_USER_ZONE).date() == now.astimezone(_USER_ZONE).date())
+
+    def _intake_metadata(
+        self, profile_id: UUID, text: str, occurred: datetime, category: str | None = None,
+    ) -> dict[str, Any]:
+        previous = self._photo_candidate(profile_id, occurred)
+        if previous is not None and (
+            food_snacks.anchor(previous.payload).astimezone(_USER_ZONE).date() != occurred.astimezone(_USER_ZONE).date()
+            or occurred - food_snacks.anchor(previous.payload) > timedelta(hours=6)
+        ):
+            previous = None
+        next_category = food_snacks.next_category(previous.payload) if previous else None
+        if food_snacks.recognizes(text, self._protocol(profile_id)):
+            return {"category": food_snacks.CATEGORY, "category_source": "bridge_snack_rule",
+                    "next_meal_category": next_category or self._category("", occurred + food_snacks.FOLLOWUP)}
+        labelled = self._labelled_category(text)
+        if not labelled and previous is not None and previous.payload.get("category") == food_snacks.CATEGORY and next_category:
+            return {"category": next_category, "category_source": "after_bridge_snack"}
+        return {"category": labelled or category or self._category(text, occurred),
+                "category_source": "explicit_label" if labelled else "active_reminder" if category else "clock_heuristic"}
+
     def _meal(
         self, profile_id: UUID, text: str, source_key: str, now: datetime,
         attachment: Attachment | None,
@@ -314,19 +348,16 @@ class FoodCoach:
         if existing is not None and existing.payload.get("analysis") is not None:
             return self._feedback(profile_id, existing)
         if existing is None:
-            occurred, cleaned, valid = self._extract_time(text, now)
+            occurred, _, valid = self._extract_time(text, now)
             if not valid:
                 return "Уточните дату или время приёма пищи: указанное время выглядит будущим или слишком давним."
-            from_notice = category is not None
-            category = category or self._category(cleaned, occurred)
+            metadata = self._intake_metadata(profile_id, text, occurred, category)
             payload: dict[str, Any] = {
                 "original": text, "caption": attachment.caption if attachment else "",
                 "photo_path": str(attachment.path) if attachment else None,
                 "occurred_at": occurred.isoformat(), "captured_at": now.isoformat(),
-                "category": category, "category_source": category_source or (
-                    "explicit_label" if self._labelled_category(text)
-                    else "active_reminder" if from_notice else "clock_heuristic"
-                ),
+                **metadata,
+                "category_source": category_source or metadata["category_source"],
                 "time_source": "user" if _TIME.search(text) else "message_time",
                 "analysis": None, "analysis_raw": None, "analysis_error": None,
                 "analysis_status": "pending",
@@ -357,6 +388,10 @@ class FoodCoach:
 
         description = text or attachment.caption
         latest = self._photo_candidate(profile_id, now)
+        if food_snacks.recognizes(description, self._protocol(profile_id)) or (
+            latest is not None and latest.payload.get("category") == food_snacks.CATEGORY
+        ):
+            return self._start_photo_meal(profile_id, description, source_key, now, attachment)
         labelled = self._labelled_category(description)
         if _TIME.search(description) or (labelled and latest is not None and labelled != latest.payload.get("category")):
             return self._start_photo_meal(profile_id, description, source_key, now, attachment)
@@ -399,16 +434,17 @@ class FoodCoach:
         description = cleaned or attachment.caption
         from_notice = pending_notice is not None and not self._labelled_category(description) and not _TIME.search(text or attachment.caption)
         category = pending_notice[0] if from_notice and pending_notice else self._category(description, occurred)
+        metadata = self._intake_metadata(profile_id, text or attachment.caption, occurred, category if from_notice else None)
+        is_snack = metadata["category"] == food_snacks.CATEGORY
         meal = self._store.put(profile_id, "food", "meal", source_key, {
             "original": text, "caption": attachment.caption,
             "photo_path": str(attachment.path), "photos": [item],
             "latest_photo_at": now.isoformat(),
-            "ended_at": (occurred + timedelta(minutes=20)).isoformat(),
-            "end_source": "user_time_plus_20m" if _TIME.search(text or attachment.caption) else "last_photo_plus_20m",
+            "ended_at": (occurred if is_snack else occurred + timedelta(minutes=20)).isoformat(),
+            "end_source": "snack_time" if is_snack else "user_time_plus_20m" if _TIME.search(text or attachment.caption) else "last_photo_plus_20m",
             "time_source": "user" if _TIME.search(text or attachment.caption) else "message_time",
             "occurred_at": occurred.isoformat(), "captured_at": now.isoformat(),
-            "category": category,
-            "category_source": "explicit_label" if self._labelled_category(description) else "active_reminder" if from_notice else "clock_heuristic", "analysis": None,
+            **metadata, "analysis": None,
             "analysis_raw": None, "analysis_error": None, "analysis_status": "pending",
         }, at=occurred)
         self._store.patch(profile_id, photo.id, {**photo.payload, "meal_id": meal.id, "status": "confirmed"})
@@ -615,6 +651,7 @@ class FoodCoach:
                 self._system_prompt(),
                 {"meal": {
                     "text": payload["original"], "caption": chosen_caption,
+                    "category": payload["category"],
                     "portion": payload.get("user_portion"), "comments": comments,
                     **evidence,
                     "confirmed_corrections": corrections,
@@ -786,8 +823,9 @@ class FoodCoach:
         payload["time_corrected"] = True
         payload["time_source"] = "user"
         if payload.get("ended_at"):
-            payload["ended_at"] = (occurred + timedelta(minutes=20)).isoformat()
-            payload["end_source"] = "user_time_plus_20m"
+            is_snack = payload.get("category") == food_snacks.CATEGORY
+            payload["ended_at"] = (occurred if is_snack else occurred + timedelta(minutes=20)).isoformat()
+            payload["end_source"] = "snack_time" if is_snack else "user_time_plus_20m"
         self._store.patch(profile_id, meal.id, payload)
         return f"Время последнего приёма пищи исправлено на {occurred.astimezone(_USER_ZONE):%H:%M}."
 
@@ -813,10 +851,10 @@ class FoodCoach:
         target = now + timedelta(minutes=minutes)
         if receipts:
             target = max(target, max(map(food_reminders.delivered_at, receipts)) + food_reminders.SPACING)
-        occurred = self._from_iso(str(meal.payload.get("ended_at", meal.payload["occurred_at"])))
         protocol = self._protocol(profile_id)
-        expiry = max(occurred + timedelta(hours=4.5), self._meal_target(meal.payload, protocol) + timedelta(minutes=30))
-        if target > food_reminders.deadline(receipts, expiry):
+        expiry = self._meal_expiry(meal.payload, protocol)
+        deadline = expiry if meal.payload.get("category") == food_snacks.CATEGORY else food_reminders.deadline(receipts, expiry)
+        if target > deadline:
             return "Не могу отложить: интервал напоминания уже закончится. Новое напоминание не запланировано."
         if self._quiet(target, protocol):
             return "Не могу отложить на тихие часы. Новое напоминание не запланировано."
@@ -1048,6 +1086,8 @@ class FoodCoach:
             if latest is not None and self._from_iso(latest.payload["occurred_at"]) >= delivered:
                 continue
             if notice.source_key.startswith("breakfast:"):
+                if self._snack_owns_breakfast(profile_id, now):
+                    continue
                 scope = notice.source_key.split(":repeat:")[0]
                 control = self._breakfast_control(profile_id, scope)
                 if control and control.payload.get("action") in {"skip", "eaten"}:
@@ -1058,7 +1098,7 @@ class FoodCoach:
             control = self._latest_control(profile_id, latest.id)
             if control and control.payload.get("action") in {"skip", "eaten"}:
                 continue
-            category = {"breakfast": "lunch", "lunch": "afternoon", "afternoon": "dinner"}.get(str(latest.payload.get("category")))
+            category = food_snacks.next_category(latest.payload)
             if category:
                 return category, notice.source_key.split(":repeat:")[0], latest.id
         return None
@@ -1092,7 +1132,7 @@ class FoodCoach:
 
     def _journal(self, profile_id: UUID, now: datetime) -> str:
         history = build_food_history(self._store, profile_id, now, days=1)
-        labels = {"breakfast": "завтрак", "lunch": "обед", "afternoon": "перекус", "dinner": "ужин"}
+        labels = {"breakfast": "завтрак", "lunch": "обед", "afternoon": "полдник", "dinner": "ужин", food_snacks.CATEGORY: "небольшой перекус"}
         lines = ["Сегодня записано:"]
         for meal in reversed(history["meals"]):
             at = self._from_iso(meal["recorded_at"]).astimezone(_USER_ZONE)
@@ -1227,7 +1267,7 @@ class FoodCoach:
         return result
 
     def _feedback(self, profile_id: UUID, meal: Record) -> str:
-        if self._protocol(profile_id).get("meal_assessment_version") == 1:
+        if self._protocol(profile_id).get("meal_assessment_version") == 1 or meal.payload.get("category") == food_snacks.CATEGORY:
             return self._assessed_feedback(profile_id, meal)
         payload = meal.payload
         analysis = payload.get("analysis")
@@ -1271,7 +1311,8 @@ class FoodCoach:
         if payload.get("user_kcal"):
             analysis = {**(analysis or {"foods": []}), "kcal": payload["user_kcal"]["value"]}
         occurred = self._from_iso(str(payload["occurred_at"])).astimezone(_USER_ZONE)
-        reply = f"📝 Записал {food_assessment.LABELS.get(category, 'приём пищи').lower()}, {occurred:%H:%M}.\n"
+        label = food_snacks.LABEL if category == food_snacks.CATEGORY else food_assessment.LABELS.get(category, 'приём пищи')
+        reply = f"📝 Записал {label.lower()}, {occurred:%H:%M}.\n"
         reply += food_assessment.render_meal(analysis, category)
         reply += self._previous_estimate_notice(payload)
         if payload.get("user_kcal"):
@@ -1306,10 +1347,20 @@ class FoodCoach:
 
     @staticmethod
     def _meal_target(payload: dict[str, Any], protocol: dict[str, Any]) -> datetime:
+        if payload.get("category") == food_snacks.CATEGORY:
+            return food_snacks.anchor(payload) + food_snacks.FOLLOWUP
         anchor = FoodCoach._from_iso(str(payload.get("ended_at", payload["occurred_at"])))
         configured = FoodCoach._positive_number(protocol.get("interval_hours"))
         hours = configured if configured is not None and 2.5 <= configured <= 4.5 else 3.5
         return anchor + timedelta(hours=hours)
+
+    @staticmethod
+    def _meal_expiry(payload: dict[str, Any], protocol: dict[str, Any]) -> datetime:
+        if payload.get("category") == food_snacks.CATEGORY:
+            return food_snacks.anchor(payload) + food_snacks.DELIVERY_END
+        anchor = FoodCoach._from_iso(str(payload.get("ended_at", payload["occurred_at"])))
+        # Configured 4.5 h intervals still need a nonzero first-delivery window.
+        return max(anchor + timedelta(hours=4.5), FoodCoach._meal_target(payload, protocol) + timedelta(minutes=30))
 
     def _next_meal_text(self, profile_id: UUID, meal: Record) -> str:
         payload = meal.payload
@@ -1327,6 +1378,13 @@ class FoodCoach:
             if control.payload.get("action") == "snooze":
                 target = self._from_iso(str(control.payload["until"]))
         text = f"Следующий приём по вашему плану — около {target.astimezone(_USER_ZONE):%H:%M} (Москва)."
+        if payload.get("category") == food_snacks.CATEGORY:
+            start = self._meal_target(payload, protocol).astimezone(_USER_ZONE)
+            end = (food_snacks.anchor(payload) + food_snacks.WINDOW_END).astimezone(_USER_ZONE)
+            name = food_assessment.LABELS.get(food_snacks.next_category(payload) or "", "приём пищи").lower()
+            text = f"Следом полноценный {name} в {start:%H:%M}–{end:%H:%M} (Москва), через 1–1,5 часа после перекуса."
+            if self._reminders_enabled(profile_id) and not self._quiet(target, protocol):
+                text += f" Напомню в {target.astimezone(_USER_ZONE):%H:%M}, если еда ещё не записана."
         if not self._reminders_enabled(profile_id):
             return text + " Напоминания выключены."
         if self._quiet(target, protocol):
@@ -1348,6 +1406,8 @@ class FoodCoach:
     def _render_feedback(
         analysis: dict[str, Any], category: str, protocol: dict[str, Any],
     ) -> str:
+        if category == food_snacks.CATEGORY:
+            return food_assessment.render_meal(analysis, category)
         components = FoodCoach._components(analysis)
         if not components:
             return "Не удалось надёжно определить состав и порцию; уточните ингредиенты и размер порции."
