@@ -34,6 +34,23 @@ Lmax/Leq or acoustic waveforms. Short sound events can be missed between samples
 
 ## Analysis intent
 
+### Inclusion amendment approved 5 October 2026
+
+For nightly study comparisons, exclude for missing data only if the longest
+continuous gap in a required series is **greater than 600 seconds**. Exactly
+10 minutes is accepted. Apply `nightly_analysis_coverage_ok` to coverage over the
+actual sleep interval, including its edges; retain percentages and gap diagnostics
+without an additional 99% exclusion. Empty series are unusable. Travel, placement,
+scoring and current-night provisional rules still apply. Do not interpolate gaps.
+
+The night ending 14 September (66-second air gap) is retained. This user-requested
+amendment was made after reviewing preliminary results; preserve earlier report
+versions and identify the changed rule. Study conclusions use only the period
+since bedroom air observations began on 10 September.
+
+Operational >=99% / <=60-second collection warnings remain separate from this
+research eligibility rule. A warning does not itself remove a night from analysis.
+
 Use this as an exploratory within-person time-series pilot. Before reviewing
 associations, choose a small primary question and specify exposures, outcomes,
 lag windows, night inclusion criteria and confounders. Candidate: nightly CO₂
@@ -93,8 +110,9 @@ report on 20–24 September (10–14 days), while collection continues for 14–
 The first-night review uses its actual sleep interval across both calendar dates;
 previous-day calendar quality alone is insufficient for that review. These are work milestones, not validated sample-size
 thresholds. The operational six-second coverage threshold is >=99% and no gap over
-60 seconds; analysis-specific inclusion rules still need to be fixed before
-looking at exposure/outcome associations. See [operations](../runbooks/research-collection.md).
+60 seconds. The analysis inclusion amendment above, approved on 5 October, allows
+gaps up to 600 seconds while retaining these operational diagnostics.
+See [operations](../runbooks/research-collection.md).
 
 Daily private comparison datasets retain native observations, a six-second HR/air
 comparison table, complete available public summary fields and all native stress

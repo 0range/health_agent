@@ -57,6 +57,14 @@ Each private daily JSON contains:
 
 A six-second series passes the collection threshold at >=99% occupied bins and
 no gap over 60 seconds. The percentage and gaps remain visible even when accepted.
+
+These are collection-health warnings, not nightly research exclusions. Since the
+user's 5 October amendment, `nightly_analysis_coverage_ok` accepts a nonempty
+required series when its longest continuous gap is **<=600 seconds**, including
+sleep boundaries. Exclude for missing data only above ten minutes; coverage
+percentage remains visible without independently excluding a night. Keep travel,
+placement, scored-sleep and provisional-night rules. See the
+[study protocol](../research/room-sleep-pilot.md#inclusion-amendment-approved-5-october-2026).
 This is an operational threshold, not the final statistical night-inclusion rule.
 Missing nightly sleep/HRV or stress makes a normal day `attention`; the known
 partial first day is `setup_day`, never presented as complete.

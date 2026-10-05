@@ -22,6 +22,20 @@ from health_agent.research.calendar import STUDY_START, ZONE, bounds, recent_day
 from health_agent.whoop.models import WhoopConnection, WhoopRecovery, WhoopSleep
 
 GIB = 1024**3
+NIGHTLY_ANALYSIS_MAX_GAP_SECONDS = 600
+
+
+def nightly_analysis_coverage_ok(check: dict[str, Any]) -> bool:
+    """User-approved nightly inclusion rule (2026-10-05), not collection health.
+
+    Percent coverage remains descriptive. Existing coverage() accounts for gaps
+    at both sleep boundaries as well as between samples. Exactly ten minutes is
+    allowed; missing observations are never interpolated by this decision.
+    """
+    return (
+        check["samples"] > 0
+        and check["largest_gap_seconds"] <= NIGHTLY_ANALYSIS_MAX_GAP_SECONDS
+    )
 
 
 def coverage(times: list[datetime], start: datetime, end: datetime) -> dict[str, Any]:
