@@ -45,14 +45,25 @@ def coros_sync(
     since: Annotated[str, typer.Option("--since")] = "2010-01-01",
     until: Annotated[str | None, typer.Option("--until")] = None,
     profile_id: Annotated[UUID, typer.Option("--profile-id")] = DEFAULT_PROFILE_ID,
+    automatic: Annotated[bool, typer.Option(
+        "--automatic", help="Use the existing daily recent-window and retry gate."
+    )] = False,
 ) -> None:
     """Preserve raw COROS responses and parsed activity history on this Mac."""
     from health_agent.pilot.coros_auth import CorosOAuth
     from health_agent.pilot.coros_sync import run_coros_sync
 
+    if automatic and (since != "2010-01-01" or until is not None):
+        raise typer.BadParameter("--automatic cannot be combined with date bounds")
     store = PilotStore(build_engine(Settings()))
     root = Path("data/pilot/training/coros") / str(profile_id)
     try:
+        if automatic:
+            from health_agent.pilot.runtime import maybe_coros_sync
+
+            attempted = maybe_coros_sync(store, profile_id, root, datetime.now(UTC))
+            typer.echo(f"status=checked attempted={str(attempted).lower()}")
+            return
         with _pilot_lock(root / "sync.lock"):
             counts = run_coros_sync(
                 store,
