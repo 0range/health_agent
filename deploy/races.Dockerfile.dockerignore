@@ -1,0 +1,12 @@
+**
+!src/
+!src/health_agent/
+!src/health_agent/__init__.py
+!src/health_agent/races/
+!src/health_agent/races/__init__.py
+!src/health_agent/races/sources.py
+!src/health_agent/races/cloud.py
+!races-2027.json
+!race-windows-2027.json
+!deploy/
+!deploy/races.Dockerfile
