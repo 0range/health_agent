@@ -1,5 +1,80 @@
 # Race registration monitoring — 14 November 2026
 
+## Weekly history and frequent cloud checks (added 14 November)
+
+The user chose **Sunday 13:00 Europe/Moscow** for the weekly history/forecast
+table, replacing that day's ordinary short status. The existing task remains
+enabled daily at 13:00. Readback after the final prompt update at 20:34:05 Moscow
+confirmed its original RRULE and next runs on 15, 16, 17 November at 13:00.
+The editor's secondary label incorrectly displays 11:00; `schedule`,
+`default_timezone` and actual `next_run_times` agree on 13:00 Moscow.
+
+Historical evidence and sellout precision are saved in
+[`race-registration-history-2027.md`](../research/race-registration-history-2027.md)
+and embedded in the task prompt. The White Nights range begins in November
+**2026**, despite the target being season 2027. The Sirius November anchor is
+only a festival proxy; the exact historical 1/8 opening is unverified.
+
+The user also authorized hourly checks in expected periods and five-minute
+checks around a precisely announced opening. A separate Railway service now
+owns those checks and immediate training alerts:
+
+- Project/environment: the existing `personal-assistant` / production.
+- Service `race-monitor`: `3c754085-e224-41af-b327-e70a55b086f4`.
+- Source: `0range/health_agent`, branch `codex/race-cloud-monitor-2027`.
+- Source commit: `a58c8f1`; deployment `e6d90380-dc00-4db0-b482-cd5a41ef7dd5`, SUCCESS.
+- Dockerfile `deploy/races.Dockerfile`; allowlisted Docker build context.
+- One instance, 0.5 vCPU / 0.5 GB configured limit; sleep disabled.
+- Durable `/data` volume `race-monitor-state`, ID `e4a2def8-694b-4a35-8efa-ca6e45d6289a`.
+- URL: https://race-monitor-production-acc5a209.up.railway.app.
+- Only `TRAINING_RELAY_KEY` is supplied, by reference to the existing relay.
+  The service has no Telegram bot token, security key or participant credentials.
+
+`race-windows-2027.json` supplies historical windows. Hourly checks apply from
+seven days before the earliest point to fourteen days after the latest point;
+otherwise the worker checks daily. An explicit official opening enables
+five-minute checks from T−30 minutes through T+24 hours. The worker inspects
+official event pages and three organizer Telegram channels for unambiguous
+dated announcements. Relative dates, image-only or ambiguous announcements
+may require the daily task's interpretation; do not assume every format is
+machine-readable. Historical estimates never activate an exact opening time.
+Checks stop after 31 December 2027.
+
+Authenticated worker endpoints (same narrow training key, never in URL):
+
+- `GET /status`: last check, observations with individual timestamps, errors,
+  announced times, immutable outbox and confirmed Telegram message IDs.
+- `POST /check`: queues a fresh scan; HTTP 202 is not completion or delivery.
+- `POST /openings`: stores `{event_id, opens_at, source}` with a timezone-aware
+  timestamp, known event ID and an official source URL. The daily task may add
+  a verified announcement; it must not submit a historical estimate.
+
+The daily task requests a fresh scan and consults receipts before reporting a
+new opening, retaining its independent official-source check and email fallback.
+The worker sends once per season/event/status using immutable messages and the
+relay's durable idempotency. A shared event behind login produces a clearly
+qualified "check this distance in your account" notice with its direct link,
+not a false confirmed opening. A later confirmed opening gets its own alert.
+
+Verification: 36 targeted source/worker/messenger tests passed; lint passed.
+The first actual cloud scan at 20:30:45 Moscow found all 11 watches with no
+source errors and no open season-2027 registrations. State survived deployment
+restarts. An authenticated `/check` subsequently completed a second actual cloud
+scan at 20:34:43 Moscow with all 11 watches and no errors. Public health returned
+200, unauthenticated status returned 401, and
+authenticated status returned the expected 3600-second cadence. Training
+readiness confirmed `Training_vitaliy_bot`; the labeled setup message returned
+`message_id=7` with idempotency key `races-cloud-monitor-setup-2026-11-14`.
+The setup message exercised the same sender/relay path from the local verification
+command; cloud scanning was verified separately. A future scheduled Sunday
+digest and a real five-minute opening window have not yet occurred.
+
+No local scheduled sender was installed. The security task/service were not
+changed by this addition. Both the frequent race worker and daily/weekly task
+continue after closing the chat or Mac. Railway `telegram-relay` must stay live.
+Participant registration/payment is not automated: no chosen race or price limit
+has been authorized.
+
 ## Active architecture
 
 The existing ChatGPT task **Регистрация на старты 2027** owns the daily schedule.
