@@ -81,7 +81,7 @@ def cadence(now: datetime, windows: dict, announced: dict) -> int:
 
 def validate_opening(data: dict, windows: dict, now: datetime) -> dict:
     if not isinstance(data, dict):
-        raise ValueError("invalid_opening")
+        raise TypeError("invalid_opening")
     if data.get("event_id") not in {e["id"] for e in windows["events"]}:
         raise ValueError("unknown_event")
     if not isinstance(data.get("source"), str) or not source_allowed(data["source"]):
