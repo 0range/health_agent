@@ -160,10 +160,13 @@ def test_authenticated_cloud_status_and_opening_update(tmp_path):
             assert client.get("/healthz").status_code == 200
             assert client.get("/status").status_code == 401
             assert client.post("/openings", json={}).status_code == 401
+            assert client.post("/check").status_code == 401
             headers = {"Authorization": "Bearer " + secret}
             response = client.get("/status", headers=headers)
             assert response.status_code == 200
             assert secret not in response.text
+            assert client.post("/check", headers=headers).status_code == 202
+            assert worker.force_check.is_set()
             assert client.post("/openings", headers=headers, json={}).status_code == 400
     finally:
         server.shutdown()

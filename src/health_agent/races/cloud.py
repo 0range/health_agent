@@ -280,6 +280,7 @@ class Worker:
         self.state.setdefault("outbox", {})
         self.state.setdefault("announced", {})
         self.lock = threading.RLock()
+        self.force_check = threading.Event()
         self.last_loop = time.monotonic()
 
     def save(self):
@@ -356,10 +357,12 @@ class Worker:
                     period = cadence(now, self.windows, self.state["announced"])
                 active = now.date().isoformat() <= f"{self.windows['year']}-12-31"
                 if active and (
-                    not previous
+                    self.force_check.is_set()
+                    or not previous
                     or (now - datetime.fromisoformat(previous)).total_seconds()
                     >= period
                 ):
+                    self.force_check.clear()
                     observations, errors, announced = scan(
                         self.config, self.windows, now
                     )
@@ -421,6 +424,9 @@ def handler_for(worker: Worker, secret: str):
         def do_POST(self):
             if not self.authorized():
                 return self.reply(401, {"error": "unauthorized"})
+            if self.path == "/check":
+                worker.force_check.set()
+                return self.reply(202, {"queued": True})
             if self.path != "/openings":
                 return self.reply(404, {"error": "not_found"})
             try:
