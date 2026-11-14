@@ -1,0 +1,17 @@
+{
+  "year": 2027,
+  "discover_running": true,
+  "excluded_keys": [],
+  "running": [
+    {"name": "Апрель", "km": 5, "url": "https://aprilrun5km.runc.run/"},
+    {"name": "Московский полумарафон", "km": 5, "url": "https://moscowhalf5km.runc.run/"},
+    {"name": "Красочный забег", "km": 5, "url": "https://colorrun5km.runc.run/"},
+    {"name": "Большой фестиваль бега", "km": 5, "url": "https://runfest.runc.run/"},
+    {"name": "Ночной забег", "km": 10, "url": "https://nightrun10km.runc.run/"},
+    {"name": "Белые ночи · Санкт-Петербург", "km": 10, "url": "https://wnmarathon.runc.run/"},
+    {"name": "Северная столица · Санкт-Петербург", "km": 10, "url": "https://spbhalf.runc.run/"},
+    {"name": "Большой фестиваль бега", "km": 10, "url": "https://runfest.runc.run/"},
+    {"name": "Московский марафон", "km": 10, "url": "https://moscowmarathon10km.runc.run/"}
+  ],
+  "triathlon_locations": ["sochi", "luzhniki"]
+}

@@ -1,5 +1,11 @@
 # Daily race registration monitor
 
+Implementation outcome: after the user provided the prior ChatGPT thread, an
+existing enabled cloud task was found. Its Railway relay was repaired and kept
+as the sole active scheduler/delivery path. The local implementation below is a
+tested fallback and is not installed. See `docs/runbooks/race-monitor.md` for the
+active architecture and confirmed source evidence.
+
 User-authorized scope: season 2027, all Running Community 5 km and 10 km races,
 IRONSTAR 1/8 only in Sochi/Sirius and Luzhniki. Daily Telegram report at 13:00
 Europe/Moscow through the existing verified Training_vitaliy_bot binding.
