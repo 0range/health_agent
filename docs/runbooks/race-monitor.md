@@ -1,5 +1,48 @@
 # Race registration monitoring — 14 November 2026
 
+## Security cloud delivery repaired — 16 November 2026
+
+The 15 and 16 November security tasks completed and their full reports reached
+Gmail, but no corresponding `/notify/security` POST reached Railway. The security
+source web conversation explicitly tested curl GETs to Telegram, Railway health,
+and example.com: all timed out (exit 28, no HTTP response). Local Telegram and
+Railway checks returned 302/200 promptly. This points to the cloud environment's
+outbound path, not a demonstrated Telegram/Railway outage; its internal cause is
+not established. The training task's Sunday 15 November POST returned HTTP 200.
+
+At the user's request, extended the **existing** Railway relay with a private
+OAuth-authenticated MCP connection, without adding a service or using Gmail as
+a forwarding source. The abandoned empty mail-forwarding service and prototype
+were removed; no Gmail credential was deployed. Gmail remains an independent
+native connector. The race worker, training route and race task were unchanged.
+
+Private plugin:
+https://chatgpt.com/plugins/plugin_asdk_app_6afac74118f881919d35567ea95472e4.
+It exposes only `security_delivery_status` and `send_security_notification` to
+the fixed owner through `Gccmonitorformebot`. Existing security HTTP calls and
+the MCP sender share durable idempotency receipts. Bot tokens stay in Railway;
+the scheduled task now contains no plaintext security sender key.
+
+Actual web ChatGPT test at 12:12 Moscow returned `ok=true`, `channel=security`,
+`message_id=198`, event ID `safety-mcp-cloud-test-2026-11-16`. Railway recorded
+the matching authenticated `/mcp` requests from the OpenAI MCP client. This was
+not a local send. Earlier, the user confirmed receipt of the separately labeled
+local recovery message 197 with the link to the 16 November morning report.
+
+The security task's delivery section was updated through Scheduled at
+12:13:25 Moscow. Fresh readback exactly matched the prepared text and confirmed
+unchanged schedule, timezone, enabled state, model, reasoning effort and
+notification flags. Research rules, Gmail-first order, alert/silence criteria
+and card format were preserved. Next run: **17 November 08:00 Moscow**. The actual
+web tool path is verified; the next unattended scheduled execution has not yet
+happened and must not be described as already verified.
+
+Relay code/runbook: `0range/personal-assistant`, branch
+`railway/telegram-notifications`, `telegram-relay/README.md`. Eight Node 24
+integration tests cover authorization/PKCE, consent, token persistence,
+refresh/revocation, fixed-recipient delivery, idempotency, upstream failures and
+unchanged training key separation. The Railway relay must stay running.
+
 ## Weekly history and frequent cloud checks (added 14 November)
 
 The user chose **Sunday 13:00 Europe/Moscow** for the weekly history/forecast
