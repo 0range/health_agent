@@ -1,4 +1,57 @@
-# Race registration monitoring — 14 November 2026
+# Race registration monitoring
+
+## Current race schedule and live verification — 16 November 2026
+
+The user requested checks at **08:00, 13:00 and 18:00 Europe/Moscow**. The existing
+task `Automation_ef35471305c4819181e796af6d6a2e2a` remains enabled with executor
+`cloud`, source conversation
+https://chatgpt.com/c/6af86c1f-1484-83eb-b29c-59501bc6ac18.
+No new task, service, local scheduler or Telegram connector was created.
+
+Saved schedule, independently read back at 12:53 Moscow:
+
+```ical
+BEGIN:VEVENT
+DTSTART;TZID=Europe/Moscow:20261116T130000
+RRULE:FREQ=DAILY;BYHOUR=8,13,18;BYMINUTE=0;BYSECOND=0;UNTIL=20271231T205959Z
+END:VEVENT
+```
+
+The backend's actual next runs were 16 November 13:00, 16 November 18:00 and
+17 November 08:00 Moscow. Treat `schedule` and `next_run_times` as authoritative;
+the editor/sidebar has displayed inconsistent single-time labels. Do not flatten
+the multi-hour RRULE through the single-time editor.
+
+Each slot requests a fresh worker scan and sends a short Training Bot status,
+including exactly «Нет обновлений» when fully checked with no new openings.
+New openings retain direct registration links. Idempotency keys are now
+`races-YYYY-MM-DD-HH00`, using the planned Moscow slot (`0800`, `1300`, `1800`),
+including when execution is delayed. Retries keep the original key and text.
+This permits three separate daily reports without weakening duplicate protection.
+Sunday's history/forecast table replaces only the **13:00** short status; the
+08:00 and 18:00 Sunday runs remain ordinary short reports. Immediate opening
+alerts, hourly/five-minute windows, history, watched distances, and Gmail fallback
+remain intact. The exact prepared prompt edit was verified after the schedule
+update; title, model, reasoning effort, cloud executor, timezone, enabled state,
+notification flags and conversation ID were preserved.
+
+Live verification from the existing **web race conversation** on 16 November:
+
+- Training readiness confirmed `Training_vitaliy_bot`.
+- A forced scan completed at **12:48:44.982990 Moscow**: all 11 observations were
+  fresh, zero source errors, no announced season-2027 registrations in the watchlist.
+- One explicitly labeled test returned HTTP 200, `ok=true`, `channel=training`,
+  **message_id=9**, event `races-cloud-route-test-2026-11-16`.
+- Railway independently recorded `/notify/training` HTTP 200 at 09:49:04.679 UTC.
+- The race worker remained on deployment `e6d90380-dc00-4db0-b482-cd5a41ef7dd5`,
+  with 3600-second cadence and its existing persistent volume. No redeploy needed.
+
+Unlike the tested security conversation's outbound requests earlier that day,
+this web race conversation could reach the authenticated HTTP routes. Keep its
+working delivery route; do not assume every cloud execution has the same network
+behavior. This check verifies the present web path and saved schedule, not a
+future unattended execution. Both components run in the cloud; the Mac and this
+chat can be closed. The sections below retain setup and diagnostic history.
 
 ## Security cloud delivery repaired — 16 November 2026
 
@@ -46,8 +99,9 @@ unchanged training key separation. The Railway relay must stay running.
 ## Weekly history and frequent cloud checks (added 14 November)
 
 The user chose **Sunday 13:00 Europe/Moscow** for the weekly history/forecast
-table, replacing that day's ordinary short status. The existing task remains
-enabled daily at 13:00. Readback after the final prompt update at 20:34:05 Moscow
+table, replacing that day's ordinary short status. On 14 November the task was
+enabled daily at 13:00 (expanded to three daily slots on 16 November, above).
+Readback after the final prompt update at 20:34:05 Moscow
 confirmed its original RRULE and next runs on 15, 16, 17 November at 13:00.
 The editor's secondary label incorrectly displays 11:00; `schedule`,
 `default_timezone` and actual `next_run_times` agree on 13:00 Moscow.
@@ -122,8 +176,9 @@ has been authorized.
 
 The existing ChatGPT task **Регистрация на старты 2027** owns the daily schedule.
 ID: `Automation_ef35471305c4819181e796af6d6a2e2a`.
-Enabled; Europe/Moscow; first scheduled run 15 November 2026 at 13:00;
-daily through 31 December 2027. Its source conversation is
+Enabled; Europe/Moscow; 08:00, 13:00 and 18:00 daily through 31 December 2027.
+Its first original scheduled run was 15 November 2026 at 13:00.
+Its source conversation is
 https://chatgpt.com/c/6af86c1f-1484-83eb-b29c-59501bc6ac18.
 
 Notifications use the existing Railway `personal-assistant` production service
