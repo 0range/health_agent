@@ -1,5 +1,69 @@
 # Race registration monitoring
 
+## Current behavior: quiet monitoring and live card — 16 November 2026
+
+This section supersedes the earlier three-daily-report policy below.
+The owner requested silence without updates, a live HTML status card, separate
+forwardable opening notices, event dates, and owner-only interaction. They
+explicitly confirmed the old training-coach functions are not needed.
+
+- `/status`, `/races`, Russian `статус`: a current HTML card in
+  `@Training_vitaliy_bot`, with evidence time, results/errors, dates and buttons.
+- `/check` / «Проверить сейчас»: queue a scan, explicitly distinguish queued
+  from completed. «Обновить статус» refreshes immediately from stored evidence.
+- The existing Railway relay checks for new worker evidence every minute and
+  edits only the current card. Its message ID/version survive deployments.
+  It sends no new message for unchanged status. Command/menu/webhook access is
+  restricted to the fixed owner's sender ID and private chat; foreign input is
+  silently ignored. The webhook uses a separate secret header.
+- One forwardable HTML message per newly opened event/distance, including a
+  verified direct registration URL in the text and a URL button. No private
+  callback controls, personal information or content-protection flag. The
+  worker persists the exact payload and original event key before sending;
+  legacy pending plain-text messages keep their original receipt hash.
+- Scheduled checks remain 08:00, 13:00, 18:00 Europe/Moscow; no unchanged
+  Telegram or Gmail messages. Sunday 13:00 history/forecast report remains
+  mandatory. Hourly/five-minute opening checks remain unchanged.
+- Competition dates are separate from opening forecasts. `race_dates` in
+  `races-2027.json` contains the official 2027 running calendar and explicitly
+  approximate 2026-based triathlon periods. Current event-page dates supersede
+  those fallbacks. See `docs/research/race-event-dates-2027.md` for sources.
+
+Cloud implementation: existing relay branch `railway/telegram-notifications`,
+commit `b934067`, deployment `0673d338-3d41-4c1f-bed3-7b8dc3954e65`; existing
+worker branch `codex/race-cloud-monitor-2027`, commit `40fd78b`, deployment
+`6b9547ab-650c-4ff4-ba82-1af8855b020d`. Both deployed successfully. No new service.
+The old training poller's last poll was 20 October, before this work; the main
+medical bot has a different bot ID and remains independent. Do not start the
+old Training long-poller while the cloud webhook owns incoming updates.
+
+Task prompt was independently read back exactly at 13:42:54 Moscow. The only
+changed configuration field was `prompt`; schedule, executor, timezone,
+enabled state and notification settings remained intact. The backend's next
+runs remained 16 November 18:00, 17 November 08:00 and 13:00 Moscow.
+
+Verification: 18 Node 24 relay tests including restart persistence, automatic
+in-place refresh, owner checks, HTML/date handling and existing security OAuth;
+33 Python race tests including forwardable alerts and legacy retry compatibility;
+Ruff passed. A real status card was delivered as `message_id=11`; the owner
+confirmed it arrived. Real Telegram webhook requests read worker status and
+queued a scan at 13:27:19, completed at 13:27:31 with 11 observations and no
+errors. Visible button feedback and a separate card-refresh timestamp were
+added after the owner's feedback. See the user guide below for operation.
+
+Final live verification at 13:45 Moscow: the deployed worker exposed all 11
+calendar entries. An explicitly internal authenticated handler probe adopted
+the already-delivered preview (message 11) as the current card and queued a
+scan; it was not presented as a real user click. Worker evidence timestamp was
+13:43:50.770238, completion log 13:43:59, 11 observations, zero source errors,
+no registration openings. At **13:44:01** the relay logged
+`training_card_refreshed`, message 11, with the new evidence timestamp after
+Telegram accepted the edit. No new status message was sent. Telegram reported
+zero pending webhook updates and no webhook errors. This verifies automatic
+in-place refresh on the deployed cloud path, not only a local/unit test.
+
+User guide: [`race-monitor-user-guide.md`](race-monitor-user-guide.md).
+
 ## Current race schedule and live verification — 16 November 2026
 
 The user requested checks at **08:00, 13:00 and 18:00 Europe/Moscow**. The existing
