@@ -1,4 +1,4 @@
-"""Cloud opening alerts; the existing ChatGPT task owns daily/weekly digests."""
+"""Autonomous scheduled checks and alerts; GPT adds a daily source review."""
 
 from __future__ import annotations
 
@@ -20,6 +20,11 @@ from zoneinfo import ZoneInfo
 import httpx
 from bs4 import BeautifulSoup
 
+from health_agent.races.schedule import (
+    SCHEDULED_HOURS,
+    next_check,
+    next_scheduled_check,
+)
 from health_agent.races.sources import Observation, collect, official_url
 
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -388,13 +393,34 @@ class Worker:
                     self.state["outbox"][key]["delivery_error"] = type(exc).__name__
                     self.save()
 
+    def next_check_at(self, now: datetime) -> datetime | None:
+        if now.astimezone(MOSCOW).date().isoformat() > f"{self.windows['year']}-12-31":
+            return None
+        with self.lock:
+            previous = self.state.get("checked_at")
+            return next_check(
+                now,
+                datetime.fromisoformat(previous) if previous else None,
+                cadence(now, self.windows, self.state["announced"]),
+            )
+
     def status(self):
         with self.lock:
+            now = datetime.now(MOSCOW)
+            due = self.next_check_at(now)
+            scheduled = next_scheduled_check(now)
             return json.loads(json.dumps(self.state)) | {
                 "year": self.windows["year"],
                 "race_dates": self.config.get("race_dates", {}),
-                "cadence_seconds": cadence(
-                    datetime.now(MOSCOW), self.windows, self.state["announced"]
+                "cadence_seconds": cadence(now, self.windows, self.state["announced"]),
+                "scheduler": "railway_worker",
+                "schedule_timezone": "Europe/Moscow",
+                "scheduled_hours_msk": list(SCHEDULED_HOURS),
+                "next_check_at": due.isoformat() if due else None,
+                "next_scheduled_check_at": (
+                    scheduled.isoformat()
+                    if scheduled.date().isoformat() <= f"{self.windows['year']}-12-31"
+                    else None
                 ),
                 "event_ids": [e["id"] for e in self.windows["events"]],
             }
@@ -406,15 +432,9 @@ class Worker:
             now = datetime.now(MOSCOW)
             try:
                 with self.lock:
-                    previous = self.state.get("checked_at")
+                    due = self.next_check_at(now)
                     period = cadence(now, self.windows, self.state["announced"])
-                active = now.date().isoformat() <= f"{self.windows['year']}-12-31"
-                if active and (
-                    self.force_check.is_set()
-                    or not previous
-                    or (now - datetime.fromisoformat(previous)).total_seconds()
-                    >= period
-                ):
+                if due is not None and (self.force_check.is_set() or due <= now):
                     self.force_check.clear()
                     observations, errors, announced = scan(
                         self.config, self.windows, now

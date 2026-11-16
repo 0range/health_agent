@@ -1,6 +1,36 @@
 # Race registration monitoring
 
-## Current behavior: quiet monitoring and live card — 16 November 2026
+## Current schedule: daily GPT and autonomous worker — 16 November 2026
+
+This section supersedes all earlier scheduling records below. The owner chose
+one GPT run daily at **13:00 Europe/Moscow**. The existing Railway Python worker
+owns fixed **08:00, 13:00 and 18:00** checks, independently of GPT, plus the same
+hourly expected-window and five-minute precise-opening checks. No OpenAI API
+calls are made by this worker. Its persisted completed scan start time prevents
+replaying missed slots; a restart catches up once if the latest fixed slot is due.
+
+Authenticated `/status` exposes `scheduler=railway_worker`, `scheduled_hours_msk`,
+`schedule_timezone`, `next_check_at` and `next_scheduled_check_at`.
+`cadence_seconds` describes the additional interval, not the fixed daily slots.
+The season ends on 31 December 2027; next timestamps become null after cutoff.
+
+The daily GPT task reviews official event pages and public organizer channels
+`runc_run`, `wn_marathon`, `ironstar_official`, including ambiguous announcements
+and newly added events. It reads worker status first, allows the 13:00 scan to
+finish, and forces a missing fresh check only after waiting. GPT also owns the
+mandatory Sunday 13:00 summary. Quiet mode, current-card editing, forwardable
+opening alerts and direct registration links remain as described below.
+
+Target saved task schedule (verify after worker deployment):
+
+```ical
+BEGIN:VEVENT
+DTSTART;TZID=Europe/Moscow:20261116T130000
+RRULE:FREQ=DAILY;BYHOUR=13;BYMINUTE=0;BYSECOND=0;UNTIL=20271231T205959Z
+END:VEVENT
+```
+
+## Quiet monitoring and live card — 16 November 2026
 
 This section supersedes the earlier three-daily-report policy below.
 The owner requested silence without updates, a live HTML status card, separate
@@ -64,7 +94,7 @@ in-place refresh on the deployed cloud path, not only a local/unit test.
 
 User guide: [`race-monitor-user-guide.md`](race-monitor-user-guide.md).
 
-## Current race schedule and live verification — 16 November 2026
+## Historical three-GPT-runs schedule — superseded on 16 November 2026
 
 The user requested checks at **08:00, 13:00 and 18:00 Europe/Moscow**. The existing
 task `Automation_ef35471305c4819181e796af6d6a2e2a` remains enabled with executor

@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer
 import httpx
 import pytest
 
+from health_agent.races import cloud
 from health_agent.races.cloud import (
     MOSCOW,
     Worker,
@@ -204,3 +205,55 @@ def test_authenticated_cloud_status_and_opening_update(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_fixed_schedule_survives_restart_outside_intensified_window(tmp_path):
+    windows = {"year": 2027, "events": []}
+    worker = Worker({}, windows, tmp_path)
+    worker.record([], [], {}, at("2026-11-16T08:00"))
+    worker = Worker({}, windows, tmp_path)
+    assert worker.next_check_at(at("2026-11-16T12:59")) == at("2026-11-16T13:00")
+    assert worker.next_check_at(at("2026-11-16T13:01")) == at("2026-11-16T13:01")
+    worker.record([], [], {}, at("2026-11-16T13:01"))
+    worker = Worker({}, windows, tmp_path)
+    assert worker.next_check_at(at("2026-11-16T13:02")) == at("2026-11-16T18:00")
+    assert worker.next_check_at(at("2028-01-01T08:00")) is None
+
+
+def test_loop_runs_fixed_slot_without_gpt_and_status_shows_next_slot(
+    tmp_path, monkeypatch
+):
+    now = at("2026-11-16T13:00")
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+
+    class StopLoop(BaseException):
+        pass
+
+    worker = Worker({}, {"year": 2027, "events": []}, tmp_path)
+    worker.record([], [], {}, at("2026-11-16T08:00"))
+    calls = []
+    monkeypatch.setattr(cloud, "datetime", Clock)
+    monkeypatch.setattr(
+        cloud, "scan", lambda *args: (calls.append(args[2]) or [], [], {})
+    )
+    iterations = []
+
+    def sleep(_):
+        iterations.append(True)
+        if len(iterations) == 2:
+            raise StopLoop()
+
+    monkeypatch.setattr(cloud.time, "sleep", sleep)
+    with pytest.raises(StopLoop):
+        worker.loop()
+    assert calls == [now]
+    status = worker.status()
+    assert status["checked_at"] == now.isoformat()
+    assert status["scheduler"] == "railway_worker"
+    assert status["scheduled_hours_msk"] == [8, 13, 18]
+    assert status["next_check_at"] == "2026-11-16T18:00:00+03:00"
+    assert status["next_scheduled_check_at"] == status["next_check_at"]
