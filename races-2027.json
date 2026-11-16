@@ -3,15 +3,124 @@
   "discover_running": true,
   "excluded_keys": [],
   "running": [
-    {"name": "Апрель", "km": 5, "url": "https://aprilrun5km.runc.run/"},
-    {"name": "Московский полумарафон", "km": 5, "url": "https://moscowhalf5km.runc.run/"},
-    {"name": "Красочный забег", "km": 5, "url": "https://colorrun5km.runc.run/"},
-    {"name": "Большой фестиваль бега", "km": 5, "url": "https://runfest.runc.run/"},
-    {"name": "Ночной забег", "km": 10, "url": "https://nightrun10km.runc.run/"},
-    {"name": "Белые ночи · Санкт-Петербург", "km": 10, "url": "https://wnmarathon.runc.run/"},
-    {"name": "Северная столица · Санкт-Петербург", "km": 10, "url": "https://spbhalf.runc.run/"},
-    {"name": "Большой фестиваль бега", "km": 10, "url": "https://runfest.runc.run/"},
-    {"name": "Московский марафон", "km": 10, "url": "https://moscowmarathon10km.runc.run/"}
+    {
+      "name": "Апрель",
+      "km": 5,
+      "url": "https://aprilrun5km.runc.run/"
+    },
+    {
+      "name": "Московский полумарафон",
+      "km": 5,
+      "url": "https://moscowhalf5km.runc.run/"
+    },
+    {
+      "name": "Красочный забег",
+      "km": 5,
+      "url": "https://colorrun5km.runc.run/"
+    },
+    {
+      "name": "Большой фестиваль бега",
+      "km": 5,
+      "url": "https://runfest.runc.run/"
+    },
+    {
+      "name": "Ночной забег",
+      "km": 10,
+      "url": "https://nightrun10km.runc.run/"
+    },
+    {
+      "name": "Белые ночи · Санкт-Петербург",
+      "km": 10,
+      "url": "https://wnmarathon.runc.run/"
+    },
+    {
+      "name": "Северная столица · Санкт-Петербург",
+      "km": 10,
+      "url": "https://spbhalf.runc.run/"
+    },
+    {
+      "name": "Большой фестиваль бега",
+      "km": 10,
+      "url": "https://runfest.runc.run/"
+    },
+    {
+      "name": "Московский марафон",
+      "km": 10,
+      "url": "https://moscowmarathon10km.runc.run/"
+    }
   ],
-  "triathlon_locations": ["sochi", "luzhniki"]
+  "triathlon_locations": [
+    "sochi",
+    "luzhniki"
+  ],
+  "race_dates": {
+    "runc:aprilrun5km.runc.run:5": {
+      "date": "4 апреля 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:moscowhalf5km.runc.run:5": {
+      "date": "17–18 апреля 2027; день 5 км уточняется",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:colorrun5km.runc.run:5": {
+      "date": "6 июня 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:runfest.runc.run:5": {
+      "date": "29 августа 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:nightrun10km.runc.run:10": {
+      "date": "19 июня 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:wnmarathon.runc.run:10": {
+      "date": "10 июля 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:spbhalf.runc.run:10": {
+      "date": "8 августа 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:runfest.runc.run:10": {
+      "date": "29 августа 2027",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "runc:moscowmarathon10km.runc.run:10": {
+      "date": "25–26 сентября 2027; день 10 км уточняется",
+      "kind": "announced_calendar",
+      "source": "https://t.me/runc_run/9303",
+      "verified_at": "2026-11-16"
+    },
+    "iron:pending:sochi": {
+      "date": "начало октября 2027",
+      "kind": "estimate",
+      "basis": "1/8 Сириус: 03.10.2026",
+      "source": "https://iron-star.com/results/ironstar-1-8-sirius-2026/participants",
+      "verified_at": "2026-11-16"
+    },
+    "iron:pending:luzhniki": {
+      "date": "апрель 2027",
+      "kind": "estimate",
+      "basis": "Лужники: 19.04.2026",
+      "source": "https://t.me/ironstar_official/9129",
+      "verified_at": "2026-11-16"
+    }
+  }
 }

@@ -9,6 +9,7 @@ from health_agent.races.cloud import (
     MOSCOW,
     Worker,
     alert,
+    alert_card,
     cadence,
     handler_for,
     parse_announcement,
@@ -147,6 +148,37 @@ def test_restart_preserves_pending_message_and_receipt(tmp_path):
     assert len(sent) == 2
     assert sent[0] == sent[1]
     assert next(iter(worker.state["outbox"].values()))["message_id"] == 123
+
+
+def test_opening_card_is_forwardable_escaped_and_has_direct_registration_link():
+    obs = Observation(
+        "runc:one:5",
+        "Москва <старт> & 5 км",
+        "https://runc.run/",
+        "open",
+        "4 апреля 2027",
+        "https://runc.run/race/123/?a=1&b=2",
+    )
+    key, payload = alert_card(obs, 2027)
+    assert key == alert(obs, 2027)[0]
+    assert payload["parse_mode"] == "HTML"
+    assert "&lt;старт&gt; &amp; 5 км" in payload["text"]
+    assert "a=1&amp;b=2" in payload["text"]
+    assert payload["reply_markup"]["inline_keyboard"] == [
+        [{"text": "Регистрация ↗", "url": obs.registration_url}]
+    ]
+    assert "protect_content" not in payload
+
+
+def test_legacy_outbox_keeps_original_payload_on_retry(tmp_path):
+    sent = []
+    worker = Worker(
+        {}, WINDOWS, tmp_path, sender=lambda k, v: sent.append((k, v)) or 123
+    )
+    worker.state["outbox"]["legacy-key"] = {"text": "original plain text"}
+    worker.save()
+    worker.deliver()
+    assert sent == [("legacy-key", "original plain text")]
 
 
 def test_authenticated_cloud_status_and_opening_update(tmp_path):

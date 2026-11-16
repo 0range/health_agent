@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -167,6 +168,55 @@ def alert(obs: Observation, year: int) -> tuple[str, str]:
     )
 
 
+def alert_card(obs: Observation, year: int) -> tuple[str, dict]:
+    """One self-contained, forwardable notification for one specific distance."""
+    key, _ = alert(obs, year)  # Reuse the direct-link guard and stable dedup key.
+    uncertain = obs.status == "verify_distance"
+    title = "Появилась запись на событие" if uncertain else "Открылась регистрация"
+    note = (
+        "Доступность именно этой дистанции нужно проверить в личном кабинете."
+        if uncertain
+        else "Места могут закончиться быстро — проверь доступность при записи."
+    )
+    url = html.escape(obs.registration_url, quote=True)
+    host = urlparse(obs.url).hostname
+    if host in ("wnmarathon.runc.run", "spbhalf.runc.run"):
+        city = "Санкт-Петербург"
+    elif host in (
+        "aprilrun5km.runc.run",
+        "moscowhalf5km.runc.run",
+        "colorrun5km.runc.run",
+        "runfest.runc.run",
+        "nightrun10km.runc.run",
+        "moscowmarathon10km.runc.run",
+    ):
+        city = "Москва"
+    elif "лужники" in obs.name.lower():
+        city = "Москва, Лужники"
+    elif re.search("сочи|сириус", obs.name, re.IGNORECASE):
+        city = "Сочи / Сириус"
+    else:
+        city = "Место — на странице старта"
+    text = (
+        f"{'🟡' if uncertain else '🟢'} <b>{title}</b>\n\n"
+        f"🏁 <b>{html.escape(obs.name)}</b>\n"
+        f"📍 {city}\n"
+        f"📅 {html.escape(obs.date) if obs.date else 'Дата старта уточняется'}\n"
+        f"Сезон {year}\n\n"
+        f'<a href="{url}">Регистрация ↗</a>\n\n'
+        f"<i>{note}</i>"
+    )
+    return key, {
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "Регистрация ↗", "url": obs.registration_url}]
+            ]
+        },
+    }
+
+
 def fetch(client: httpx.Client, url: str) -> str:
     # Validate every redirect before issuing it; never send credentials to sources.
     for _ in range(5):
@@ -246,13 +296,13 @@ def scan(
         return observations, errors, announced
 
 
-def send(key: str, message: str) -> int:
+def send(key: str, message: str | dict) -> int:
     secret = os.environ["TRAINING_RELAY_KEY"]
     with httpx.Client(timeout=20, follow_redirects=False) as client:
         result = client.post(
             RELAY + "/notify/training",
             headers={"Authorization": "Bearer " + secret, "Idempotency-Key": key},
-            json={"text": message},
+            json={"text": message} if isinstance(message, str) else message,
         )
         result.raise_for_status()
         data = result.json()
@@ -304,11 +354,12 @@ class Worker:
             self.state["announced"].update(announced)
             for obs in observations:
                 if obs.status in ("open", "verify_distance"):
-                    key, message = alert(obs, self.windows["year"])
+                    key, message = alert_card(obs, self.windows["year"])
                     self.state["outbox"].setdefault(
                         key,
                         {
-                            "text": message,
+                            "text": message["text"],
+                            "payload": message,
                             "observation_key": obs.key,
                             "created_at": now.isoformat(),
                         },
@@ -324,7 +375,8 @@ class Worker:
             ]
         for key, item in pending:
             try:
-                message_id = self.sender(key, item["text"])
+                # Legacy pending messages keep their exact text/schema and receipt hash.
+                message_id = self.sender(key, item.get("payload", item["text"]))
                 with self.lock:
                     self.state["outbox"][key].update(
                         message_id=message_id, sent_at=datetime.now(MOSCOW).isoformat()
@@ -340,6 +392,7 @@ class Worker:
         with self.lock:
             return json.loads(json.dumps(self.state)) | {
                 "year": self.windows["year"],
+                "race_dates": self.config.get("race_dates", {}),
                 "cadence_seconds": cadence(
                     datetime.now(MOSCOW), self.windows, self.state["announced"]
                 ),
