@@ -21,7 +21,7 @@ finish, and forces a missing fresh check only after waiting. GPT also owns the
 mandatory Sunday 13:00 summary. Quiet mode, current-card editing, forwardable
 opening alerts and direct registration links remain as described below.
 
-Target saved task schedule (verify after worker deployment):
+Saved task schedule, independently read back at 16:31 Moscow:
 
 ```ical
 BEGIN:VEVENT
@@ -29,6 +29,26 @@ DTSTART;TZID=Europe/Moscow:20261116T130000
 RRULE:FREQ=DAILY;BYHOUR=13;BYMINUTE=0;BYSECOND=0;UNTIL=20271231T205959Z
 END:VEVENT
 ```
+
+Deployment `056a5b0f-84a3-4fbb-9e04-a5933f56ff5a` (worker commit `ed1f8f5`)
+reached SUCCESS at 16:28:23 Moscow, one healthy replica. `/status` confirmed
+fixed hours `[8,13,18]` and next fixed check **16 November 18:00** before the GPT
+schedule was reduced. 44 Python race tests and Ruff passed, including a loop
+test proving the fixed 13:00 scan runs without GPT and does not run twice.
+
+Task `Automation_ef35471305c4819181e796af6d6a2e2a` was updated at
+`2026-11-16T13:31:05.710222Z`. Exact saved prompt and RRULE were independently
+compared with the intended values. Executor `cloud`, enabled state, timezone,
+model and notification/email settings were preserved. The next runs were
+**17, 18 and 19 November at 13:00 Moscow**. No 08:00/18:00 GPT runs remain.
+
+A post-deployment control scan started at **16:30:50.621222**, completed at
+16:30:59, with 11 observations, zero errors, all `not_announced`, empty outbox.
+The relay logged a successful automatic edit of current card **message 11** at
+**16:31:08**, using this new evidence timestamp. No new status message was sent.
+The next interval check became 17:30:50; the next fixed slot remained 18:00.
+The first unattended fixed 18:00 run had not occurred at verification time.
+Security monitoring and the relay deployment were unchanged.
 
 ## Quiet monitoring and live card — 16 November 2026
 

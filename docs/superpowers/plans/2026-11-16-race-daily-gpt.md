@@ -26,25 +26,25 @@ strictly future slot. `next_check(now: datetime, previous: datetime | None,
 period: int) -> datetime` returns now when a check is due, otherwise the earlier
 of the next fixed slot and previous + cadence. All output uses Europe/Moscow.
 
-- [ ] Add boundary cases including this required missed-slot assertion:
+- [x] Add boundary cases including this required missed-slot assertion:
   `assert next_check(at('2026-11-16T13:00'), at('2026-11-16T12:59'), 86400) == at('2026-11-16T13:00')`.
-- [ ] Run `.venv/bin/pytest tests/races/test_schedule.py -q` and confirm missing implementation.
-- [ ] Compute yesterday/today/tomorrow slots with `now.astimezone(MOSCOW).replace(hour=h, minute=0, second=0, microsecond=0) + timedelta(days=offset)`; compare previous with latest due slot; otherwise return `max(now, min(next_scheduled_check(now), previous + timedelta(seconds=period)))`.
-- [ ] Integrate helper into `Worker.next_check_at(now)` including season cutoff;
+- [x] Run `.venv/bin/pytest tests/races/test_schedule.py -q` and confirm missing implementation.
+- [x] Compute yesterday/today/tomorrow slots with `now.astimezone(MOSCOW).replace(hour=h, minute=0, second=0, microsecond=0) + timedelta(days=offset)`; compare previous with latest due slot; otherwise return `max(now, min(next_scheduled_check(now), previous + timedelta(seconds=period)))`.
+- [x] Integrate helper into `Worker.next_check_at(now)` including season cutoff;
   use it in the loop and `/status`. Add next scheduled check and fixed hours to status.
-- [ ] Include schedule.py in Docker COPY; verify restart checkpoint and one scan at the fixed boundary through worker tests.
-- [ ] Run `.venv/bin/pytest tests/races -q` and `.venv/bin/ruff check src/health_agent/races tests/races`.
-- [ ] Update runbooks, commit and push the existing branch. Verify live `/status`
+- [x] Include schedule.py in Docker COPY; verify restart checkpoint and one scan at the fixed boundary through worker tests.
+- [x] Run `.venv/bin/pytest tests/races -q` and `.venv/bin/ruff check src/health_agent/races tests/races`.
+- [x] Update runbooks, commit and push the existing branch. Verify live `/status`
   exposes fixed hours and next due time, deployment SUCCESS and healthy service.
 
 ### Task 2: Reduce GPT automation
 
-- [ ] Preserve the existing private task snapshot; edit only scheduling language
+- [x] Preserve the existing private task snapshot; edit only scheduling language
   and check coordination in its prompt, retaining historical sources and all
   delivery/silence rules. GPT first GETs status, waits up to 60 seconds for the
   regular scan, then queues only if checked_at still predates today's 13:00 slot.
-- [ ] Save prompt through the authenticated task editor without printing its key.
-- [ ] In the source chat, update existing task
+- [x] Save prompt through the authenticated task editor without printing its key.
+- [x] In the source chat, update existing task
   `Automation_ef35471305c4819181e796af6d6a2e2a` to the exact VEVENT:
 
 ```text
@@ -54,8 +54,8 @@ RRULE:FREQ=DAILY;BYHOUR=13;BYMINUTE=0;BYSECOND=0;UNTIL=20271231T205959Z
 END:VEVENT
 ```
 
-- [ ] Read saved task independently and assert exact prompt, RRULE, enabled state,
+- [x] Read saved task independently and assert exact prompt, RRULE, enabled state,
   preserved executor/notifications/email settings and next run at 13:00 Moscow.
-- [ ] Record verification in runbook and commit; delete temporary private snapshots.
-- [ ] Explain daily GPT/channel coverage and possible Nov–Dec 2026 openings,
+- [x] Record verification in runbook and commit; delete temporary private snapshots.
+- [x] Explain daily GPT/channel coverage and possible Nov–Dec 2026 openings,
   explicitly separating historical estimates from confirmed announcements.
